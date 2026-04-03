@@ -3,11 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Datapilot Scout — Digital Forensics for Law Enforcement</title>
-  <meta name="description" content="Datapilot Scout is a desktop forensic investigation tool built for law enforcement. Scan USB devices, Android phones, detect known hashes, and generate court-ready PDF reports.">
+  <title>Datapilot Scout — Digital Triage for Law Enforcement</title>
+  <meta name="description" content="Datapilot Scout is a digital triage tool for law enforcement. Quickly scan targeted locations on USB drives and Android devices for contraband, hash matches, and investigative leads.">
   <meta name="keywords" content="digital forensics, law enforcement, CSAM detection, hash scanning, mobile forensics, USB forensics, investigation tool">
-  <meta property="og:title" content="Datapilot Scout — Digital Forensics for Law Enforcement">
-  <meta property="og:description" content="Scan USB drives and Android devices. Detect evidence. Generate reports. Purpose-built forensic investigation software for agencies.">
+  <meta property="og:title" content="Datapilot Scout — Digital Triage for Law Enforcement">
+  <meta property="og:description" content="True triage for law enforcement. Scan targeted locations for contraband, hash matches, and investigative leads — not a full forensic suite.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://dpscout.com">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect rx='18' width='100' height='100' fill='%2300C4FF'/><text x='50' y='68' font-size='52' font-weight='700' font-family='sans-serif' text-anchor='middle' fill='%23060910'>DS</text></svg>">
@@ -61,9 +61,10 @@
         </h1>
 
         <p class="hero__subtitle">
-          Purpose-built investigation software for law enforcement agencies.
-          Scan USB drives, Android devices, and media — detect known hashes
-          and generate court-ready reports in minutes.
+          Purpose-built triage software for law enforcement agencies.
+          Quickly identify contraband and investigative leads by scanning
+          targeted locations — not entire drives. Get actionable results
+          in minutes, not hours.
         </p>
 
         <div class="hero__actions">
@@ -147,58 +148,68 @@
 <section id="features" class="section">
   <div class="container">
     <div class="section__header section__header--center reveal">
-      <span class="section__eyebrow">Core Capabilities</span>
-      <h2 class="section__title">Everything You Need<br>in One Investigation Tool</h2>
+      <span class="section__eyebrow">True Triage</span>
+      <h2 class="section__title">Fast Leads, Not Full Forensics</h2>
       <p class="section__desc">
-        From device scanning to report generation — Scout handles the full
-        forensic workflow so investigators can focus on the case.
+        Scout is a triage tool — not a forensic imager. It scans targeted locations
+        where contraband is commonly stored, giving investigators actionable leads
+        in minutes without the hours-long overhead of a full-disk review.
       </p>
     </div>
 
     <div class="features__grid">
-      <!-- USB Scanning -->
+      <!-- Browser History -->
       <div class="feature-card reveal reveal-delay-1">
         <div class="feature-card__icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2" ry="2"/><rect x="9" y="9" width="6" height="6"/><line x1="9" y1="1" x2="9" y2="4"/><line x1="15" y1="1" x2="15" y2="4"/><line x1="9" y1="20" x2="9" y2="23"/><line x1="15" y1="20" x2="15" y2="23"/><line x1="20" y1="9" x2="23" y2="9"/><line x1="20" y1="14" x2="23" y2="14"/><line x1="1" y1="9" x2="4" y2="9"/><line x1="1" y1="14" x2="4" y2="14"/></svg>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         </div>
-        <h3 class="feature-card__title">USB Device Scanning</h3>
-        <p class="feature-card__desc">Plug in any USB storage device and scan its contents. Scout indexes all media files, documents, and artifacts for investigation.</p>
+        <h3 class="feature-card__title">Browser History Scanning</h3>
+        <p class="feature-card__desc">Extract and analyze browser history from devices. Quickly surface suspicious URLs, search terms, and browsing patterns relevant to the investigation.</p>
       </div>
 
-      <!-- Android Forensics -->
+      <!-- Hash Value Matching -->
       <div class="feature-card reveal reveal-delay-2">
-        <div class="feature-card__icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
-        </div>
-        <h3 class="feature-card__title">Android Forensics</h3>
-        <p class="feature-card__desc">Extract and analyze photos, messages, browser history, and app data from Android devices with automated artifact recovery.</p>
-      </div>
-
-      <!-- Hash Detection -->
-      <div class="feature-card reveal reveal-delay-4">
         <div class="feature-card__icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="9" x2="20" y2="9"/><line x1="4" y1="15" x2="20" y2="15"/><line x1="10" y1="3" x2="8" y2="21"/><line x1="16" y1="3" x2="14" y2="21"/></svg>
         </div>
-        <h3 class="feature-card__title">Hash List Detection</h3>
-        <p class="feature-card__desc">Import known-hash databases and instantly cross-reference scanned files. Matches are flagged automatically for investigator review.</p>
+        <h3 class="feature-card__title">Hash Value Matching</h3>
+        <p class="feature-card__desc">Import known-contraband hash databases and cross-reference files in targeted locations. Matches are flagged instantly — no manual comparison needed.</p>
+      </div>
+
+      <!-- Keyword Search -->
+      <div class="feature-card reveal reveal-delay-3">
+        <div class="feature-card__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </div>
+        <h3 class="feature-card__title">Keyword Search</h3>
+        <p class="feature-card__desc">Run keyword lists against file names, paths, and browser artifacts to surface investigative leads. Customizable per case for precise, targeted results.</p>
+      </div>
+
+      <!-- Media Compilation -->
+      <div class="feature-card reveal reveal-delay-4">
+        <div class="feature-card__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+        </div>
+        <h3 class="feature-card__title">Media Compilation</h3>
+        <p class="feature-card__desc">Automatically compiles images and videos from common contraband locations into a single review interface — no manual folder-by-folder digging required.</p>
+      </div>
+
+      <!-- Intrusion Scanning -->
+      <div class="feature-card reveal reveal-delay-5">
+        <div class="feature-card__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        </div>
+        <h3 class="feature-card__title">Intrusion Scanning</h3>
+        <p class="feature-card__desc">Detect signs of unauthorized access, suspicious applications, and anomalous system activity that may indicate evidence of criminal behavior.</p>
       </div>
 
       <!-- PDF Reporting -->
-      <div class="feature-card reveal reveal-delay-5">
+      <div class="feature-card reveal reveal-delay-6">
         <div class="feature-card__icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
         </div>
         <h3 class="feature-card__title">PDF Report Generation</h3>
-        <p class="feature-card__desc">Generate detailed, court-ready forensic reports with evidence thumbnails, hash values, metadata, and chain-of-custody fields.</p>
-      </div>
-
-      <!-- Offline Capable -->
-      <div class="feature-card reveal reveal-delay-6">
-        <div class="feature-card__icon">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"/><path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"/><path d="M10.71 5.05A16 16 0 0 1 22.56 9"/><path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg>
-        </div>
-        <h3 class="feature-card__title">Offline Operation</h3>
-        <p class="feature-card__desc">Operates entirely offline after initial registration. No cloud dependencies — your evidence never leaves the investigation machine.</p>
+        <p class="feature-card__desc">Generate court-ready triage reports with evidence thumbnails, hash values, and case metadata. Document findings for follow-up forensic analysis.</p>
       </div>
     </div>
   </div>
@@ -246,24 +257,29 @@
     <!-- Capability 1: Device Scanning -->
     <div class="capability reveal">
       <div class="capability__content">
-        <span class="capability__tag">Device Forensics</span>
-        <h3 class="capability__title">Multi-Device Scanning Engine</h3>
+        <span class="capability__tag">Targeted Triage</span>
+        <h3 class="capability__title">Scan What Matters, Skip the Rest</h3>
         <p class="capability__desc">
-          Scout's scanning engine handles USB drives and Android devices
-          through a unified interface. Investigators don't need separate tools for each device type.
+          Scout doesn't scan every file on a drive. It targets specific directories
+          and artifact locations where contraband and evidence are commonly stored — 
+          delivering fast results during time-sensitive investigations.
         </p>
         <ul class="capability__list">
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            USB mass storage — thumb drives, external HDDs, SD cards
+            USB drives — thumb drives, external HDDs, SD cards
           </li>
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Android ADB extraction — photos, SMS, browser data, app artifacts
+            Android devices — photos, SMS, browser data, app artifacts
           </li>
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Real-time progress tracking with file count and scan timer
+            Targeted scan paths — not full-disk, just high-probability locations
+          </li>
+          <li class="capability__list-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Minutes to results, not hours — built for field speed
           </li>
         </ul>
       </div>
@@ -512,11 +528,7 @@
       <div class="download__buttons">
         <a href="https://github.com/exhonorated999/Dpscout/releases/latest/download/Datapilot.Scout_0.4.2_x64-setup.exe" class="btn btn--primary">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download Installer (.exe)
-        </a>
-        <a href="https://github.com/exhonorated999/Dpscout/releases/latest/download/Datapilot.Scout_0.4.2_x64_en-US.msi" class="btn btn--ghost">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download MSI Package
+          Download Free Trial
         </a>
       </div>
       <p class="download__note">Windows 10/11 · x64 · v0.4.2</p>
