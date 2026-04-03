@@ -7,6 +7,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initMobileNav();
   initScrollReveal();
   initSmoothScroll();
+  initScanTimer();
 });
 
 /* --- Navbar background on scroll --- */
@@ -62,6 +63,20 @@ function initScrollReveal() {
   );
 
   reveals.forEach(el => observer.observe(el));
+}
+
+/* --- Scan timer (hero mockup) --- */
+function initScanTimer() {
+  const el = document.getElementById('scan-timer');
+  if (!el) return;
+
+  let seconds = 0;
+  setInterval(() => {
+    seconds++;
+    const m = String(Math.floor(seconds / 60)).padStart(2, '0');
+    const s = String(seconds % 60).padStart(2, '0');
+    el.textContent = m + ':' + s;
+  }, 1000);
 }
 
 /* --- Smooth scroll for anchor links --- */

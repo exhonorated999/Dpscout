@@ -100,22 +100,84 @@
 
       <div class="hero__visual">
         <div class="hero__ring" aria-hidden="true"></div>
-        <div class="hero__terminal">
-          <div class="hero__terminal-bar">
-            <span class="hero__terminal-dot hero__terminal-dot--red"></span>
-            <span class="hero__terminal-dot hero__terminal-dot--yellow"></span>
-            <span class="hero__terminal-dot hero__terminal-dot--green"></span>
-            <span class="hero__terminal-title">DATAPILOT SCOUT v0.4.2</span>
+        <div class="scout-ui">
+          <!-- Top scanning bar -->
+          <div class="scout-ui__topbar">
+            <div class="scout-ui__logo">
+              <svg width="16" height="20" viewBox="0 0 28 36" fill="none"><circle cx="7" cy="7" r="5" fill="#4D7CFF"/><circle cx="21" cy="7" r="5" fill="#4D7CFF"/><circle cx="7" cy="19.5" r="5.5" fill="#4D7CFF"/><circle cx="21" cy="19.5" r="5.5" fill="#4D7CFF"/><circle cx="7" cy="31" r="3.5" fill="#4D7CFF"/><circle cx="21" cy="31" r="3.5" fill="#4D7CFF"/></svg>
+            </div>
+            <span class="scout-ui__scanning">SCANNING</span>
+            <span class="scout-ui__spinner"></span>
+            <span class="scout-ui__analyzing">ANALYZING: <strong>MEDIA FILES</strong></span>
+            <span class="scout-ui__elapsed">ELAPSED: <strong id="scan-timer">00:00</strong></span>
           </div>
-          <div class="hero__terminal-body">
-            <div class="line"><span class="t-prompt">scout &gt;</span> <span class="t-white">initializing scan engine...</span></div>
-            <div class="line"><span class="t-info">[info]</span> USB device detected: <span class="t-white">Kingston DT 32GB</span></div>
-            <div class="line"><span class="t-info">[info]</span> Hash database loaded: <span class="t-accent">48,291 entries</span></div>
-            <div class="line"><span class="t-prompt">scout &gt;</span> <span class="t-white">scanning media files...</span></div>
-            <div class="line"><span class="t-info">[scan]</span> Files processed: <span class="t-white">1,847 / 1,847</span></div>
-            <div class="line"><span class="t-warn">[alert]</span> Hash match found — <span class="t-warn">flagged for review</span></div>
-            <div class="line"><span class="t-success">[done]</span> Scan complete. Report generated.</div>
-            <div class="line"><span class="t-prompt">scout &gt;</span> <span class="t-accent">█</span></div>
+          <!-- Body: sidebar + main -->
+          <div class="scout-ui__body">
+            <!-- Sidebar -->
+            <div class="scout-ui__sidebar">
+              <div class="scout-ui__tab scout-ui__tab--active">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+                <span>DEVICE INFO</span>
+                <span class="scout-ui__badge">1</span>
+              </div>
+              <div class="scout-ui__tab">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                <span>APPLICATIONS</span>
+                <span class="scout-ui__badge">148</span>
+              </div>
+              <div class="scout-ui__tab">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <span>BROWSER HISTORY</span>
+                <span class="scout-ui__badge scout-ui__badge--warn">391</span>
+              </div>
+              <div class="scout-ui__tab">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                <span>MEDIA FILES</span>
+              </div>
+            </div>
+            <!-- Main content -->
+            <div class="scout-ui__main">
+              <h3 class="scout-ui__title">DEVICE INFORMATION</h3>
+              <!-- System ID section -->
+              <div class="scout-ui__section-label">SYSTEM IDENTIFICATION</div>
+              <div class="scout-ui__grid">
+                <div class="scout-ui__field">
+                  <span class="scout-ui__field-label">COMPUTER NAME</span>
+                  <span class="scout-ui__field-value">INVESTIGATOR-PC</span>
+                </div>
+                <div class="scout-ui__field">
+                  <span class="scout-ui__field-label">OPERATING SYSTEM</span>
+                  <span class="scout-ui__field-value">Windows 11 Home 25H2</span>
+                </div>
+                <div class="scout-ui__field">
+                  <span class="scout-ui__field-label">ORGANIZATION</span>
+                  <span class="scout-ui__field-value">Sample County SO</span>
+                </div>
+              </div>
+              <!-- USB section -->
+              <div class="scout-ui__section-label">USB DEVICE HISTORY</div>
+              <div class="scout-ui__table">
+                <div class="scout-ui__table-header">
+                  <span>DEVICE NAME</span>
+                  <span>VENDOR ID</span>
+                  <span>SERIAL</span>
+                </div>
+                <div class="scout-ui__table-row">
+                  <span>USB SanDisk 3.2Gen1</span>
+                  <span>_USB</span>
+                  <span>4C530001...</span>
+                </div>
+                <div class="scout-ui__table-row">
+                  <span>Kingston DataTrav</span>
+                  <span>_USB</span>
+                  <span>E0D55EA5...</span>
+                </div>
+              </div>
+              <!-- Floating particles -->
+              <div class="scout-ui__particles" aria-hidden="true">
+                <span></span><span></span><span></span><span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
