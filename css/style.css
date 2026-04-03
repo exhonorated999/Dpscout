@@ -374,6 +374,24 @@ ul { list-style: none; }
   height: 18px;
 }
 
+.btn--outline {
+  padding: 16px 28px;
+  font-size: 1rem;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--accent);
+}
+
+.btn--outline:hover {
+  background: rgba(58, 126, 255, 0.1);
+  transform: translateY(-2px);
+}
+
+.btn--outline svg {
+  width: 18px;
+  height: 18px;
+}
+
 .btn--ghost {
   padding: 16px 28px;
   font-size: 1rem;
