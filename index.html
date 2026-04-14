@@ -57,7 +57,7 @@
       <div class="hero__text">
         <div class="hero__badge">
           <span class="hero__badge-dot"></span>
-          v0.7.0 — Now Available
+          v0.8.0 — Now Available
         </div>
 
         <h1 class="hero__title">
@@ -296,7 +296,7 @@
       <div class="step reveal reveal-delay-1">
         <div class="step__number">01</div>
         <h3 class="step__title">Download & Install</h3>
-        <p class="step__desc">Download the Windows installer, run setup, and Scout is ready — no complex configuration required.</p>
+        <p class="step__desc">Download the Desktop or Portable USB edition, run setup, and Scout is ready — no complex configuration required.</p>
       </div>
       <div class="step reveal reveal-delay-2">
         <div class="step__number">02</div>
@@ -588,20 +588,74 @@
     <div class="download__inner reveal">
       <h2 class="download__title">Ready to Get Started?</h2>
       <p class="download__desc">
-        Download Datapilot Scout for Windows. Register your agency on first launch
-        and your 60-day full-access trial begins immediately.
+        Choose the edition that fits your workflow. Both include a full-featured 60-day trial.
+        Register your agency on first launch — no credit card required.
       </p>
-      <div class="download__buttons">
-        <a href="https://github.com/exhonorated999/Dpscout/releases/latest/download/Datapilot.Scout_0.7.0_x64-setup.exe" class="btn btn--primary" download>
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-          Download Free Trial
-        </a>
+
+      <!-- Edition cards -->
+      <div class="edition-cards">
+
+        <!-- Desktop Edition -->
+        <div class="edition-card">
+          <div class="edition-card__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+          </div>
+          <h3 class="edition-card__title">Desktop Edition</h3>
+          <p class="edition-card__desc">Install on your workstation. Full scanning suite including Windows, USB drives, Android devices, and iOS backup analysis.</p>
+          <ul class="edition-card__features">
+            <li>Windows PC &amp; laptop scanning</li>
+            <li>USB / external drive scanning</li>
+            <li>Android device scanning</li>
+            <li>iOS backup analysis</li>
+            <li>Auto-updates built in</li>
+          </ul>
+          <a href="https://github.com/exhonorated999/Dpscout/releases/latest/download/Datapilot.Scout_0.8.0_x64-setup.exe" class="btn btn--primary" download>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download Desktop
+          </a>
+          <span class="edition-card__note">Windows 10/11 · x64 · Installs to C: drive</span>
+        </div>
+
+        <!-- Portable USB Edition -->
+        <div class="edition-card edition-card--usb">
+          <div class="edition-card__badge">FIELD USE</div>
+          <div class="edition-card__icon edition-card__icon--usb">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="2" width="16" height="20" rx="2"/><line x1="8" y1="6" x2="16" y2="6"/><line x1="8" y1="10" x2="16" y2="10"/><circle cx="12" cy="16" r="2"/></svg>
+          </div>
+          <h3 class="edition-card__title">Portable USB Edition</h3>
+          <p class="edition-card__desc">Install onto a USB flash drive. Take Scout into the field to scan suspect computers and USB drives on-site — no installation on the target machine.</p>
+          <ul class="edition-card__features">
+            <li>Runs entirely from USB drive</li>
+            <li>Windows PC scanning in the field</li>
+            <li>USB / external drive scanning</li>
+            <li>No install on target machine</li>
+            <li>Auto-updates built in</li>
+          </ul>
+          <a href="https://github.com/exhonorated999/Dpscout/releases/latest/download/Datapilot.Scout.Portable_0.8.0_x64-setup.exe" class="btn btn--primary btn--usb" download>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Download Portable USB
+          </a>
+          <span class="edition-card__note">Windows 10/11 · x64 · Must be installed to USB drive</span>
+        </div>
+
+      </div>
+
+      <!-- Important note -->
+      <div class="download__info">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+        <div>
+          <strong>One license, two activations.</strong> Each agency license key activates on both Desktop and Portable USB editions.
+          The Portable USB edition <em>must</em> be installed onto a USB flash drive — it identifies itself using the drive's unique serial number.
+        </div>
+      </div>
+
+      <div class="download__buttons" style="margin-top: 24px;">
         <a href="assets/Datapilot_Scout_Flyer.pdf" class="btn btn--outline" download>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
           Product Flyer (PDF)
         </a>
       </div>
-      <p class="download__note">Windows 10/11 · x64 · v0.7.0</p>
+      <p class="download__note">v0.8.0 · Windows 10/11 · x64 · 60-day free trial</p>
     </div>
   </div>
 </section>

@@ -1316,6 +1316,167 @@ ul { list-style: none; }
   letter-spacing: 0.03em;
 }
 
+/* --- Edition Cards --- */
+.edition-cards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-bottom: 32px;
+  text-align: left;
+}
+
+.edition-card {
+  position: relative;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg, 12px);
+  padding: 32px 28px 28px;
+  display: flex;
+  flex-direction: column;
+  transition: border-color 0.3s, box-shadow 0.3s;
+}
+
+.edition-card:hover {
+  border-color: var(--accent);
+  box-shadow: 0 0 30px rgba(0, 196, 255, 0.08);
+}
+
+.edition-card--usb {
+  border-color: rgba(0, 200, 120, 0.3);
+}
+
+.edition-card--usb:hover {
+  border-color: #00c878;
+  box-shadow: 0 0 30px rgba(0, 200, 120, 0.1);
+}
+
+.edition-card__badge {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #00c878;
+  background: rgba(0, 200, 120, 0.1);
+  border: 1px solid rgba(0, 200, 120, 0.3);
+  border-radius: 4px;
+  padding: 3px 8px;
+}
+
+.edition-card__icon {
+  color: var(--accent);
+  margin-bottom: 16px;
+}
+
+.edition-card__icon--usb {
+  color: #00c878;
+}
+
+.edition-card__title {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 8px;
+}
+
+.edition-card__desc {
+  font-size: 0.9rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 20px;
+  flex-grow: 1;
+}
+
+.edition-card__features {
+  list-style: none;
+  padding: 0;
+  margin: 0 0 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.edition-card__features li {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  padding-left: 20px;
+  position: relative;
+}
+
+.edition-card__features li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.8rem;
+}
+
+.edition-card--usb .edition-card__features li::before {
+  color: #00c878;
+}
+
+.edition-card .btn {
+  align-self: flex-start;
+  margin-bottom: 12px;
+}
+
+.btn--usb {
+  background: #00c878;
+  box-shadow: 0 2px 12px rgba(0, 200, 120, 0.3);
+}
+
+.btn--usb:hover {
+  background: #00e088;
+  box-shadow: 0 6px 30px rgba(0, 200, 120, 0.4);
+}
+
+.edition-card__note {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+
+.download__info {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: rgba(58, 126, 255, 0.06);
+  border: 1px solid rgba(58, 126, 255, 0.15);
+  border-radius: 8px;
+  padding: 16px 20px;
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.6;
+  text-align: left;
+}
+
+.download__info svg {
+  flex-shrink: 0;
+  color: var(--accent);
+  margin-top: 2px;
+}
+
+.download__info strong {
+  color: var(--text-primary);
+}
+
+.download__info em {
+  color: var(--accent);
+  font-style: normal;
+  font-weight: 600;
+}
+
+@media (max-width: 680px) {
+  .edition-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
 /* --- Footer --- */
 .footer {
   position: relative;
