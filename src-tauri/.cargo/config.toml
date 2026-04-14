@@ -1,0 +1,3 @@
+[build]
+# Using default target directory (./target)
+# target-dir = "H:/rust-build-cache/hindsight"

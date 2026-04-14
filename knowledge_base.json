@@ -1,0 +1,208 @@
+{
+  "version": "1.0",
+  "last_updated": "2025-12-05",
+  "applications": [
+    {
+      "product_names": ["Google Chrome", "Chrome"],
+      "company_names": ["Google LLC", "Google Inc"],
+      "executable_names": ["chrome.exe"],
+      "keywords": ["chrome", "browser"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "Browser"
+    },
+    {
+      "product_names": ["Microsoft Edge", "Edge"],
+      "company_names": ["Microsoft Corporation"],
+      "executable_names": ["msedge.exe"],
+      "keywords": ["edge", "browser"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "Browser"
+    },
+    {
+      "product_names": ["Mozilla Firefox", "Firefox"],
+      "company_names": ["Mozilla Corporation", "Mozilla Foundation"],
+      "executable_names": ["firefox.exe"],
+      "keywords": ["firefox", "browser"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "Browser"
+    },
+    {
+      "product_names": ["Tor Browser"],
+      "company_names": ["The Tor Project"],
+      "executable_names": ["tor.exe", "firefox.exe"],
+      "keywords": ["tor", "onion", "anonymity"],
+      "investigative_category": "ANONYMITY_ANTI_FORENSICS",
+      "function_category": "Browser"
+    },
+    {
+      "product_names": ["Signal"],
+      "company_names": ["Signal Messenger", "Open Whisper Systems"],
+      "executable_names": ["signal.exe"],
+      "keywords": ["signal", "encrypted", "messaging"],
+      "investigative_category": "COMMUNICATIONS",
+      "function_category": "Messaging"
+    },
+    {
+      "product_names": ["WhatsApp", "WhatsApp Desktop"],
+      "company_names": ["WhatsApp Inc", "Facebook"],
+      "executable_names": ["whatsapp.exe"],
+      "keywords": ["whatsapp", "messaging"],
+      "investigative_category": "COMMUNICATIONS",
+      "function_category": "Messaging"
+    },
+    {
+      "product_names": ["Telegram", "Telegram Desktop"],
+      "company_names": ["Telegram FZ-LLC", "Telegram Messenger"],
+      "executable_names": ["telegram.exe"],
+      "keywords": ["telegram", "messaging"],
+      "investigative_category": "COMMUNICATIONS",
+      "function_category": "Messaging"
+    },
+    {
+      "product_names": ["Discord"],
+      "company_names": ["Discord Inc"],
+      "executable_names": ["discord.exe"],
+      "keywords": ["discord", "messaging", "voice"],
+      "investigative_category": "COMMUNICATIONS",
+      "function_category": "Messaging"
+    },
+    {
+      "product_names": ["qBittorrent", "BitTorrent", "uTorrent"],
+      "company_names": ["qBittorrent Project", "BitTorrent Inc"],
+      "executable_names": ["qbittorrent.exe", "bittorrent.exe", "utorrent.exe"],
+      "keywords": ["torrent", "p2p", "bittorrent"],
+      "investigative_category": "DARKWEB_P2P",
+      "function_category": "FileSharing"
+    },
+    {
+      "product_names": ["NordVPN", "ExpressVPN", "ProtonVPN", "CyberGhost VPN"],
+      "company_names": ["Nord Security", "Express VPN", "Proton Technologies"],
+      "executable_names": ["nordvpn.exe", "expressvpn.exe", "protonvpn.exe"],
+      "keywords": ["vpn", "virtual private network"],
+      "investigative_category": "VPN_REMOTE_ACCESS",
+      "function_category": "VPN"
+    },
+    {
+      "product_names": ["TeamViewer", "AnyDesk", "Remote Desktop"],
+      "company_names": ["TeamViewer GmbH", "AnyDesk Software GmbH"],
+      "executable_names": ["teamviewer.exe", "anydesk.exe"],
+      "keywords": ["remote", "teamviewer", "anydesk"],
+      "investigative_category": "VPN_REMOTE_ACCESS",
+      "function_category": "RemoteAccess"
+    },
+    {
+      "product_names": ["Electrum", "Bitcoin Core", "Exodus", "Coinbase"],
+      "company_names": ["Electrum Technologies", "Bitcoin Foundation"],
+      "executable_names": ["electrum.exe", "bitcoin-qt.exe", "exodus.exe"],
+      "keywords": ["bitcoin", "crypto", "wallet", "ethereum"],
+      "investigative_category": "CRYPTOCURRENCY",
+      "function_category": "CryptoWallet"
+    },
+    {
+      "product_names": ["VeraCrypt", "TrueCrypt"],
+      "company_names": ["IDRIX"],
+      "executable_names": ["veracrypt.exe", "truecrypt.exe"],
+      "keywords": ["veracrypt", "truecrypt", "encryption"],
+      "investigative_category": "ANONYMITY_ANTI_FORENSICS",
+      "function_category": "Encryption"
+    },
+    {
+      "product_names": ["CCleaner", "BleachBit", "Eraser"],
+      "company_names": ["Piriform", "BleachBit"],
+      "executable_names": ["ccleaner.exe", "bleachbit.exe", "eraser.exe"],
+      "keywords": ["ccleaner", "cleaner", "wipe", "shred"],
+      "investigative_category": "ANONYMITY_ANTI_FORENSICS",
+      "function_category": "SystemCleaner"
+    },
+    {
+      "product_names": ["7-Zip", "WinRAR", "WinZip"],
+      "company_names": ["Igor Pavlov", "win.rar GmbH"],
+      "executable_names": ["7z.exe", "winrar.exe", "winzip.exe"],
+      "keywords": ["zip", "archive", "compression"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "FileUtility"
+    },
+    {
+      "product_names": ["Visual Studio Code", "Visual Studio"],
+      "company_names": ["Microsoft Corporation"],
+      "executable_names": ["code.exe", "devenv.exe"],
+      "keywords": ["visual studio", "vscode", "ide"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "DevelopmentIDE"
+    },
+    {
+      "product_names": ["Steam", "Epic Games Launcher", "Origin"],
+      "company_names": ["Valve Corporation", "Epic Games", "Electronic Arts"],
+      "executable_names": ["steam.exe", "epicgameslauncher.exe", "origin.exe"],
+      "keywords": ["steam", "game", "gaming"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "Gaming"
+    },
+    {
+      "product_names": ["Dropbox", "Google Drive", "OneDrive"],
+      "company_names": ["Dropbox Inc", "Google LLC", "Microsoft Corporation"],
+      "executable_names": ["dropbox.exe", "googledrivesync.exe", "onedrive.exe"],
+      "keywords": ["dropbox", "drive", "cloud", "sync"],
+      "investigative_category": "COMMUNICATIONS",
+      "function_category": "CloudStorage"
+    },
+    {
+      "product_names": ["Microsoft Office", "Word", "Excel", "PowerPoint"],
+      "company_names": ["Microsoft Corporation"],
+      "executable_names": ["winword.exe", "excel.exe", "powerpnt.exe"],
+      "keywords": ["office", "word", "excel"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "OfficeProductivity"
+    },
+    {
+      "product_names": ["VLC Media Player", "Spotify"],
+      "company_names": ["VideoLAN", "Spotify AB"],
+      "executable_names": ["vlc.exe", "spotify.exe"],
+      "keywords": ["vlc", "media", "player", "spotify"],
+      "investigative_category": "GENERAL_PRODUCTIVITY",
+      "function_category": "Multimedia"
+    }
+  ],
+  "keyword_rules": {
+    "ANONYMITY_ANTI_FORENSICS": [
+      "tor", "onion", "i2p", "freenet", "tails", "whonix",
+      "veracrypt", "truecrypt", "encrypt", "crypt",
+      "ccleaner", "bleachbit", "wipe", "shred", "eraser",
+      "anti-forensic", "antiforensic"
+    ],
+    "DARKWEB_P2P": [
+      "torrent", "bittorrent", "p2p", "peer-to-peer",
+      "emule", "limewire", "shareaza", "ares"
+    ],
+    "VPN_REMOTE_ACCESS": [
+      "vpn", "virtual private network",
+      "teamviewer", "anydesk", "remote desktop", "vnc"
+    ],
+    "CRYPTOCURRENCY": [
+      "bitcoin", "ethereum", "crypto", "wallet",
+      "blockchain", "mining", "electrum", "coinbase"
+    ],
+    "COMMUNICATIONS": [
+      "signal", "telegram", "whatsapp", "discord",
+      "messenger", "skype", "zoom", "slack",
+      "dropbox", "drive", "onedrive", "cloud"
+    ],
+    "GENERAL_PRODUCTIVITY": [
+      "office", "word", "excel", "browser",
+      "chrome", "firefox", "edge", "notepad",
+      "7-zip", "winrar", "steam", "game"
+    ]
+  },
+  "manufacturer_defaults": {
+    "Microsoft Corporation": "GENERAL_PRODUCTIVITY",
+    "Google LLC": "GENERAL_PRODUCTIVITY",
+    "Apple Inc": "GENERAL_PRODUCTIVITY",
+    "Dell Inc": "GENERAL_PRODUCTIVITY",
+    "HP Inc": "GENERAL_PRODUCTIVITY",
+    "Lenovo": "GENERAL_PRODUCTIVITY",
+    "Intel Corporation": "GENERAL_PRODUCTIVITY",
+    "NVIDIA Corporation": "GENERAL_PRODUCTIVITY",
+    "AMD": "GENERAL_PRODUCTIVITY",
+    "Realtek": "GENERAL_PRODUCTIVITY"
+  }
+}

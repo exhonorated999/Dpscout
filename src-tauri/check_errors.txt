@@ -1,0 +1,393 @@
+﻿cargo : warning: unused import: `Result as SqliteResult`
+At line:1 char:1
++ cargo check 2>&1 | Out-File -Encoding utf8 check_errors.txt; Get-Cont ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: unused...s SqliteResult`:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ --> src\scanner\ios.rs:5:28
+  |
+5 | use rusqlite::{Connection, Result as SqliteResult};
+  |                            ^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Utc`
+ --> src\scanner\ios.rs:6:24
+  |
+6 | use chrono::{DateTime, Utc};
+  |                        ^^^
+
+warning: unused import: `chrono::Utc`
+ --> src\scanner\ios_live.rs:4:5
+  |
+4 | use chrono::Utc;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `DateTime`
+ --> src\scanner\intrusion.rs:6:14
+  |
+6 | use chrono::{DateTime, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `DateTime`
+ --> src\system_info\mod.rs:2:14
+  |
+2 | use chrono::{DateTime, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `Result as SqliteResult`
+ --> src\hash_db\mod.rs:1:36
+  |
+1 | use rusqlite::{params, Connection, Result as SqliteResult};
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `usb_monitor::start_usb_monitor`
+  --> src\security\mod.rs:12:9
+   |
+12 | pub use usb_monitor::start_usb_monitor;
+   |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::ffi::OsString`
+   --> src\lib.rs:420:9
+    |
+420 |     use std::ffi::OsString;
+    |         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::windows::ffi::OsStrExt`
+   --> src\lib.rs:421:9
+    |
+421 |     use std::os::windows::ffi::OsStrExt;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `idx`
+   --> src\scanner\keyword.rs:223:14
+    |
+223 |         for (idx, file_path) in files.iter().enumerate() {
+    |              ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `file_id`
+   --> src\scanner\ios.rs:672:13
+    |
+672 |         let file_id: String = row.get(0)?;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_file_id`
+
+warning: value assigned to `name` is never read
+   --> src\scanner\ios_live.rs:781:21
+    |
+781 |             let mut name = String::new();
+    |                     ^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `udid`
+   --> src\scanner\ios_live.rs:933:22
+    |
+933 | fn count_media_files(udid: &str) -> Result<(u64, u64), String> {
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: unused variable: `udid`
+   --> src\scanner\ios_live.rs:944:26
+    |
+944 | fn list_accessible_files(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: unused variable: `temp_dir`
+   --> src\scanner\ios_live.rs:944:38
+    |
+944 | fn list_accessible_files(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    |                                      ^^^^^^^^ help: if this is intentional, prefix it with an underscore: 
+`_temp_dir`
+
+warning: variable does not need to be mutable
+   --> src\scanner\ios_live.rs:945:9
+    |
+945 |     let mut files = Vec::new();
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `temp_dir`
+   --> src\scanner\ios_live.rs:969:5
+    |
+969 |     temp_dir: &std::path::Path
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_temp_dir`
+
+warning: unused variable: `udid`
+    --> src\scanner\ios_live.rs:1032:5
+     |
+1032 |     udid: &str,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: unused variable: `temp_dir`
+    --> src\scanner\ios_live.rs:1034:5
+     |
+1034 |     temp_dir: &std::path::Path
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_temp_dir`
+
+warning: variable does not need to be mutable
+    --> src\scanner\ios_live.rs:1036:9
+     |
+1036 |     let mut matches = Vec::new();
+     |         ----^^^^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: unused variable: `xml_lower`
+   --> src\scanner\intrusion.rs:506:9
+    |
+506 |     let xml_lower = xml.to_lowercase();
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_xml_lower`
+
+warning: unused variable: `metadata`
+  --> src\system_info\hardware.rs:33:27
+   |
+33 |                 if let Ok(metadata) = std::fs::metadata(&path) {
+   |                           ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_metadata`
+
+warning: unused variable: `hash_type`
+   --> src\hash_db\mod.rs:305:62
+    |
+305 |     pub fn import_hash_list(&self, name: &str, source: &str, hash_type: &str) -> Result<i64, String> {
+    |                                                              ^^^^^^^^^ help: if this is intentional, prefix it 
+with an underscore: `_hash_type`
+
+warning: unused variable: `hash_db`
+   --> src\lib.rs:155:9
+    |
+155 |     let hash_db = hash_db::HashDatabase::new()?;
+    |         ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_hash_db`
+
+warning: methods `as_str` and `risk_level` are never used
+  --> src\scanner\mod.rs:53:12
+   |
+52 | impl AppCategory {
+   | ---------------- methods in this implementation
+53 |     pub fn as_str(&self) -> &str {
+   |            ^^^^^^
+...
+77 |     pub fn risk_level(&self) -> &str {
+   |            ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `get_android_scan_paths` is never used
+   --> src\scanner\android.rs:281:8
+    |
+281 | pub fn get_android_scan_paths() -> Vec<String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `check_device_ready` is never used
+   --> src\scanner\android.rs:293:8
+    |
+293 | pub fn check_device_ready(serial: &str) -> Result<bool, String> {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: struct `IosWhatsAppMessage` is never constructed
+  --> src\scanner\ios.rs:96:12
+   |
+96 | pub struct IosWhatsAppMessage {
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: function `get_whatsapp_messages` is never used
+   --> src\scanner\ios.rs:705:8
+    |
+705 | pub fn get_whatsapp_messages(backup_path: &str) -> Result<Vec<IosWhatsAppMessage>, String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_whatsapp_database` is never used
+   --> src\scanner\ios.rs:718:4
+    |
+718 | fn parse_whatsapp_database(db_path: &Path) -> Result<Vec<IosWhatsAppMessage>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_critical_artifact_hashes` is never used
+   --> src\scanner\ios.rs:787:8
+    |
+787 | pub fn get_critical_artifact_hashes() -> HashMap<&'static str, &'static str> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_app_data` is never used
+   --> src\scanner\ios_live.rs:508:8
+    |
+508 | pub fn extract_app_data(udid: &str, app_domains: Vec<String>) -> Result<PathBuf, String> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `extract_safari_history` is never used
+   --> src\scanner\ios_live.rs:634:4
+    |
+634 | fn extract_safari_history(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<IosBrowserEntry>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_safari_history_from_backup` is never used
+   --> src\scanner\ios_live.rs:681:4
+    |
+681 | fn parse_safari_history_from_backup(backup_dir: &std::path::Path) -> Result<Vec<IosBrowserEntry>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `KnowledgeBase` is never constructed
+ --> src\scanner\app_classifier.rs:7:12
+  |
+7 | pub struct KnowledgeBase {
+  |            ^^^^^^^^^^^^^
+
+warning: struct `AppSignature` is never constructed
+  --> src\scanner\app_classifier.rs:16:12
+   |
+16 | pub struct AppSignature {
+   |            ^^^^^^^^^^^^
+
+warning: struct `ClassificationResult` is never constructed
+  --> src\scanner\app_classifier.rs:26:12
+   |
+26 | pub struct ClassificationResult {
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `AppClassifier` is never constructed
+  --> src\scanner\app_classifier.rs:33:12
+   |
+33 | pub struct AppClassifier {
+   |            ^^^^^^^^^^^^^
+
+warning: associated items `new`, `create_minimal_kb`, `classify`, and `infer_function_category` are never used
+   --> src\scanner\app_classifier.rs:38:12
+    |
+ 37 | impl AppClassifier {
+    | ------------------ associated items in this implementation
+ 38 |     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    |            ^^^
+...
+ 86 |     fn create_minimal_kb() -> KnowledgeBase {
+    |        ^^^^^^^^^^^^^^^^^
+...
+ 96 |     pub fn classify(&self, 
+    |            ^^^^^^^^
+...
+220 |     fn infer_function_category(&self, keyword: &str) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_SYSTEM_INFO` is never used
+ --> src\events.rs:5:11
+  |
+5 | pub const EVENT_SYSTEM_INFO: &str = "scan:system_info";
+  |           ^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_APPS_RESULT` is never used
+  --> src\events.rs:10:11
+   |
+10 | pub const EVENT_APPS_RESULT: &str = "scan:apps_result";
+   |           ^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_BROWSER_RESULT` is never used
+  --> src\events.rs:11:11
+   |
+11 | pub const EVENT_BROWSER_RESULT: &str = "scan:browser_result";
+   |           ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_KEYWORD_MATCH` is never used
+  --> src\events.rs:12:11
+   |
+12 | pub const EVENT_KEYWORD_MATCH: &str = "scan:keyword_match";
+   |           ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_HASH_MATCH` is never used
+  --> src\events.rs:13:11
+   |
+13 | pub const EVENT_HASH_MATCH: &str = "scan:hash_match";
+   |           ^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_MEDIA_FOUND` is never used
+  --> src\events.rs:14:11
+   |
+14 | pub const EVENT_MEDIA_FOUND: &str = "scan:media_found";
+   |           ^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_SCAN_COMPLETE` is never used
+  --> src\events.rs:15:11
+   |
+15 | pub const EVENT_SCAN_COMPLETE: &str = "scan:complete";
+   |           ^^^^^^^^^^^^^^^^^^^
+
+warning: multiple methods are never used
+   --> src\events.rs:102:12
+    |
+ 64 | impl ScanEventEmitter {
+    | --------------------- methods in this implementation
+...
+102 |     pub fn emit_apps_result<T: Serialize>(&self, apps: &T) {
+    |            ^^^^^^^^^^^^^^^^
+...
+106 |     pub fn emit_browser_result<T: Serialize>(&self, browsers: &T) {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+110 |     pub fn emit_keyword_match<T: Serialize>(&self, match_data: &T) {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+114 |     pub fn emit_hash_match<T: Serialize>(&self, match_data: &T) {
+    |            ^^^^^^^^^^^^^^^
+...
+118 |     pub fn emit_media_found<T: Serialize>(&self, file: &T) {
+    |            ^^^^^^^^^^^^^^^^
+...
+122 |     pub fn emit_scan_complete(&self) {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+126 |     pub fn emit_system_info<T: Serialize>(&self, system_info: &T) {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: function `color_light_gray` is never used
+  --> src\reporter\pdf.rs:41:4
+   |
+41 | fn color_light_gray() -> Color {
+   |    ^^^^^^^^^^^^^^^^
+
+warning: methods `import_vic_json`, `create_hash_list_internal`, `check_hashes_batch`, `delete_list`, and `optimize` 
+are never used
+   --> src\hash_db\mod.rs:96:12
+    |
+ 19 | impl HashDatabase {
+    | ----------------- methods in this implementation
+...
+ 96 |     pub fn import_vic_json(&self, json_path: &str, list_name: &str) -> Result<u64, String> {
+    |            ^^^^^^^^^^^^^^^
+...
+180 |     fn create_hash_list_internal(&self, conn: &mut Connection, name: &str, source: &str) -> Result<i64, String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+219 |     pub fn check_hashes_batch(&self, hashes: &[(String, String)]) -> Result<Vec<HashMatch>, String> {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+280 |     pub fn delete_list(&self, list_id: i64) -> Result<(), String> {
+    |            ^^^^^^^^^^^
+...
+292 |     pub fn optimize(&self) -> Result<(), String> {
+    |            ^^^^^^^^
+
+warning: struct `VicEntry` is never constructed
+   --> src\hash_db\mod.rs:341:8
+    |
+341 | struct VicEntry {
+    |        ^^^^^^^^
+
+warning: function `start_usb_monitor` is never used
+ --> src\security\usb_monitor.rs:7:8
+  |
+7 | pub fn start_usb_monitor(app_handle: AppHandle, fingerprint: UsbFingerprint) {
+  |        ^^^^^^^^^^^^^^^^^
+
+warning: function `get_questionable_apps_database_DEPRECATED` should have a snake case name
+   --> src\scanner\questionable_apps.rs:134:4
+    |
+134 | fn get_questionable_apps_database_DEPRECATED() -> HashMap<&'static str, (AppCategory, Vec<&'static str>)> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: 
+`get_questionable_apps_database_deprecated`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `hindsight-app` (lib) generated 52 warnings (run `cargo fix --lib -p hindsight-app` to apply 11 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1m 39s

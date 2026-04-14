@@ -1,0 +1,321 @@
+.reports-manager {
+  padding: 20px;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.reports-header {
+  margin-bottom: 30px;
+}
+
+.reports-header h2 {
+  margin: 0 0 10px 0;
+  font-size: 24px;
+  color: #e0e0e0;
+}
+
+.reports-description {
+  color: #a0a0a0;
+  margin: 10px 0;
+  line-height: 1.6;
+}
+
+.security-notice {
+  margin-top: 15px;
+  padding: 12px;
+  background: rgba(76, 175, 80, 0.1);
+  border-left: 4px solid #4caf50;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: #c0c0c0;
+}
+
+.security-icon {
+  font-size: 20px;
+}
+
+.security-notice strong {
+  color: #4caf50;
+}
+
+.reports-location {
+  margin-top: 15px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.reports-location code {
+  flex: 1;
+  padding: 6px 10px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  color: #4fc3f7;
+}
+
+.btn-link {
+  background: none;
+  border: 1px solid #4fc3f7;
+  color: #4fc3f7;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+}
+
+.btn-link:hover {
+  background: rgba(79, 195, 247, 0.1);
+}
+
+.loading-state,
+.error-state,
+.empty-state {
+  text-align: center;
+  padding: 60px 20px;
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto 20px;
+  border: 4px solid rgba(79, 195, 247, 0.2);
+  border-top-color: #4fc3f7;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.error-state p {
+  color: #ffffff;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.6);
+  margin-bottom: 20px;
+}
+
+.empty-state {
+  color: #c8d0e0;
+}
+
+.empty-state .hint {
+  font-size: 14px;
+  margin-top: 10px;
+}
+
+.reports-list {
+  margin-top: 20px;
+}
+
+.reports-count {
+  margin-bottom: 15px;
+  color: #c8d0e0;
+  font-size: 14px;
+}
+
+.reports-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.reports-table thead {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.reports-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #f0f0f0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.reports-table tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.2s;
+}
+
+.reports-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.reports-table td {
+  padding: 14px 16px;
+  color: #d8e0f0;
+}
+
+.case-number {
+  font-weight: 600;
+  color: #4fc3f7;
+}
+
+.date {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+}
+
+.file-size {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+}
+
+.btn-action {
+  padding: 6px 12px;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.btn-open {
+  background: #4fc3f7;
+  color: #1a1a1a;
+}
+
+.btn-open:hover {
+  background: #29b6f6;
+  transform: translateY(-1px);
+}
+
+.btn-export {
+  background: #66bb6a;
+  color: #1a1a1a;
+}
+
+.btn-export:hover {
+  background: #4caf50;
+  transform: translateY(-1px);
+}
+
+.btn-delete {
+  background: #ef5350;
+  color: white;
+}
+
+.btn-delete:hover {
+  background: #e53935;
+  transform: translateY(-1px);
+}
+
+.reports-footer {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.btn-refresh {
+  padding: 10px 20px;
+  background: rgba(79, 195, 247, 0.1);
+  border: 1px solid #4fc3f7;
+  color: #4fc3f7;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.btn-refresh:hover {
+  background: rgba(79, 195, 247, 0.2);
+  transform: translateY(-1px);
+}
+
+/* Datapilot Section */
+.datapilot-section {
+  margin-top: 40px;
+  padding-top: 30px;
+  border-top: 2px solid rgba(108, 138, 237, 0.3);
+}
+
+.section-header {
+  margin-bottom: 20px;
+}
+
+.section-header h2 {
+  color: #7d9bf0;
+  font-size: 24px;
+  margin-bottom: 10px;
+  text-shadow: 0 0 10px rgba(125, 155, 240, 0.5);
+}
+
+.section-description {
+  color: #b8c5db;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 15px;
+}
+
+.datapilot-list {
+  margin-top: 20px;
+}
+
+.datapilot-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.datapilot-table thead {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.datapilot-table th {
+  padding: 12px 16px;
+  text-align: left;
+  font-weight: 600;
+  color: #f0f0f0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.datapilot-table tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background 0.2s;
+}
+
+.datapilot-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.datapilot-table td {
+  padding: 14px 16px;
+  color: #d8e0f0;
+}
+
+.datapilot-table td.filename {
+  font-family: 'Courier New', monospace;
+  font-size: 13px;
+  color: #7d9bf0;
+}
+
+.datapilot-footer {
+  margin-top: 20px;
+  text-align: center;
+}
+
+.btn-view {
+  background: rgba(108, 138, 237, 0.1);
+  border-color: #6c8aed;
+  color: #6c8aed;
+}
+
+.btn-view:hover {
+  background: rgba(108, 138, 237, 0.2);
+}

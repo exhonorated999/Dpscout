@@ -1,0 +1,67 @@
+#!/bin/bash
+# Hindsight Data Partition Mount Script
+# Automatically mounts the HINDSIGHT_DATA partition at boot
+
+MOUNT_POINT="/mnt/hindsight_data"
+LOG_FILE="/var/log/hindsight-mount.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "$LOG_FILE"
+}
+
+log "Starting Hindsight data partition mount..."
+
+# Create mount point if it doesn't exist
+mkdir -p "$MOUNT_POINT"
+
+# Try mounting by label first (most reliable)
+if [ -e /dev/disk/by-label/HINDSIGHT_DATA ]; then
+    log "Found data partition by label: HINDSIGHT_DATA"
+    
+    if mount -o rw,noexec,nosuid /dev/disk/by-label/HINDSIGHT_DATA "$MOUNT_POINT"; then
+        log "Successfully mounted data partition at $MOUNT_POINT"
+        log "Partition info: $(df -h $MOUNT_POINT | tail -1)"
+        exit 0
+    else
+        log "ERROR: Failed to mount by label"
+    fi
+fi
+
+# Try to find by scanning USB devices
+log "Scanning USB devices for data partition..."
+
+for dev in /dev/sd[b-z]2 /dev/nvme*n*p2; do
+    if [ -e "$dev" ]; then
+        log "Trying device: $dev"
+        
+        # Check filesystem type
+        FS_TYPE=$(blkid -o value -s TYPE "$dev" 2>/dev/null)
+        log "  Filesystem: $FS_TYPE"
+        
+        # Try mounting exFAT or FAT32
+        if [ "$FS_TYPE" = "exfat" ] || [ "$FS_TYPE" = "vfat" ]; then
+            if mount -o rw,noexec,nosuid "$dev" "$MOUNT_POINT" 2>/dev/null; then
+                # Check if it looks like our data partition
+                if [ -d "$MOUNT_POINT/keyword_lists" ] && [ -d "$MOUNT_POINT/hash_lists" ]; then
+                    log "Found Hindsight data partition at $dev"
+                    log "Successfully mounted at $MOUNT_POINT"
+                    log "Partition info: $(df -h $MOUNT_POINT | tail -1)"
+                    exit 0
+                else
+                    log "  Not a Hindsight data partition (missing directories)"
+                    umount "$MOUNT_POINT" 2>/dev/null
+                fi
+            fi
+        fi
+    fi
+done
+
+# If we got here, we couldn't mount
+log "WARNING: Could not find or mount Hindsight data partition"
+log "Please ensure USB drive with HINDSIGHT_DATA partition is connected"
+
+# Create basic directory structure for testing
+log "Creating temporary directory structure..."
+mkdir -p "$MOUNT_POINT"/{keyword_lists,hash_lists,cases,external}
+
+exit 1

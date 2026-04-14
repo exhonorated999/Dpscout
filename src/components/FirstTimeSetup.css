@@ -1,0 +1,151 @@
+.first-time-setup {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: linear-gradient(135deg, #1a1d2e 0%, #0a0c14 100%);
+  padding: var(--spacing-xl);
+}
+
+.setup-container {
+  max-width: 600px;
+  width: 100%;
+  background-color: var(--color-bg-secondary);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.setup-header {
+  padding: var(--spacing-xl);
+  background: linear-gradient(135deg, var(--color-accent-red) 0%, #cc0029 100%);
+  text-align: center;
+}
+
+.logo-text {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: white;
+  margin: 0;
+  letter-spacing: 2px;
+}
+
+.logo-subtitle {
+  font-size: 0.875rem;
+  color: rgba(255, 255, 255, 0.9);
+  margin: var(--spacing-xs) 0 0 0;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.setup-content {
+  padding: var(--spacing-xl);
+}
+
+.setup-content h2 {
+  font-size: 1.75rem;
+  color: var(--color-text-primary);
+  margin: 0 0 var(--spacing-md) 0;
+}
+
+.setup-description {
+  font-size: 1rem;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  margin-bottom: var(--spacing-xl);
+}
+
+.setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.form-group label {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.form-group input {
+  padding: var(--spacing-md);
+  background-color: var(--color-bg-tertiary);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  font-size: 1rem;
+  transition: all 0.2s ease;
+}
+
+.form-group input:focus {
+  outline: none;
+  border-color: var(--color-accent-red);
+  background-color: var(--color-bg-primary);
+}
+
+.form-group input.error {
+  border-color: var(--color-accent-red);
+}
+
+.error-message {
+  font-size: 0.75rem;
+  color: var(--color-accent-red);
+  margin-top: -4px;
+}
+
+.form-info {
+  padding: var(--spacing-md);
+  background-color: rgba(255, 140, 0, 0.1);
+  border-left: 4px solid var(--color-accent-amber);
+  border-radius: var(--radius-sm);
+}
+
+.form-info p {
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.form-actions {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--spacing-md);
+}
+
+.setup-footer {
+  padding: var(--spacing-lg);
+  background-color: var(--color-bg-tertiary);
+  border-top: 1px solid var(--color-border);
+  text-align: center;
+}
+
+.setup-footer p {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  margin: 0;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.setup-container {
+  animation: fadeIn 0.5s ease;
+}

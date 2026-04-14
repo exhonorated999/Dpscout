@@ -1,0 +1,694 @@
+﻿cargo : warning: unused import: `std::process::Command`
+At line:1 char:1
++ cargo build 2>&1 | Out-File -FilePath build_error.txt -Encoding UTF8
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (warning: unused...ocess::Command`:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+ --> src\scanner\android_sms.rs:4:5
+  |
+4 | use std::process::Command;
+  |     ^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DateTime`
+ --> src\scanner\android_sms.rs:6:14
+  |
+6 | use chrono::{DateTime, Utc, TimeZone};
+  |              ^^^^^^^^
+
+warning: unused import: `Result as SqliteResult`
+ --> src\scanner\ios.rs:5:28
+  |
+5 | use rusqlite::{Connection, Result as SqliteResult};
+  |                            ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `Utc`
+ --> src\scanner\ios.rs:6:24
+  |
+6 | use chrono::{DateTime, Utc};
+  |                        ^^^
+
+warning: unused import: `chrono::Utc`
+ --> src\scanner\ios_live.rs:4:5
+  |
+4 | use chrono::Utc;
+  |     ^^^^^^^^^^^
+
+warning: unused import: `DateTime`
+ --> src\system_info\mod.rs:2:14
+  |
+2 | use chrono::{DateTime, Utc};
+  |              ^^^^^^^^
+
+warning: unused import: `ReportScope`
+ --> src\reporter\pdf_simple.rs:3:28
+  |
+3 | use super::{ReportPayload, ReportScope, generate_report_filename};
+  |                            ^^^^^^^^^^^
+
+warning: unused import: `Result as SqliteResult`
+ --> src\hash_db\mod.rs:1:36
+  |
+1 | use rusqlite::{params, Connection, Result as SqliteResult};
+  |                                    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `params`
+ --> src\security\trial.rs:1:16
+  |
+1 | use rusqlite::{params, Connection};
+  |                ^^^^^^
+
+warning: unused imports: `UsbFingerprint`, `get_usb_fingerprint`, and `verify_usb_fingerprint`
+  --> src\security\mod.rs:11:27
+   |
+11 | pub use usb_fingerprint::{get_usb_fingerprint, verify_usb_fingerprint, UsbFingerprint};
+   |                           ^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+
+warning: unused imports: `check_trial_access`, `format_trial_message`, and `is_trial_build`
+  --> src\security\mod.rs:12:35
+   |
+12 | pub use trial::{get_trial_status, check_trial_access, is_trial_build, format_trial_message, TrialStatus};
+   |                                   ^^^^^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `File`
+ --> src\thumbnail_generator.rs:3:21
+  |
+3 | use std::fs::{self, File};
+  |                     ^^^^
+
+warning: unused imports: `BufReader` and `Write`
+ --> src\thumbnail_generator.rs:4:15
+  |
+4 | use std::io::{BufReader, Write};
+  |               ^^^^^^^^^  ^^^^^
+
+warning: unused import: `AndroidHashMatch`
+  --> src\lib.rs:18:77
+   |
+18 | use scanner::android::{self, AndroidDevice, AndroidApp, AndroidBrowserData, AndroidHashMatch};
+   |                                                                             ^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::ffi::OsString`
+   --> src\lib.rs:902:9
+    |
+902 |     use std::ffi::OsString;
+    |         ^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `std::os::windows::ffi::OsStrExt`
+   --> src\lib.rs:903:9
+    |
+903 |     use std::os::windows::ffi::OsStrExt;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: use of deprecated associated function `chrono::NaiveDateTime::from_timestamp_opt`: use 
+`DateTime::from_timestamp` instead
+   --> src\scanner\android.rs:500:41
+    |
+500 |     if let Some(naive) = NaiveDateTime::from_timestamp_opt(unix_seconds, 0) {
+    |                                         ^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: unused variable: `temp_dir`
+   --> src\scanner\media.rs:331:5
+    |
+331 |     temp_dir: &Arc<PathBuf>,
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_temp_dir`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `content`
+   --> src\scanner\browser.rs:595:13
+    |
+595 |         let content: String = row.get(3).unwrap_or_else(|_| String::new());
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_content`
+
+warning: unused variable: `idx`
+   --> src\scanner\keyword.rs:243:14
+    |
+243 |         for (idx, file_path) in files.iter().enumerate() {
+    |              ^^^ help: if this is intentional, prefix it with an underscore: `_idx`
+
+warning: unused variable: `typed_count`
+   --> src\scanner\android.rs:461:13
+    |
+461 |         let typed_count: i32 = row.get(4).unwrap_or(0);
+    |             ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_typed_count`
+
+warning: unused variable: `filename`
+   --> src\scanner\android.rs:601:9
+    |
+601 |     let filename = android_path_buf.file_name()
+    |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_filename`
+
+warning: unused variable: `db_patterns`
+   --> src\scanner\android_sms.rs:491:9
+    |
+491 |     let db_patterns = vec!["mmssms.db", "telephony", "databases"];
+    |         ^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_db_patterns`
+
+warning: unused variable: `file_id`
+   --> src\scanner\ios.rs:673:13
+    |
+673 |         let file_id: String = row.get(0)?;
+    |             ^^^^^^^ help: if this is intentional, prefix it with an underscore: `_file_id`
+
+warning: value assigned to `name` is never read
+   --> src\scanner\ios_live.rs:782:28
+    |
+782 |             let mut name = String::new();
+    |                            ^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `udid`
+   --> src\scanner\ios_live.rs:940:22
+    |
+940 | fn count_media_files(udid: &str) -> Result<(u64, u64), String> {
+    |                      ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: variable does not need to be mutable
+   --> src\scanner\ios_live.rs:952:9
+    |
+952 |     let mut files = Vec::new();
+    |         ----^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `udid`
+   --> src\scanner\ios_live.rs:951:26
+    |
+951 | fn list_accessible_files(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    |                          ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: unused variable: `temp_dir`
+   --> src\scanner\ios_live.rs:951:38
+    |
+951 | fn list_accessible_files(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>, String> {
+    |                                      ^^^^^^^^ help: if this is intentional, prefix it with an underscore: 
+`_temp_dir`
+
+warning: unused variable: `temp_dir`
+   --> src\scanner\ios_live.rs:976:5
+    |
+976 |     temp_dir: &std::path::Path
+    |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_temp_dir`
+
+warning: variable does not need to be mutable
+    --> src\scanner\ios_live.rs:1043:9
+     |
+1043 |     let mut matches = Vec::new();
+     |         ----^^^^^^^
+     |         |
+     |         help: remove this `mut`
+
+warning: unused variable: `udid`
+    --> src\scanner\ios_live.rs:1039:5
+     |
+1039 |     udid: &str,
+     |     ^^^^ help: if this is intentional, prefix it with an underscore: `_udid`
+
+warning: unused variable: `temp_dir`
+    --> src\scanner\ios_live.rs:1041:5
+     |
+1041 |     temp_dir: &std::path::Path
+     |     ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_temp_dir`
+
+warning: unused variable: `xml_lower`
+   --> src\scanner\intrusion.rs:885:9
+    |
+885 |     let xml_lower = xml.to_lowercase();
+    |         ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_xml_lower`
+
+warning: unused variable: `metadata`
+  --> src\system_info\hardware.rs:33:27
+   |
+33 |                 if let Ok(metadata) = std::fs::metadata(&path) {
+   |                           ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_metadata`
+
+warning: unused variable: `max_width`
+   --> src\reporter\pdf.rs:996:29
+    |
+996 |                         let max_width = 170.0;
+    |                             ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_max_width`
+
+warning: value assigned to `y` is never read
+   --> src\reporter\pdf_simple.rs:102:5
+    |
+102 |     y -= 20.0;
+    |     ^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: unused variable: `hash_type`
+   --> src\hash_db\mod.rs:320:62
+    |
+320 |     pub fn import_hash_list(&self, name: &str, source: &str, hash_type: &str) -> Result<i64, String> {
+    |                                                              ^^^^^^^^^ help: if this is intentional, prefix it 
+with an underscore: `_hash_type`
+
+warning: unreachable pattern
+  --> src\media_server.rs:58:9
+   |
+43 |         Some("ogg") | Some("ogv") => "video/ogg",
+   |         ----------- matches all the relevant values
+...
+58 |         Some("ogg") | Some("oga") => "audio/ogg",
+   |         ^^^^^^^^^^^ no value can reach this
+   |
+   = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `total_batches`
+   --> src\lib.rs:314:9
+    |
+314 |     let total_batches = (hash_list.hashes.len() + batch_size - 1) / batch_size;
+    |         ^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_total_batches`
+
+warning: methods `as_str` and `risk_level` are never used
+  --> src\scanner\mod.rs:55:12
+   |
+54 | impl AppCategory {
+   | ---------------- methods in this implementation
+55 |     pub fn as_str(&self) -> &str {
+   |            ^^^^^^
+...
+79 |     pub fn risk_level(&self) -> &str {
+   |            ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `scan_windows_store_apps` is never used
+   --> src\scanner\questionable_apps.rs:407:4
+    |
+407 | fn scan_windows_store_apps(mappings: &CategoryMappings) -> Result<Vec<QuestionableApp>, Box<dyn 
+std::error::Error>> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `generate_thumbnail` is never used
+   --> src\scanner\media.rs:526:4
+    |
+526 | fn generate_thumbnail(
+    |    ^^^^^^^^^^^^^^^^^^
+
+warning: function `generate_video_thumbnail` is never used
+   --> src\scanner\media.rs:550:4
+    |
+550 | fn generate_video_thumbnail(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_ffmpeg_path` is never used
+   --> src\scanner\media.rs:639:4
+    |
+639 | fn get_ffmpeg_path() -> Result<String, String> {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `get_app_label` is never used
+   --> src\scanner\android.rs:258:4
+    |
+258 | fn get_app_label(adb_path: &Path, serial: &str, package: &str) -> Result<String, String> {
+    |    ^^^^^^^^^^^^^
+
+warning: function `get_android_scan_paths` is never used
+   --> src\scanner\android.rs:636:8
+    |
+636 | pub fn get_android_scan_paths() -> Vec<String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `IosWhatsAppMessage` is never constructed
+  --> src\scanner\ios.rs:96:12
+   |
+96 | pub struct IosWhatsAppMessage {
+   |            ^^^^^^^^^^^^^^^^^^
+
+warning: function `get_whatsapp_messages` is never used
+   --> src\scanner\ios.rs:707:8
+    |
+707 | pub fn get_whatsapp_messages(backup_path: &str) -> Result<Vec<IosWhatsAppMessage>, String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_whatsapp_database` is never used
+   --> src\scanner\ios.rs:720:4
+    |
+720 | fn parse_whatsapp_database(db_path: &Path) -> Result<Vec<IosWhatsAppMessage>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_critical_artifact_hashes` is never used
+   --> src\scanner\ios.rs:789:8
+    |
+789 | pub fn get_critical_artifact_hashes() -> HashMap<&'static str, &'static str> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `extract_app_data` is never used
+   --> src\scanner\ios_live.rs:508:8
+    |
+508 | pub fn extract_app_data(udid: &str, app_domains: Vec<String>) -> Result<PathBuf, String> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `extract_safari_history` is never used
+   --> src\scanner\ios_live.rs:634:4
+    |
+634 | fn extract_safari_history(udid: &str, temp_dir: &std::path::Path) -> Result<Vec<IosBrowserEntry>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `parse_safari_history_from_backup` is never used
+   --> src\scanner\ios_live.rs:681:4
+    |
+681 | fn parse_safari_history_from_backup(backup_dir: &std::path::Path) -> Result<Vec<IosBrowserEntry>, String> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `KnowledgeBase` is never constructed
+ --> src\scanner\app_classifier.rs:7:12
+  |
+7 | pub struct KnowledgeBase {
+  |            ^^^^^^^^^^^^^
+
+warning: struct `AppSignature` is never constructed
+  --> src\scanner\app_classifier.rs:16:12
+   |
+16 | pub struct AppSignature {
+   |            ^^^^^^^^^^^^
+
+warning: struct `ClassificationResult` is never constructed
+  --> src\scanner\app_classifier.rs:26:12
+   |
+26 | pub struct ClassificationResult {
+   |            ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `AppClassifier` is never constructed
+  --> src\scanner\app_classifier.rs:33:12
+   |
+33 | pub struct AppClassifier {
+   |            ^^^^^^^^^^^^^
+
+warning: associated items `new`, `create_minimal_kb`, `classify`, and `infer_function_category` are never used
+   --> src\scanner\app_classifier.rs:38:12
+    |
+ 37 | impl AppClassifier {
+    | ------------------ associated items in this implementation
+ 38 |     pub fn new() -> Result<Self, Box<dyn std::error::Error>> {
+    |            ^^^
+...
+ 86 |     fn create_minimal_kb() -> KnowledgeBase {
+    |        ^^^^^^^^^^^^^^^^^
+...
+ 96 |     pub fn classify(&self, 
+    |            ^^^^^^^^
+...
+220 |     fn infer_function_category(&self, keyword: &str) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_drive_make_model` is never used
+   --> src\scanner\usb_device.rs:113:4
+    |
+113 | fn get_drive_make_model(letter: &str) -> (Option<String>, Option<String>) {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `get_physical_disk_number` is never used
+   --> src\scanner\usb_device.rs:167:4
+    |
+167 | fn get_physical_disk_number(letter: &str) -> Option<u32> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_SYSTEM_INFO` is never used
+ --> src\events.rs:5:11
+  |
+5 | pub const EVENT_SYSTEM_INFO: &str = "scan:system_info";
+  |           ^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_APPS_RESULT` is never used
+  --> src\events.rs:10:11
+   |
+10 | pub const EVENT_APPS_RESULT: &str = "scan:apps_result";
+   |           ^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_BROWSER_RESULT` is never used
+  --> src\events.rs:11:11
+   |
+11 | pub const EVENT_BROWSER_RESULT: &str = "scan:browser_result";
+   |           ^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_KEYWORD_MATCH` is never used
+  --> src\events.rs:12:11
+   |
+12 | pub const EVENT_KEYWORD_MATCH: &str = "scan:keyword_match";
+   |           ^^^^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_HASH_MATCH` is never used
+  --> src\events.rs:13:11
+   |
+13 | pub const EVENT_HASH_MATCH: &str = "scan:hash_match";
+   |           ^^^^^^^^^^^^^^^^
+
+warning: constant `EVENT_SCAN_COMPLETE` is never used
+  --> src\events.rs:15:11
+   |
+15 | pub const EVENT_SCAN_COMPLETE: &str = "scan:complete";
+   |           ^^^^^^^^^^^^^^^^^^^
+
+warning: methods `emit_apps_result`, `emit_browser_result`, `emit_keyword_match`, `emit_hash_match`, 
+`emit_scan_complete`, and `emit_system_info` are never used
+   --> src\events.rs:102:12
+    |
+ 64 | impl ScanEventEmitter {
+    | --------------------- methods in this implementation
+...
+102 |     pub fn emit_apps_result<T: Serialize>(&self, apps: &T) {
+    |            ^^^^^^^^^^^^^^^^
+...
+106 |     pub fn emit_browser_result<T: Serialize>(&self, browsers: &T) {
+    |            ^^^^^^^^^^^^^^^^^^^
+...
+110 |     pub fn emit_keyword_match<T: Serialize>(&self, match_data: &T) {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+114 |     pub fn emit_hash_match<T: Serialize>(&self, match_data: &T) {
+    |            ^^^^^^^^^^^^^^^
+...
+122 |     pub fn emit_scan_complete(&self) {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+126 |     pub fn emit_system_info<T: Serialize>(&self, system_info: &T) {
+    |            ^^^^^^^^^^^^^^^^
+
+warning: function `generate_reports` is never used
+   --> src\reporter\mod.rs:112:8
+    |
+112 | pub fn generate_reports(payload: ReportPayload) -> Result<ReportGenerationResult, Box<dyn Error>> {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `generate_datapilot_hashlist` is never used
+   --> src\reporter\mod.rs:280:4
+    |
+280 | fn generate_datapilot_hashlist(payload: &ReportPayload, reports_dir: &PathBuf) -> Result<PathBuf, Box<dyn 
+Error>> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `compute_file_hash` is never used
+   --> src\reporter\mod.rs:372:4
+    |
+372 | fn compute_file_hash(file_path: &str) -> Result<String, Box<dyn Error>> {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `color_light_gray` is never used
+  --> src\reporter\pdf.rs:53:4
+   |
+53 | fn color_light_gray() -> Color {
+   |    ^^^^^^^^^^^^^^^^
+
+warning: function `draw_section_box` is never used
+   --> src\reporter\pdf.rs:129:4
+    |
+129 | fn draw_section_box(_layer: &PdfLayerReference, _x: Mm, _y: Mm, _width: Mm, _height: Mm, _color: Color) {
+    |    ^^^^^^^^^^^^^^^^
+
+warning: constant `PAGE_WIDTH` is never used
+  --> src\reporter\pdf_simple.rs:10:7
+   |
+10 | const PAGE_WIDTH: f32 = 210.0;
+   |       ^^^^^^^^^^
+
+warning: constant `PAGE_HEIGHT` is never used
+  --> src\reporter\pdf_simple.rs:11:7
+   |
+11 | const PAGE_HEIGHT: f32 = 297.0;
+   |       ^^^^^^^^^^^
+
+warning: constant `MARGIN` is never used
+  --> src\reporter\pdf_simple.rs:12:7
+   |
+12 | const MARGIN: f32 = 20.0;
+   |       ^^^^^^
+
+warning: constant `BOTTOM_MARGIN` is never used
+  --> src\reporter\pdf_simple.rs:13:7
+   |
+13 | const BOTTOM_MARGIN: f32 = 30.0;
+   |       ^^^^^^^^^^^^^
+
+warning: constant `FONT_LARGE` is never used
+  --> src\reporter\pdf_simple.rs:15:7
+   |
+15 | const FONT_LARGE: f32 = 24.0;
+   |       ^^^^^^^^^^
+
+warning: constant `FONT_MED` is never used
+  --> src\reporter\pdf_simple.rs:16:7
+   |
+16 | const FONT_MED: f32 = 16.0;
+   |       ^^^^^^^^
+
+warning: constant `FONT_BODY` is never used
+  --> src\reporter\pdf_simple.rs:17:7
+   |
+17 | const FONT_BODY: f32 = 11.0;
+   |       ^^^^^^^^^
+
+warning: constant `FONT_SMALL` is never used
+  --> src\reporter\pdf_simple.rs:18:7
+   |
+18 | const FONT_SMALL: f32 = 9.0;
+   |       ^^^^^^^^^^
+
+warning: constant `LINE_SPACING` is never used
+  --> src\reporter\pdf_simple.rs:20:7
+   |
+20 | const LINE_SPACING: f32 = 5.0;
+   |       ^^^^^^^^^^^^
+
+warning: function `generate` is never used
+  --> src\reporter\pdf_simple.rs:22:8
+   |
+22 | pub fn generate(payload: &ReportPayload, reports_dir: &Path) -> Result<PathBuf, Box<dyn Error>> {
+   |        ^^^^^^^^
+
+warning: methods `import_vic_json`, `create_hash_list_internal`, `check_hashes_batch`, `delete_list`, `clear_all`, and 
+`optimize` are never used
+   --> src\hash_db\mod.rs:96:12
+    |
+ 19 | impl HashDatabase {
+    | ----------------- methods in this implementation
+...
+ 96 |     pub fn import_vic_json(&self, json_path: &str, list_name: &str) -> Result<u64, String> {
+    |            ^^^^^^^^^^^^^^^
+...
+180 |     fn create_hash_list_internal(&self, conn: &mut Connection, name: &str, source: &str) -> Result<i64, String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^^^
+...
+219 |     pub fn check_hashes_batch(&self, hashes: &[(String, String)]) -> Result<Vec<HashMatch>, String> {
+    |            ^^^^^^^^^^^^^^^^^^
+...
+280 |     pub fn delete_list(&self, list_id: i64) -> Result<(), String> {
+    |            ^^^^^^^^^^^
+...
+292 |     pub fn clear_all(&self) -> Result<(), String> {
+    |            ^^^^^^^^^
+...
+307 |     pub fn optimize(&self) -> Result<(), String> {
+    |            ^^^^^^^^
+
+warning: struct `VicEntry` is never constructed
+   --> src\hash_db\mod.rs:356:8
+    |
+356 | struct VicEntry {
+    |        ^^^^^^^^
+
+warning: function `check_trial_access` is never used
+  --> src\security\trial.rs:89:8
+   |
+89 | pub fn check_trial_access() -> Result<(), String> {
+   |        ^^^^^^^^^^^^^^^^^^
+
+warning: function `format_trial_message` is never used
+   --> src\security\trial.rs:110:8
+    |
+110 | pub fn format_trial_message(status: &TrialStatus) -> String {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: trait `PlatformScanner` is never used
+  --> src\platform\mod.rs:81:11
+   |
+81 | pub trait PlatformScanner {
+   |           ^^^^^^^^^^^^^^^
+
+warning: function `get_scanner` is never used
+  --> src\platform\mod.rs:96:8
+   |
+96 | pub fn get_scanner() -> Result<Box<dyn PlatformScanner>, String> {
+   |        ^^^^^^^^^^^
+
+warning: function `initialize` is never used
+   --> src\platform\mod.rs:117:8
+    |
+117 | pub fn initialize() -> Result<(), String> {
+    |        ^^^^^^^^^^
+
+warning: struct `WindowsLiveScanner` is never constructed
+ --> src\platform\windows.rs:8:12
+  |
+8 | pub struct WindowsLiveScanner;
+  |            ^^^^^^^^^^^^^^^^^^
+
+warning: associated function `new` is never used
+  --> src\platform\windows.rs:11:12
+   |
+10 | impl WindowsLiveScanner {
+   | ----------------------- associated function in this implementation
+11 |     pub fn new() -> Result<Self, String> {
+   |            ^^^
+
+warning: associated functions `parse_app_from_registry` and `get_wmi_value` are never used
+   --> src\platform\windows.rs:92:8
+    |
+ 91 | impl WindowsLiveScanner {
+    | ----------------------- associated functions in this implementation
+ 92 |     fn parse_app_from_registry(key: &RegKey) -> Option<AppInfo> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^^
+...
+117 |     fn get_wmi_value(class: &str, property: &str) -> Result<String, String> {
+    |        ^^^^^^^^^^^^^
+
+warning: methods `keyword_list`, `hash_list`, `case_folder`, and `report_file` are never used
+   --> src\platform\paths.rs:122:12
+    |
+ 21 | impl DataPaths {
+    | -------------- methods in this implementation
+...
+122 |     pub fn keyword_list(&self, filename: &str) -> PathBuf {
+    |            ^^^^^^^^^^^^
+...
+127 |     pub fn hash_list(&self, filename: &str) -> PathBuf {
+    |            ^^^^^^^^^
+...
+132 |     pub fn case_folder(&self, case_name: &str) -> PathBuf {
+    |            ^^^^^^^^^^^
+...
+137 |     pub fn report_file(&self, case_name: &str, report_filename: &str) -> PathBuf {
+    |            ^^^^^^^^^^^
+
+warning: constant `THUMBNAIL_QUALITY` is never used
+  --> src\thumbnail_generator.rs:10:7
+   |
+10 | const THUMBNAIL_QUALITY: u8 = 85; // Balance between quality and file size
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: function `get_questionable_apps_database_DEPRECATED` should have a snake case name
+   --> src\scanner\questionable_apps.rs:134:4
+    |
+134 | fn get_questionable_apps_database_DEPRECATED() -> HashMap<&'static str, (AppCategory, Vec<&'static str>)> {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: 
+`get_questionable_apps_database_deprecated`
+    |
+    = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: `datapilot-scout` (lib) generated 96 warnings (run `cargo fix --lib -p datapilot-scout` to apply 36 
+suggestions)
+   Compiling datapilot-scout v0.1.0 (C:\Users\JUSTI\Workspace\Datapilot_scout\src-tauri)
+error: failed to remove file `C:\Users\JUSTI\Workspace\Datapilot_scout\src-tauri\target\debug\datapilot-scout.exe`
+
+Caused by:
+  Access is denied. (os error 5)

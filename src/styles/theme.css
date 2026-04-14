@@ -1,0 +1,140 @@
+/* Project Hindsight - Professional Blue Theme */
+:root {
+  /* Primary Colors */
+  --primary-blue: #4169e1;
+  --primary-blue-light: #5b7fe6;
+  --primary-blue-dark: #3057cc;
+  
+  /* Secondary Colors */
+  --accent-blue: #6c8aed;
+  --accent-blue-bright: #7d9bf0;
+  --accent-blue-dark: #5a76d9;
+  
+  /* Legacy compatibility - map old names to new colors */
+  --primary-pink: var(--primary-blue);
+  --primary-magenta: var(--primary-blue-dark);
+  --primary-purple: var(--primary-blue-dark);
+  --accent-orange: var(--accent-blue);
+  --accent-orange-bright: var(--accent-blue-bright);
+  --accent-orange-dark: var(--accent-blue-dark);
+  
+  /* Background Colors */
+  --bg-dark: #0a0f1e;
+  --bg-darker: #060a15;
+  --bg-panel: #0d1220;
+  --bg-panel-light: #12182b;
+  --bg-overlay: rgba(10, 15, 30, 0.95);
+  
+  /* Glow Effects */
+  --glow-blue: 0 0 10px rgba(65, 105, 225, 0.5),
+               0 0 20px rgba(65, 105, 225, 0.3),
+               0 0 30px rgba(65, 105, 225, 0.1);
+  --glow-blue-light: 0 0 10px rgba(108, 138, 237, 0.5),
+                     0 0 20px rgba(108, 138, 237, 0.3),
+                     0 0 30px rgba(108, 138, 237, 0.1);
+  
+  /* Legacy glow mappings */
+  --glow-pink: var(--glow-blue);
+  --glow-orange: var(--glow-blue-light);
+  
+  /* Border Colors */
+  --border-blue: rgba(65, 105, 225, 0.6);
+  --border-blue-light: rgba(108, 138, 237, 0.6);
+  --border-subtle: rgba(65, 105, 225, 0.2);
+  
+  /* Legacy border mappings */
+  --border-pink: var(--border-blue);
+  --border-orange: var(--border-blue-light);
+  
+  /* Text Colors */
+  --text-primary: #FFFFFF;
+  --text-secondary: #b8c5db;
+  --text-muted: #8b9dc3;
+  --text-blue: #4169e1;
+  --text-blue-light: #6c8aed;
+  
+  /* Legacy text mappings */
+  --text-pink: var(--text-blue);
+  --text-orange: var(--text-blue-light);
+  
+  /* Circuit Board Colors */
+  --circuit-blue: rgba(65, 105, 225, 0.4);
+  --circuit-blue-dark: rgba(48, 87, 204, 0.3);
+  --circuit-blue-light: rgba(108, 138, 237, 0.2);
+  
+  /* Legacy circuit mappings */
+  --circuit-pink: var(--circuit-blue);
+  --circuit-purple: var(--circuit-blue-dark);
+  
+  /* Status Colors */
+  --status-success: #4CAF50;
+  --status-warning: #FFA726;
+  --status-error: #EF5350;
+  --status-critical: #FF1744;
+  
+  /* Hexagon Pattern */
+  --hex-size: 30px;
+  --hex-color: rgba(65, 105, 225, 0.05);
+}
+
+/* Gradient Backgrounds */
+.gradient-bg {
+  background: linear-gradient(135deg, var(--bg-dark) 0%, var(--bg-darker) 50%, #0d1425 100%);
+}
+
+.gradient-blue {
+  background: linear-gradient(135deg, var(--primary-blue) 0%, var(--primary-blue-dark) 100%);
+}
+
+.gradient-blue-light {
+  background: linear-gradient(135deg, var(--accent-blue-bright) 0%, var(--accent-blue) 100%);
+}
+
+/* Legacy gradient mappings */
+.gradient-pink {
+  background: linear-gradient(135deg, var(--primary-blue) 0%, var(--primary-blue-dark) 100%);
+}
+
+.gradient-orange {
+  background: linear-gradient(135deg, var(--accent-blue-bright) 0%, var(--accent-blue) 100%);
+}
+
+/* Glow Effects */
+.glow-blue {
+  box-shadow: var(--glow-blue);
+}
+
+.glow-blue-light {
+  box-shadow: var(--glow-blue-light);
+}
+
+/* Legacy glow mappings */
+.glow-pink {
+  box-shadow: var(--glow-blue);
+}
+
+.glow-orange {
+  box-shadow: var(--glow-blue-light);
+}
+
+/* Border Styles */
+.border-glow-blue {
+  border: 1px solid var(--border-blue);
+  box-shadow: var(--glow-blue);
+}
+
+.border-glow-blue-light {
+  border: 1px solid var(--border-blue-light);
+  box-shadow: var(--glow-blue-light);
+}
+
+/* Legacy border mappings */
+.border-glow-pink {
+  border: 1px solid var(--border-blue);
+  box-shadow: var(--glow-blue);
+}
+
+.border-glow-orange {
+  border: 1px solid var(--border-blue-light);
+  box-shadow: var(--glow-blue-light);
+}

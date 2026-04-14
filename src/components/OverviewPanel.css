@@ -1,0 +1,354 @@
+.overview-panel {
+  padding: 20px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.overview-panel.loading,
+.overview-panel.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 300px;
+  gap: 15px;
+}
+
+.loading-spinner {
+  width: 50px;
+  height: 50px;
+  border: 3px solid rgba(220, 38, 38, 0.2);
+  border-top-color: var(--cyber-red);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.overview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 25px;
+  padding-bottom: 15px;
+  border-bottom: 2px solid var(--cyber-red);
+}
+
+.overview-header h2 {
+  color: var(--cyber-red);
+  font-size: 1.8rem;
+  margin: 0;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.scan-id {
+  font-family: 'Courier New', monospace;
+  color: var(--cyber-red);
+  background: rgba(220, 38, 38, 0.1);
+  padding: 5px 15px;
+  border-radius: 4px;
+  border: 1px solid var(--cyber-red);
+}
+
+.overview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+  gap: 20px;
+}
+
+.info-card {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 6px;
+  padding: 20px;
+  transition: border-color 0.3s ease;
+}
+
+.info-card:hover {
+  border-color: var(--cyber-red);
+}
+
+.info-card h3 {
+  color: var(--cyber-red);
+  font-size: 1.2rem;
+  margin: 0 0 15px 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.info-card h4 {
+  color: rgba(220, 38, 38, 0.8);
+  font-size: 0.9rem;
+  margin: 15px 0 10px 0;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.info-row:last-child {
+  border-bottom: none;
+}
+
+.info-row .label {
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 0.9rem;
+}
+
+.info-row .value {
+  color: #fff;
+  font-weight: 500;
+  text-align: right;
+  max-width: 60%;
+  word-break: break-word;
+}
+
+.mono {
+  font-family: 'Courier New', monospace;
+  font-size: 0.85rem;
+}
+
+/* User Accounts */
+.accounts-list {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.account-item {
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  margin-bottom: 10px;
+  border-left: 3px solid var(--cyber-red);
+}
+
+.account-item:last-child {
+  margin-bottom: 0;
+}
+
+.account-name {
+  color: #fff;
+  font-size: 1rem;
+  margin-bottom: 5px;
+}
+
+.account-name strong {
+  color: var(--cyber-red);
+}
+
+.account-name .full-name {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 0.9rem;
+}
+
+.account-details {
+  display: flex;
+  gap: 15px;
+  font-size: 0.85rem;
+}
+
+.account-type {
+  color: rgba(220, 38, 38, 0.8);
+  background: rgba(220, 38, 38, 0.1);
+  padding: 2px 8px;
+  border-radius: 3px;
+}
+
+.last-login {
+  color: rgba(255, 255, 255, 0.6);
+}
+
+/* Drives */
+.drives-list {
+  max-height: 250px;
+  overflow-y: auto;
+}
+
+.drive-item {
+  padding: 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  margin-bottom: 8px;
+  border-left: 3px solid var(--cyber-red);
+}
+
+.drive-item:last-child {
+  margin-bottom: 0;
+}
+
+.drive-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 5px;
+}
+
+.drive-letter {
+  color: var(--cyber-red);
+  font-weight: bold;
+  font-size: 1.1rem;
+  font-family: 'Courier New', monospace;
+}
+
+.drive-label {
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.drive-details {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.drive-serial {
+  font-family: 'Courier New', monospace;
+}
+
+/* Network */
+.mac-list,
+.ip-list {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.mac-item,
+.ip-item {
+  padding: 5px 10px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 3px;
+  color: rgba(255, 255, 255, 0.8);
+}
+
+/* Emails */
+.emails-list {
+  max-height: 200px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.email-item {
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  border-left: 3px solid var(--cyber-red);
+  color: #fff;
+  font-family: 'Courier New', monospace;
+  font-size: 0.9rem;
+}
+
+/* Scrollbar styling */
+.accounts-list::-webkit-scrollbar,
+.drives-list::-webkit-scrollbar,
+.mac-list::-webkit-scrollbar,
+.ip-list::-webkit-scrollbar,
+.emails-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.accounts-list::-webkit-scrollbar-track,
+.drives-list::-webkit-scrollbar-track,
+.mac-list::-webkit-scrollbar-track,
+.ip-list::-webkit-scrollbar-track,
+.emails-list::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+}
+
+.accounts-list::-webkit-scrollbar-thumb,
+.drives-list::-webkit-scrollbar-thumb,
+.mac-list::-webkit-scrollbar-thumb,
+.ip-list::-webkit-scrollbar-thumb,
+.emails-list::-webkit-scrollbar-thumb {
+  background: var(--cyber-red);
+  border-radius: 4px;
+}
+
+.accounts-list::-webkit-scrollbar-thumb:hover,
+.drives-list::-webkit-scrollbar-thumb:hover,
+.mac-list::-webkit-scrollbar-thumb:hover,
+.ip-list::-webkit-scrollbar-thumb:hover,
+.emails-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(220, 38, 38, 0.8);
+}
+
+/* USB Device History */
+.usb-history-section {
+  margin-top: 30px;
+  padding-top: 20px;
+  border-top: 2px solid var(--cyber-red);
+}
+
+.usb-history-section h2 {
+  color: var(--cyber-red);
+  font-size: 1.8rem;
+  margin: 0 0 20px 0;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.usb-history-table {
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(220, 38, 38, 0.3);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.usb-history-table table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.usb-history-table thead {
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.usb-history-table thead th {
+  color: var(--cyber-red);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  font-size: 0.9rem;
+  padding: 15px;
+  text-align: left;
+  border-bottom: 2px solid var(--cyber-red);
+}
+
+.usb-history-table tbody tr {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  transition: background-color 0.2s ease;
+}
+
+.usb-history-table tbody tr:hover {
+  background: rgba(220, 38, 38, 0.05);
+}
+
+.usb-history-table tbody tr:last-child {
+  border-bottom: none;
+}
+
+.usb-history-table tbody td {
+  padding: 15px;
+  color: #fff;
+  font-size: 0.95rem;
+}
+
+.usb-history-table tbody td.mono {
+  font-family: 'Courier New', monospace;
+  color: rgba(255, 255, 255, 0.8);
+}

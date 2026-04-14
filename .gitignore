@@ -1,0 +1,78 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Development databases and data
+hindsight_secure.db
+hindsight_secure.db-*
+cases/
+hash_lists/
+keyword_lists/
+
+# Build artifacts and large binaries
+dist-demo/
+external/
+src-tauri/target/
+src-tauri/scout1234/
+src-tauri/resources/
+src-tauri/build_log.txt
+src-tauri/errors.txt
+src-tauri/errors_full.txt
+src-tauri/capture_errors.ps1
+
+# Test files
+test_backup/
+test_backup_arsenic/
+test_hashes.json
+test-ios-amds.ps1
+test-ios-detection.ps1
+test-unified-usb.ps1
+test_sms_query.ps1
+tasks.json
+
+# Forensic scan data / acquisitions
+scout1234/
+BASELINE_external/
+
+# Workshop / dev artifacts
+plans/
+archive_old_boot_docs/
+systemd/
+
+# Root-level doc artifacts (all .md except README)
+/*.md
+!README.md
+
+# Root-level text artifacts / build logs
+/*.txt
+/*.exe
+/*.inf
+
+# Root-level scripts (keep only build-desktop / build-portable)
+/*.ps1
+!build-desktop.ps1
+!build-portable.ps1
+
+# Broken/temp files
+ersJUSTIWorkspaceDatapilot_scout

@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""
+iOS Backup Decryption Script
+Decrypts an encrypted iOS backup into a readable directory structure.
+Uses iphone_backup_decrypt library.
+"""
+
+import sys
+import json
+import os
+import shutil
+from pathlib import Path
+
+try:
+    from iphone_backup_decrypt import EncryptedBackup, RelativePath, RelativePathsLike
+except ImportError as e:
+    print(json.dumps({
+        "status": "error",
+        "success": False,
+        "error": "iphone_backup_decrypt not installed",
+        "message": "Run: pip install iphone_backup_decrypt",
+    }), flush=True)
+    sys.exit(1)
+
+
+def decrypt_backup(backup_path: str, password: str, output_dir: str = None) -> dict:
+    """
+    Decrypt an encrypted iOS backup.
+    
+    Args:
+        backup_path: Path to the encrypted backup directory (contains Manifest.db, Manifest.plist)
+        password: Backup encryption password
+        output_dir: Where to write decrypted files. If None, creates a '_decrypted' sibling directory.
+    
+    Returns:
+        dict with status, decrypted path, file count, etc.
+    """
+    backup_path = Path(backup_path)
+    
+    # Verify this is an encrypted backup
+    manifest_plist = backup_path / "Manifest.plist"
+    manifest_db = backup_path / "Manifest.db"
+    
+    if not manifest_plist.exists():
+        return {"status": "error", "success": False, "error": f"Manifest.plist not found in {backup_path}"}
+    if not manifest_db.exists():
+        return {"status": "error", "success": False, "error": f"Manifest.db not found in {backup_path}"}
+    
+    # Check if already decrypted (Manifest.db starts with "SQLite format 3")
+    with open(manifest_db, 'rb') as f:
+        header = f.read(16)
+    if header.startswith(b"SQLite format 3"):
+        print(json.dumps({
+            "status": "info",
+            "message": "Backup is not encrypted or already decrypted"
+        }), flush=True)
+        return {
+            "status": "complete",
+            "success": True,
+            "decryptedPath": str(backup_path),
+            "message": "Backup is already decrypted",
+            "alreadyDecrypted": True,
+        }
+    
+    # Determine output directory
+    if output_dir:
+        out_path = Path(output_dir)
+    else:
+        out_path = backup_path.parent / (backup_path.name + "_decrypted")
+    
+    out_path.mkdir(parents=True, exist_ok=True)
+    
+    print(json.dumps({
+        "status": "decrypting",
+        "message": f"Opening encrypted backup with password..."
+    }), flush=True)
+    
+    try:
+        backup = EncryptedBackup(backup_directory=str(backup_path), passphrase=password)
+    except Exception as e:
+        error_str = str(e)
+        if "password" in error_str.lower() or "incorrect" in error_str.lower() or "wrong" in error_str.lower():
+            return {
+                "status": "error",
+                "success": False,
+                "error": "incorrect_password",
+                "message": f"Wrong backup password. The device's backup encryption password is needed.",
+            }
+        return {
+            "status": "error",
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to open encrypted backup: {e}",
+        }
+    
+    print(json.dumps({
+        "status": "decrypting",
+        "message": "Decrypting Manifest.db..."
+    }), flush=True)
+    
+    # Save decrypted Manifest.db
+    try:
+        backup.save_manifest_file(str(out_path / "Manifest.db"))
+    except Exception as e:
+        return {
+            "status": "error",
+            "success": False,
+            "error": str(e),
+            "message": f"Failed to decrypt Manifest.db: {e}",
+        }
+    
+    # Copy non-encrypted metadata files
+    for meta_file in ["Manifest.plist", "Info.plist", "Status.plist"]:
+        src = backup_path / meta_file
+        if src.exists():
+            shutil.copy2(str(src), str(out_path / meta_file))
+    
+    print(json.dumps({
+        "status": "decrypting",
+        "message": "Extracting all files from backup..."
+    }), flush=True)
+    
+    # Extract all files to output directory preserving domain/path structure
+    try:
+        backup.extract_all(str(out_path / "files"))
+        
+        # Count extracted files
+        file_count = sum(1 for _ in (out_path / "files").rglob('*') if _.is_file()) if (out_path / "files").exists() else 0
+    except Exception as e:
+        # Even if full extraction fails, we have the decrypted Manifest.db
+        print(json.dumps({
+            "status": "warning",
+            "message": f"Full file extraction failed: {e}. Manifest.db was decrypted successfully."
+        }), flush=True)
+        file_count = 0
+    
+    result = {
+        "status": "complete",
+        "success": True,
+        "decryptedPath": str(out_path),
+        "manifestPath": str(out_path / "Manifest.db"),
+        "filesPath": str(out_path / "files"),
+        "fileCount": file_count,
+        "message": f"Backup decrypted successfully. {file_count} files extracted.",
+    }
+    
+    print(json.dumps(result), flush=True)
+    return result
+
+
+def main():
+    if len(sys.argv) < 3:
+        print(json.dumps({
+            "error": "Usage: python ios_decrypt_backup.py <backup_path> <password> [output_dir]"
+        }), file=sys.stderr)
+        sys.exit(1)
+    
+    backup_path = sys.argv[1]
+    password = sys.argv[2]
+    output_dir = sys.argv[3] if len(sys.argv) > 3 else None
+    
+    result = decrypt_backup(backup_path, password, output_dir)
+    
+    sys.exit(0 if result.get("success") else 1)
+
+
+if __name__ == "__main__":
+    main()
