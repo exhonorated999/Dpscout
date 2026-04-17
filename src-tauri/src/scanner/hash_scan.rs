@@ -181,9 +181,11 @@ where
         eprintln!("[Hash Scan] Walking: {}", scan_path);
         
         // jwalk: parallel directory walking (multi-threaded enumeration)
+        // max_depth(20) prevents hanging on deeply nested/circular structures
         for entry in jwalk::WalkDir::new(scan_path)
             .skip_hidden(false)
             .follow_links(false)
+            .max_depth(20)
             .process_read_dir(|_depth, _path, _state, children| {
                 // Prune skip-listed directories during traversal
                 children.retain(|child_result| {

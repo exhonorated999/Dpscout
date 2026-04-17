@@ -249,17 +249,13 @@ async fn import_txt_hash_list(
     let batch_size = 5000;
     
     for (batch_idx, chunk) in hashes.chunks(batch_size).enumerate() {
-        for hash in chunk {
-            hash_db.add_hash(
-                hash,
-                &hash_type,
-                list_id,
-                None, // No category from text file
-                None, // No description from text file
-            ).ok();
-        }
+        let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|hash| {
+            (hash.clone(), hash_type.clone(), None, None)
+        }).collect();
         
-        let processed = (batch_idx + 1) * batch_size.min(hashes.len() - batch_idx * batch_size);
+        hash_db.add_hashes_batch(list_id, &batch_data).ok();
+        
+        let processed = ((batch_idx + 1) * batch_size).min(hashes.len());
         let _ = app.emit("hash-import-progress", HashImportProgress {
             stage: "importing".to_string(),
             message: format!("Imported {} of {} hashes...", processed, total_hashes),
@@ -346,29 +342,24 @@ async fn import_and_load_hash_list(
     
     // Import all hashes in batches with progress updates
     let batch_size = 5000; // Larger batches for better performance
-    let total_batches = (hash_list.hashes.len() + batch_size - 1) / batch_size;
+    let _total_batches = (hash_list.hashes.len() + batch_size - 1) / batch_size;
     
     for (batch_idx, chunk) in hash_list.hashes.chunks(batch_size).enumerate() {
-        // Process batch
-        for entry in chunk {
+        // Build batch data
+        let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
             let hash_type_str = match entry.hash.len() {
-                32 => "MD5",
-                40 => "SHA1",
-                64 => "SHA256",
-                _ => default_hash_type,
+                32 => "MD5".to_string(),
+                40 => "SHA1".to_string(),
+                64 => "SHA256".to_string(),
+                _ => default_hash_type.to_string(),
             };
-            
-            hash_db.add_hash(
-                &entry.hash,
-                hash_type_str,
-                list_id,
-                entry.category.as_deref(),
-                entry.description.as_deref(),
-            ).ok();
-        }
+            (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
+        }).collect();
+        
+        hash_db.add_hashes_batch(list_id, &batch_data).ok();
         
         // Emit progress every batch
-        let processed = (batch_idx + 1) * batch_size.min(hash_list.hashes.len() - batch_idx * batch_size);
+        let processed = ((batch_idx + 1) * batch_size).min(hash_list.hashes.len());
         let _ = app.emit("hash-import-progress", HashImportProgress {
             stage: "importing".to_string(),
             message: format!("Imported {} of {} hashes...", processed, total_hashes),
@@ -409,25 +400,19 @@ fn load_hash_list_into_db(hash_list: settings::HashList) -> Result<(), String> {
     )?;
     
     // Import all hashes in batches, auto-detecting hash type for each hash
-    let batch_size = 1000;
+    let batch_size = 5000;
     for chunk in hash_list.hashes.chunks(batch_size) {
-        for entry in chunk {
-            // Auto-detect hash type based on hash length
+        let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
             let hash_type_str = match entry.hash.len() {
-                32 => "MD5",
-                40 => "SHA1",
-                64 => "SHA256",
-                _ => default_hash_type, // fallback to list default
+                32 => "MD5".to_string(),
+                40 => "SHA1".to_string(),
+                64 => "SHA256".to_string(),
+                _ => default_hash_type.to_string(),
             };
-            
-            hash_db.add_hash(
-                &entry.hash,
-                hash_type_str,
-                list_id,
-                entry.category.as_deref(),
-                entry.description.as_deref(),
-            ).ok(); // Ignore duplicate errors
-        }
+            (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
+        }).collect();
+        
+        hash_db.add_hashes_batch(list_id, &batch_data).ok();
     }
     
     eprintln!("✓ Hash list imported successfully");
@@ -444,9 +429,12 @@ fn get_hash_database_stats() -> Result<hash_db::DatabaseStats, String> {
 fn clear_hash_database() -> Result<(), String> {
     use std::fs;
     
-    // Get the database path
-    let data_paths = platform::paths::DataPaths::new()?;
-    let db_path = data_paths.database.clone();
+    // The hash database lives at %APPDATA%\Hindsight\hash_database.db
+    let app_data = std::env::var("APPDATA")
+        .map_err(|_| "Could not find APPDATA directory".to_string())?;
+    let db_path = std::path::PathBuf::from(&app_data)
+        .join("Hindsight")
+        .join("hash_database.db");
     
     eprintln!("Clearing hash database by removing file: {:?}", db_path);
     
@@ -461,13 +449,38 @@ fn clear_hash_database() -> Result<(), String> {
             .map_err(|e| format!("Failed to delete database file: {}", e))?;
         eprintln!("✓ Hash database file deleted successfully");
     } else {
-        eprintln!("⚠ Database file not found (already cleared?)");
+        eprintln!("⚠ Database file not found at {:?} (already cleared?)", db_path);
     }
+    
+    // Also delete WAL and SHM journal files if present
+    let wal_path = db_path.with_extension("db-wal");
+    let shm_path = db_path.with_extension("db-shm");
+    if wal_path.exists() { let _ = fs::remove_file(&wal_path); }
+    if shm_path.exists() { let _ = fs::remove_file(&shm_path); }
     
     // Create a fresh empty database
     let _hash_db = hash_db::HashDatabase::new()?;
     eprintln!("✓ Fresh hash database created");
     
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_hash_list(list_name: String) -> Result<(), String> {
+    eprintln!("Deleting hash list from database: {}", list_name);
+    
+    let hash_db = hash_db::HashDatabase::new()?;
+    
+    // Find the list by name and delete it
+    hash_db.delete_list_by_name(&list_name)?;
+    
+    // Reload memory cache after deletion
+    match hash_db.load_hashes_into_memory() {
+        Ok(count) => eprintln!("✓ Reloaded {} hashes into memory after deletion", count),
+        Err(e) => eprintln!("Warning: Failed to reload cache after deletion: {}", e),
+    }
+    
+    eprintln!("✓ Hash list '{}' deleted from database", list_name);
     Ok(())
 }
 
@@ -664,9 +677,19 @@ async fn scan_for_hash_matches(
 }
 
 #[tauri::command]
-fn scan_browser_history() -> Result<Vec<BrowserData>, String> {
-    browser::scan_all_browsers()
-        .map_err(|e| format!("Failed to scan browser history: {}", e))
+fn scan_browser_history(target_drives: Option<Vec<String>>) -> Result<Vec<BrowserData>, String> {
+    match &target_drives {
+        Some(drives) if !drives.is_empty() => {
+            eprintln!("[Browser Scan] Scanning target drives: {:?}", drives);
+            browser::scan_all_browsers_for_drives(Some(drives))
+                .map_err(|e| format!("Failed to scan browser history: {}", e))
+        }
+        _ => {
+            eprintln!("[Browser Scan] Scanning host system browsers");
+            browser::scan_all_browsers()
+                .map_err(|e| format!("Failed to scan browser history: {}", e))
+        }
+    }
 }
 
 /// Get the keyword_lists directory path
@@ -2100,6 +2123,7 @@ pub fn run() {
             load_hash_list_into_db,
             get_hash_database_stats,
             clear_hash_database,
+            delete_hash_list,
             check_is_registered,
             register_new_user,
             login_user,

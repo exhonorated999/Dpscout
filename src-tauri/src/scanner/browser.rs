@@ -70,63 +70,153 @@ pub struct DownloadEntry {
     pub referrer_url: String,
 }
 
-/// Get browser profile paths
+/// Get browser profile paths for the current system
 fn get_browser_paths() -> Vec<(BrowserType, String, PathBuf)> {
+    get_browser_paths_for_drives(None)
+}
+
+/// Get browser profile paths — either from the host system or from target drives
+/// When target_drives is Some, scans `<drive>\Users\*\AppData\...` on each drive
+/// When target_drives is None, uses the current system's environment variables
+fn get_browser_paths_for_drives(target_drives: Option<&[String]>) -> Vec<(BrowserType, String, PathBuf)> {
     let mut paths = Vec::new();
     
-    if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
-        // Chrome
-        let chrome_path = PathBuf::from(&local_appdata)
-            .join("Google")
-            .join("Chrome")
-            .join("User Data");
-        if chrome_path.exists() {
-            paths.push((BrowserType::Chrome, "Google Chrome".to_string(), chrome_path));
+    match target_drives {
+        Some(drives) => {
+            // Scanning external/attached drives — look for browser data in user profiles on those drives
+            for drive in drives {
+                let drive_root = if drive.ends_with('\\') || drive.ends_with('/') {
+                    drive.clone()
+                } else if drive.ends_with(':') {
+                    format!("{}\\", drive)
+                } else {
+                    format!("{}\\", drive)
+                };
+                
+                let users_dir = PathBuf::from(&drive_root).join("Users");
+                if !users_dir.exists() {
+                    eprintln!("No Users directory on drive {}", drive_root);
+                    continue;
+                }
+                
+                // Enumerate all user profiles on this drive
+                let user_entries = match std::fs::read_dir(&users_dir) {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        eprintln!("Failed to read Users directory on {}: {}", drive_root, e);
+                        continue;
+                    }
+                };
+                
+                for entry in user_entries.flatten() {
+                    let user_name = entry.file_name().to_string_lossy().to_string();
+                    // Skip system profiles
+                    if ["Public", "Default", "Default User", "All Users", "desktop.ini"]
+                        .contains(&user_name.as_str()) {
+                        continue;
+                    }
+                    
+                    let user_path = entry.path();
+                    if !user_path.is_dir() {
+                        continue;
+                    }
+                    
+                    let local_appdata = user_path.join("AppData").join("Local");
+                    let roaming_appdata = user_path.join("AppData").join("Roaming");
+                    
+                    // Chromium-based browsers (use Local AppData)
+                    if local_appdata.exists() {
+                        let chromium_browsers = vec![
+                            (BrowserType::Chrome, "Google Chrome", vec!["Google", "Chrome", "User Data"]),
+                            (BrowserType::Edge, "Microsoft Edge", vec!["Microsoft", "Edge", "User Data"]),
+                            (BrowserType::Brave, "Brave Browser", vec!["BraveSoftware", "Brave-Browser", "User Data"]),
+                            (BrowserType::Opera, "Opera", vec!["Opera Software", "Opera Stable"]),
+                            (BrowserType::Vivaldi, "Vivaldi", vec!["Vivaldi", "User Data"]),
+                        ];
+                        
+                        for (browser_type, browser_name, subpath) in &chromium_browsers {
+                            let mut browser_path = local_appdata.clone();
+                            for part in subpath {
+                                browser_path = browser_path.join(part);
+                            }
+                            if browser_path.exists() {
+                                let label = format!("{} ({})", browser_name, user_name);
+                                paths.push((browser_type.clone(), label, browser_path));
+                            }
+                        }
+                    }
+                    
+                    // Firefox (uses Roaming AppData)
+                    if roaming_appdata.exists() {
+                        let firefox_path = roaming_appdata
+                            .join("Mozilla")
+                            .join("Firefox")
+                            .join("Profiles");
+                        if firefox_path.exists() {
+                            let label = format!("Mozilla Firefox ({})", user_name);
+                            paths.push((BrowserType::Firefox, label, firefox_path));
+                        }
+                    }
+                }
+            }
         }
+        None => {
+            // Scanning the host system — use environment variables
+            if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
+                // Chrome
+                let chrome_path = PathBuf::from(&local_appdata)
+                    .join("Google")
+                    .join("Chrome")
+                    .join("User Data");
+                if chrome_path.exists() {
+                    paths.push((BrowserType::Chrome, "Google Chrome".to_string(), chrome_path));
+                }
 
-        // Edge
-        let edge_path = PathBuf::from(&local_appdata)
-            .join("Microsoft")
-            .join("Edge")
-            .join("User Data");
-        if edge_path.exists() {
-            paths.push((BrowserType::Edge, "Microsoft Edge".to_string(), edge_path));
-        }
+                // Edge
+                let edge_path = PathBuf::from(&local_appdata)
+                    .join("Microsoft")
+                    .join("Edge")
+                    .join("User Data");
+                if edge_path.exists() {
+                    paths.push((BrowserType::Edge, "Microsoft Edge".to_string(), edge_path));
+                }
 
-        // Brave
-        let brave_path = PathBuf::from(&local_appdata)
-            .join("BraveSoftware")
-            .join("Brave-Browser")
-            .join("User Data");
-        if brave_path.exists() {
-            paths.push((BrowserType::Brave, "Brave Browser".to_string(), brave_path));
-        }
+                // Brave
+                let brave_path = PathBuf::from(&local_appdata)
+                    .join("BraveSoftware")
+                    .join("Brave-Browser")
+                    .join("User Data");
+                if brave_path.exists() {
+                    paths.push((BrowserType::Brave, "Brave Browser".to_string(), brave_path));
+                }
 
-        // Opera
-        let opera_path = PathBuf::from(&local_appdata)
-            .join("Opera Software")
-            .join("Opera Stable");
-        if opera_path.exists() {
-            paths.push((BrowserType::Opera, "Opera".to_string(), opera_path));
-        }
+                // Opera
+                let opera_path = PathBuf::from(&local_appdata)
+                    .join("Opera Software")
+                    .join("Opera Stable");
+                if opera_path.exists() {
+                    paths.push((BrowserType::Opera, "Opera".to_string(), opera_path));
+                }
 
-        // Vivaldi
-        let vivaldi_path = PathBuf::from(&local_appdata)
-            .join("Vivaldi")
-            .join("User Data");
-        if vivaldi_path.exists() {
-            paths.push((BrowserType::Vivaldi, "Vivaldi".to_string(), vivaldi_path));
-        }
-    }
+                // Vivaldi
+                let vivaldi_path = PathBuf::from(&local_appdata)
+                    .join("Vivaldi")
+                    .join("User Data");
+                if vivaldi_path.exists() {
+                    paths.push((BrowserType::Vivaldi, "Vivaldi".to_string(), vivaldi_path));
+                }
+            }
 
-    if let Ok(appdata) = std::env::var("APPDATA") {
-        // Firefox
-        let firefox_path = PathBuf::from(&appdata)
-            .join("Mozilla")
-            .join("Firefox")
-            .join("Profiles");
-        if firefox_path.exists() {
-            paths.push((BrowserType::Firefox, "Mozilla Firefox".to_string(), firefox_path));
+            if let Ok(appdata) = std::env::var("APPDATA") {
+                // Firefox
+                let firefox_path = PathBuf::from(&appdata)
+                    .join("Mozilla")
+                    .join("Firefox")
+                    .join("Profiles");
+                if firefox_path.exists() {
+                    paths.push((BrowserType::Firefox, "Mozilla Firefox".to_string(), firefox_path));
+                }
+            }
         }
     }
 
@@ -687,10 +777,17 @@ fn firefox_timestamp_to_string(timestamp: i64) -> String {
 }
 
 /// Main scan function that scans all browsers
+/// Pass target_drives to scan browser data on external/attached drives
+/// Pass None to scan the current host system's browsers
 pub fn scan_all_browsers() -> Result<Vec<BrowserData>, Box<dyn std::error::Error>> {
+    scan_all_browsers_for_drives(None)
+}
+
+/// Scan browsers on specific target drives (for external drive forensics)
+pub fn scan_all_browsers_for_drives(target_drives: Option<&[String]>) -> Result<Vec<BrowserData>, Box<dyn std::error::Error>> {
     let mut all_browser_data = Vec::new();
 
-    let browser_paths = get_browser_paths();
+    let browser_paths = get_browser_paths_for_drives(target_drives);
 
     for (browser_type, browser_name, path) in browser_paths {
         eprintln!("Scanning {} at {:?}", browser_name, path);

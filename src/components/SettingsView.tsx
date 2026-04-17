@@ -1188,13 +1188,25 @@ const HashListsPanel: React.FC<{
     const listToDelete = localLists.find(l => l.id === id);
     if (!listToDelete) return;
     
-    if (confirm(`Are you sure you want to delete "${listToDelete.name}"?\n\nThis will remove it from the settings but not from the database.`)) {
+    if (confirm(`Are you sure you want to delete "${listToDelete.name}"?\n\nThis will remove it from settings AND delete all its hashes from the database.`)) {
+      try {
+        // Delete from backend hash database
+        const { invoke } = await import('@tauri-apps/api/core');
+        await invoke('delete_hash_list', { listName: listToDelete.name });
+      } catch (error) {
+        console.error('Failed to delete from hash database:', error);
+        // Continue removing from settings even if DB delete fails
+      }
+      
       const updatedLists = localLists.filter(l => l.id !== id);
       setLocalLists(updatedLists);
       onChange(updatedLists);
       if (selectedList?.id === id) {
         setSelectedList(null);
       }
+      
+      // Refresh database stats
+      await loadDatabaseStats();
     }
   };
 

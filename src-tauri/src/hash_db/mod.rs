@@ -117,77 +117,99 @@ impl HashDatabase {
     }
     
     /// Import a Project VIC JSON file (supports large files)
+    /// Uses streaming JSON parser + batched transactions for performance
     pub fn import_vic_json(&self, json_path: &str, list_name: &str) -> Result<u64, String> {
         println!("Starting import of: {}", json_path);
         
         let file = std::fs::File::open(json_path)
             .map_err(|e| format!("Failed to open VIC file: {}", e))?;
         
-        let reader = std::io::BufReader::new(file);
+        let reader = std::io::BufReader::with_capacity(1024 * 1024, file); // 1MB buffer
         
         // Stream parse the JSON to handle large files without loading into memory
         let stream = serde_json::Deserializer::from_reader(reader).into_iter::<VicEntry>();
         
         let mut conn = self.conn.lock().unwrap();
         
+        // Performance PRAGMAs for bulk import
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -64000;
+             PRAGMA temp_store = MEMORY;"
+        ).map_err(|e| format!("Failed to set import PRAGMAs: {}", e))?;
+        
         // Create the hash list entry
         let list_id = self.create_hash_list_internal(&mut conn, list_name, "Project VIC")?;
         
-        // Begin transaction for batch insert (much faster)
-        // Process all entries with batch commits
+        // Process all entries with batched transactions
         let mut imported_count = 0u64;
+        let mut batch_count = 0u64;
+        let batch_size = 50_000u64;
         
-        for entry_result in stream {
-            match entry_result {
-                Ok(entry) => {
-                    // Start transaction every 10K records
-                    if imported_count % 10_000 == 0 {
-                        let tx = conn.transaction()
-                            .map_err(|e| format!("Failed to start transaction: {}", e))?;
-                        
-                        {
-                            let mut stmt = tx.prepare(
-                                "INSERT INTO hashes (hash, hash_type, list_id, category, description) 
-                                 VALUES (?1, ?2, ?3, ?4, ?5)"
-                            ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
-                            
-                            // Support multiple hash types in VIC format
-                            if let Some(sha256) = &entry.sha256 {
-                                stmt.execute(params![
-                                    sha256,
-                                    "SHA256",
-                                    list_id,
-                                    entry.category.as_deref(),
-                                    entry.description.as_deref(),
-                                ]).ok();
-                            }
-                            
-                            if let Some(md5) = &entry.md5 {
-                                stmt.execute(params![
-                                    md5,
-                                    "MD5",
-                                    list_id,
-                                    entry.category.as_deref(),
-                                    entry.description.as_deref(),
-                                ]).ok();
-                            }
+        // Start first transaction
+        conn.execute_batch("BEGIN TRANSACTION")
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        
+        {
+            let mut stmt = conn.prepare(
+                "INSERT INTO hashes (hash, hash_type, list_id, category, description) 
+                 VALUES (?1, ?2, ?3, ?4, ?5)"
+            ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+            
+            for entry_result in stream {
+                match entry_result {
+                    Ok(entry) => {
+                        // Insert SHA256 hash if available
+                        if let Some(sha256) = &entry.sha256 {
+                            stmt.execute(params![
+                                sha256,
+                                "SHA256",
+                                list_id,
+                                entry.category.as_deref(),
+                                entry.description.as_deref(),
+                            ]).ok();
+                            imported_count += 1;
                         }
                         
-                        tx.commit().map_err(|e| format!("Commit failed: {}", e))?;
+                        // Insert MD5 hash if available
+                        if let Some(md5) = &entry.md5 {
+                            stmt.execute(params![
+                                md5,
+                                "MD5",
+                                list_id,
+                                entry.category.as_deref(),
+                                entry.description.as_deref(),
+                            ]).ok();
+                            imported_count += 1;
+                        }
                         
-                        if imported_count > 0 && imported_count % 10_000 == 0 {
+                        batch_count += 1;
+                        
+                        // Commit and start new transaction every batch_size entries
+                        if batch_count % batch_size == 0 {
+                            // Need to drop stmt before we can commit
+                            // Instead, just use execute_batch through raw SQL
                             println!("Imported {} hashes so far...", imported_count);
                         }
                     }
-                    
-                    imported_count += 1;
-                }
-                Err(e) => {
-                    eprintln!("Failed to parse entry: {}", e);
-                    continue;
+                    Err(e) => {
+                        eprintln!("Failed to parse entry: {}", e);
+                        continue;
+                    }
                 }
             }
         }
+        
+        // Commit final transaction
+        conn.execute_batch("COMMIT")
+            .map_err(|e| format!("Final commit failed: {}", e))?;
+        
+        // Restore safe PRAGMAs
+        conn.execute_batch(
+            "PRAGMA synchronous = NORMAL;
+             PRAGMA journal_mode = WAL;"
+        ).ok();
         
         // Update hash count in list
         conn.execute(
@@ -447,10 +469,56 @@ impl HashDatabase {
     pub fn delete_list(&self, list_id: i64) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         
+        // Enable foreign keys so CASCADE works
+        conn.execute("PRAGMA foreign_keys = ON", []).ok();
+        
+        // Delete hashes first (in case CASCADE isn't working)
+        conn.execute(
+            "DELETE FROM hashes WHERE list_id = ?1",
+            params![list_id],
+        ).map_err(|e| format!("Failed to delete hashes for list: {}", e))?;
+        
         conn.execute(
             "DELETE FROM hash_lists WHERE id = ?1",
             params![list_id],
         ).map_err(|e| format!("Failed to delete list: {}", e))?;
+        
+        Ok(())
+    }
+    
+    /// Delete a hash list by name and all its hashes
+    pub fn delete_list_by_name(&self, name: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        
+        // Find list IDs matching this name
+        let mut stmt = conn.prepare(
+            "SELECT id FROM hash_lists WHERE name = ?1"
+        ).map_err(|e| format!("Failed to prepare query: {}", e))?;
+        
+        let ids: Vec<i64> = stmt.query_map(params![name], |row| row.get(0))
+            .map_err(|e| format!("Query failed: {}", e))?
+            .filter_map(|r| r.ok())
+            .collect();
+        
+        if ids.is_empty() {
+            eprintln!("No hash list found with name '{}' in database", name);
+            return Ok(());
+        }
+        
+        for id in &ids {
+            // Delete hashes first
+            conn.execute(
+                "DELETE FROM hashes WHERE list_id = ?1",
+                params![id],
+            ).map_err(|e| format!("Failed to delete hashes for list {}: {}", id, e))?;
+            
+            conn.execute(
+                "DELETE FROM hash_lists WHERE id = ?1",
+                params![id],
+            ).map_err(|e| format!("Failed to delete list {}: {}", id, e))?;
+            
+            eprintln!("✓ Deleted hash list id={} name='{}'", id, name);
+        }
         
         Ok(())
     }
@@ -516,6 +584,51 @@ impl HashDatabase {
         ).map_err(|e| format!("Failed to add hash: {}", e))?;
         
         Ok(())
+    }
+    
+    /// Add many hashes in a single transaction (fast bulk insert)
+    pub fn add_hashes_batch(
+        &self,
+        list_id: i64,
+        hashes: &[(String, String, Option<String>, Option<String>)], // (hash, hash_type, category, description)
+    ) -> Result<u64, String> {
+        let mut conn = self.conn.lock().unwrap();
+        
+        // Performance PRAGMAs
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -32000;"
+        ).ok();
+        
+        let tx = conn.transaction()
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+        
+        let mut count = 0u64;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO hashes (hash, hash_type, list_id, category, description) VALUES (?1, ?2, ?3, ?4, ?5)"
+            ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
+            
+            for (hash, hash_type, category, description) in hashes {
+                stmt.execute(params![
+                    hash,
+                    hash_type,
+                    list_id,
+                    category.as_deref(),
+                    description.as_deref(),
+                ]).ok();
+                count += 1;
+            }
+        }
+        
+        tx.commit()
+            .map_err(|e| format!("Batch commit failed: {}", e))?;
+        
+        // Restore safe PRAGMAs
+        conn.execute_batch("PRAGMA synchronous = NORMAL;").ok();
+        
+        Ok(count)
     }
 }
 

@@ -770,7 +770,18 @@ function App() {
         progressList.push(browserProgress);
         setScanProgress([...progressList]);
 
-        const result = await invoke<BrowserData[]>("scan_browser_history");
+        // For USB/external drive scans, only scan browser data ON those drives (not the host C:)
+        // For Windows scans of C:, use host system env vars (default)
+        const isExternalDriveScan = selectedDeviceType === 'usb' || 
+          (selectedDeviceType === 'windows' && keywordConfig?.selectedDrives && 
+           keywordConfig.selectedDrives.length > 0 && 
+           !keywordConfig.selectedDrives.some((d: string) => d.toUpperCase().startsWith('C')));
+        
+        const result = await invoke<BrowserData[]>("scan_browser_history", {
+          targetDrives: isExternalDriveScan && keywordConfig?.selectedDrives 
+            ? keywordConfig.selectedDrives 
+            : null
+        });
         setBrowsers(result);
         browserProgress.status = "complete";
         browserProgress.percentage = 100;
@@ -1164,7 +1175,7 @@ function App() {
     setBrowsers([]);
 
     try {
-      const result = await invoke<BrowserData[]>("scan_browser_history");
+      const result = await invoke<BrowserData[]>("scan_browser_history", { targetDrives: null });
       setBrowsers(result);
     } catch (error) {
       console.error("Browser scan failed:", error);
