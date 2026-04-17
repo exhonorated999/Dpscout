@@ -127,8 +127,10 @@ fn remove_category_mapping(keyword: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_system_info() -> Result<SystemInfo, String> {
-    collect_system_info()
+async fn get_system_info() -> Result<SystemInfo, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        collect_system_info()
+    }).await.map_err(|e| format!("System info thread panicked: {}", e))?
 }
 
 // #[tauri::command]
@@ -152,8 +154,10 @@ fn initialize_app() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn import_vic_hash_list(json_path: String) -> Result<settings::HashList, String> {
-    import_project_vic(json_path)
+async fn import_vic_hash_list(json_path: String) -> Result<settings::HashList, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        import_project_vic(json_path)
+    }).await.map_err(|e| format!("VIC import thread panicked: {}", e))?
 }
 
 #[derive(Clone, Serialize)]
@@ -570,31 +574,33 @@ async fn scan_media_progressive(
     let emitter_clone = emitter_for_callback.clone();
     let emitter_for_files = emitter_for_callback.clone();
     
-    // Scan with progress updates AND emit each file as found
-    let result = media::scan_media_files_with_progress(
-        options, 
-        keyword_lists, 
-        false, 
-        move |processed, total, current_file| {
-            let progress = if total > 0 {
-                ((processed as f32 / total as f32) * 100.0) as u8
-            } else {
-                0
-            };
-            
-            emitter_clone.emit_module_progress(
-                ModuleName::Media,
-                progress,
-                Some(current_file),
-                Some(processed),
-                Some(total),
-            );
-        },
-        Some(move |file: &media::MediaFile| {
-            // Emit each file immediately for live preview
-            emitter_for_files.emit_media_found(file);
-        })
-    );
+    // Run on blocking thread so UI stays responsive
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        media::scan_media_files_with_progress(
+            options, 
+            keyword_lists, 
+            false, 
+            move |processed, total, current_file| {
+                let progress = if total > 0 {
+                    ((processed as f32 / total as f32) * 100.0) as u8
+                } else {
+                    0
+                };
+                
+                emitter_clone.emit_module_progress(
+                    ModuleName::Media,
+                    progress,
+                    Some(current_file),
+                    Some(processed),
+                    Some(total),
+                );
+            },
+            Some(move |file: &media::MediaFile| {
+                // Emit each file immediately for live preview
+                emitter_for_files.emit_media_found(file);
+            })
+        )
+    }).await.map_err(|e| format!("Media scan thread panicked: {}", e))?;
     
     match result {
         Ok(files) => {
@@ -632,30 +638,31 @@ async fn scan_for_hash_matches(
     let emitter_for_progress = emitter_clone.clone();
     let emitter_for_matches = emitter_clone.clone();
     
-    // Start hash scan with progress and live match callbacks
-    let result = scanner::hash_scan::scan_files_for_hash_matches_with_progress(
-        options,
-        move |processed, total, current_file| {
-            let progress = if total > 0 {
-                ((processed as f32 / total as f32) * 100.0) as u8
-            } else {
-                0
-            };
-            
-            emitter_for_progress.emit_module_progress(
-                ModuleName::HashMatching,
-                progress,
-                Some(current_file),
-                Some(processed),
-                Some(total),
-            );
-        },
-        Some(move |hash_match: &scanner::hash_scan::HashMatch| {
-            // Emit each hash match immediately for live triage
-            eprintln!("[Hash Scan Command] Emitting live match: {}", hash_match.file_name);
-            emitter_for_matches.emit_hash_match(hash_match);
-        }),
-    );
+    // Run on a blocking thread so the UI stays responsive
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        scanner::hash_scan::scan_files_for_hash_matches_with_progress(
+            options,
+            move |processed, total, current_file| {
+                let progress = if total > 0 {
+                    ((processed as f32 / total as f32) * 100.0) as u8
+                } else {
+                    0
+                };
+                
+                emitter_for_progress.emit_module_progress(
+                    ModuleName::HashMatching,
+                    progress,
+                    Some(current_file),
+                    Some(processed),
+                    Some(total),
+                );
+            },
+            Some(move |hash_match: &scanner::hash_scan::HashMatch| {
+                eprintln!("[Hash Scan Command] Emitting live match: {}", hash_match.file_name);
+                emitter_for_matches.emit_hash_match(hash_match);
+            }),
+        )
+    }).await.map_err(|e| format!("Hash scan thread panicked: {}", e))?;
     
     match result {
         Ok(matches) => {
@@ -677,19 +684,21 @@ async fn scan_for_hash_matches(
 }
 
 #[tauri::command]
-fn scan_browser_history(target_drives: Option<Vec<String>>) -> Result<Vec<BrowserData>, String> {
-    match &target_drives {
-        Some(drives) if !drives.is_empty() => {
-            eprintln!("[Browser Scan] Scanning target drives: {:?}", drives);
-            browser::scan_all_browsers_for_drives(Some(drives))
-                .map_err(|e| format!("Failed to scan browser history: {}", e))
+async fn scan_browser_history(target_drives: Option<Vec<String>>) -> Result<Vec<BrowserData>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        match &target_drives {
+            Some(drives) if !drives.is_empty() => {
+                eprintln!("[Browser Scan] Scanning target drives: {:?}", drives);
+                browser::scan_all_browsers_for_drives(Some(drives))
+                    .map_err(|e| format!("Failed to scan browser history: {}", e))
+            }
+            _ => {
+                eprintln!("[Browser Scan] Scanning host system browsers");
+                browser::scan_all_browsers()
+                    .map_err(|e| format!("Failed to scan browser history: {}", e))
+            }
         }
-        _ => {
-            eprintln!("[Browser Scan] Scanning host system browsers");
-            browser::scan_all_browsers()
-                .map_err(|e| format!("Failed to scan browser history: {}", e))
-        }
-    }
+    }).await.map_err(|e| format!("Browser scan thread panicked: {}", e))?
 }
 
 /// Get the keyword_lists directory path
@@ -1380,30 +1389,35 @@ async fn scan_keywords_progressive(
     // Emit module started
     emitter.emit_module_started(ModuleName::Keywords);
     
-    // Scan with progress updates
-    let result = keyword::scan_keywords_with_progress(options, |processed, total, current_file| {
-        let progress = if total > 0 {
-            ((processed as f32 / total as f32) * 100.0) as u8
-        } else {
-            0
-        };
-        
-        emitter.emit_module_progress(
-            ModuleName::Keywords,
-            progress,
-            Some(current_file),
-            Some(processed),
-            Some(total),
-        );
-    });
+    let emitter_arc = std::sync::Arc::new(emitter);
+    let emitter_for_progress = emitter_arc.clone();
+    
+    // Run on blocking thread so UI stays responsive
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        keyword::scan_keywords_with_progress(options, move |processed, total, current_file| {
+            let progress = if total > 0 {
+                ((processed as f32 / total as f32) * 100.0) as u8
+            } else {
+                0
+            };
+            
+            emitter_for_progress.emit_module_progress(
+                ModuleName::Keywords,
+                progress,
+                Some(current_file),
+                Some(processed),
+                Some(total),
+            );
+        }).map_err(|e| e.to_string())
+    }).await.map_err(|e| format!("Keyword scan thread panicked: {}", e))?;
     
     match result {
         Ok(matches) => {
-            emitter.emit_module_complete(ModuleName::Keywords, matches.len());
+            emitter_arc.emit_module_complete(ModuleName::Keywords, matches.len());
             Ok(matches)
         }
         Err(e) => {
-            emitter.emit_module_error(ModuleName::Keywords, e.to_string());
+            emitter_arc.emit_module_error(ModuleName::Keywords, e.to_string());
             Err(format!("Failed to scan keywords: {}", e))
         }
     }
