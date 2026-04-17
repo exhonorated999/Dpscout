@@ -488,3 +488,110 @@ pub fn check_for_updates() -> Result<UpdateInfo, String> {
 
     Ok(info)
 }
+
+// ---------------------------------------------------------------------------
+// Bug Reports
+// ---------------------------------------------------------------------------
+
+const INTELLECT_API: &str = "https://intellect-unified-dashboard-production.up.railway.app/api/bug-reports";
+const INTELLECT_API_KEY: &str = "INT-KEDG-I69Q-OD2C-Z0HX";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BugReportData {
+    pub title: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BugReportResponse {
+    pub ok: bool,
+    pub bug_id: Option<i64>,
+    pub intellect_id: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Submit bug report to both Scout server and Intellect LE Command Center.
+pub fn submit_bug_report(data: BugReportData) -> Result<BugReportResponse, String> {
+    let machine_id = get_machine_id().unwrap_or_default();
+    let app_version = env!("CARGO_PKG_VERSION").to_string();
+
+    // Load saved registration for reporter info
+    let (reporter_name, reporter_email) = match init_license_db() {
+        Ok(conn) => {
+            conn.query_row(
+                "SELECT contact_name, contact_email FROM registration_info LIMIT 1",
+                [],
+                |row| Ok((
+                    row.get::<_, String>(0).unwrap_or_else(|_| "Unknown".to_string()),
+                    row.get::<_, String>(1).unwrap_or_else(|_| String::new()),
+                )),
+            ).unwrap_or_else(|_| ("Unknown".to_string(), String::new()))
+        }
+        Err(_) => ("Unknown".to_string(), String::new()),
+    };
+
+    // 1. Submit to Scout server
+    let scout_body = serde_json::json!({
+        "title": data.title,
+        "description": data.description,
+        "reporter_name": reporter_name,
+        "reporter_email": reporter_email,
+        "app_version": app_version,
+        "platform": get_platform(),
+        "machine_id": machine_id,
+    });
+
+    let scout_result = ureq::post(&format!("{}/api/bug-report", SERVER_URL))
+        .set("Content-Type", "application/json")
+        .send_string(&scout_body.to_string());
+
+    let bug_id = match scout_result {
+        Ok(resp) => {
+            resp.into_string().ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v.get("bug_id").and_then(|id| id.as_i64()))
+        }
+        Err(e) => {
+            eprintln!("Scout server bug report failed: {}", e);
+            None
+        }
+    };
+
+    // 2. Submit to Intellect LE Command Center (best-effort, don't fail if unavailable)
+    let intellect_body = serde_json::json!({
+        "title": data.title,
+        "description": data.description,
+        "product_slug": "dp-scout",
+        "reporter_name": reporter_name,
+        "reporter_email": reporter_email,
+        "app_version": app_version,
+        "severity": "medium",
+    });
+
+    let intellect_id = match ureq::post(INTELLECT_API)
+        .set("Content-Type", "application/json")
+        .set("X-API-Key", INTELLECT_API_KEY)
+        .send_string(&intellect_body.to_string())
+    {
+        Ok(resp) => {
+            resp.into_string().ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v.get("bug_id").map(|id| id.to_string()))
+        }
+        Err(e) => {
+            eprintln!("Intellect LE bug report failed (non-fatal): {}", e);
+            None
+        }
+    };
+
+    if bug_id.is_none() && intellect_id.is_none() {
+        return Err("Failed to submit bug report to any server".to_string());
+    }
+
+    Ok(BugReportResponse {
+        ok: true,
+        bug_id,
+        intellect_id,
+        message: Some("Bug report submitted successfully".to_string()),
+    })
+}

@@ -1,0 +1,270 @@
+/* ── Bug Report Floating Button ─────────────────────────────── */
+
+.bugreport-button-float {
+  position: fixed;
+  top: 20px;
+  right: 80px;
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  background-color: rgba(255, 255, 255, 0.08);
+  border: 2px solid rgba(255, 255, 255, 0.5);
+  color: #ffffff;
+  font-size: 1.2rem;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow:
+    0 0 12px rgba(255, 255, 255, 0.15),
+    0 0 24px rgba(255, 255, 255, 0.05);
+}
+
+.bugreport-button-float:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+  border-color: #ffffff;
+  box-shadow:
+    0 0 16px rgba(255, 255, 255, 0.3),
+    0 0 32px rgba(255, 255, 255, 0.1);
+  transform: scale(1.08);
+}
+
+.bugreport-button-float svg {
+  width: 22px;
+  height: 22px;
+}
+
+
+/* ── Modal Overlay ──────────────────────────────────────────── */
+
+.bugreport-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+  animation: bugreport-fadein 0.2s ease-out;
+}
+
+@keyframes bugreport-fadein {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.bugreport-modal {
+  background: linear-gradient(160deg, #1a1c2e 0%, #0f1117 100%);
+  border: 1px solid rgba(108, 138, 237, 0.3);
+  border-radius: 16px;
+  width: 460px;
+  max-width: 90vw;
+  max-height: 85vh;
+  overflow-y: auto;
+  padding: 32px;
+  position: relative;
+  box-shadow:
+    0 0 40px rgba(108, 138, 237, 0.15),
+    0 8px 32px rgba(0, 0, 0, 0.5);
+  animation: bugreport-slidein 0.25s ease-out;
+}
+
+@keyframes bugreport-slidein {
+  from { opacity: 0; transform: translateY(20px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+
+/* ── Close Button ───────────────────────────────────────────── */
+
+.bugreport-close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.6);
+  font-size: 1.3rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  line-height: 1;
+}
+
+.bugreport-close:hover {
+  background: rgba(255, 100, 100, 0.15);
+  border-color: rgba(255, 100, 100, 0.4);
+  color: #ff6b6b;
+}
+
+
+/* ── Header ─────────────────────────────────────────────────── */
+
+.bugreport-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.bugreport-header h2 {
+  font-size: 1.3rem;
+  font-weight: 600;
+  color: #ffffff;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.bugreport-icon {
+  color: rgba(255, 255, 255, 0.8);
+}
+
+
+/* ── Form ───────────────────────────────────────────────────── */
+
+.bugreport-form {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.bugreport-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bugreport-field label {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.6);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+}
+
+.bugreport-field input,
+.bugreport-field textarea {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(108, 138, 237, 0.25);
+  border-radius: 8px;
+  color: #ffffff;
+  font-size: 0.95rem;
+  padding: 10px 14px;
+  font-family: inherit;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  outline: none;
+  resize: vertical;
+}
+
+.bugreport-field input:focus,
+.bugreport-field textarea:focus {
+  border-color: rgba(108, 138, 237, 0.6);
+  box-shadow: 0 0 12px rgba(108, 138, 237, 0.15);
+}
+
+.bugreport-field input::placeholder,
+.bugreport-field textarea::placeholder {
+  color: rgba(255, 255, 255, 0.25);
+}
+
+
+/* ── Actions ────────────────────────────────────────────────── */
+
+.bugreport-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 6px;
+}
+
+.bugreport-btn {
+  padding: 10px 22px;
+  border-radius: 8px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: none;
+  letter-spacing: 0.3px;
+}
+
+.bugreport-btn-secondary {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.6);
+}
+
+.bugreport-btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.bugreport-btn-primary {
+  background: linear-gradient(135deg, #6c8aed, #5a72c8);
+  color: #ffffff;
+  box-shadow: 0 2px 12px rgba(108, 138, 237, 0.25);
+}
+
+.bugreport-btn-primary:hover:not(:disabled) {
+  background: linear-gradient(135deg, #7d99f5, #6c8aed);
+  box-shadow: 0 4px 18px rgba(108, 138, 237, 0.35);
+  transform: translateY(-1px);
+}
+
+.bugreport-btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+
+/* ── Error / Success ────────────────────────────────────────── */
+
+.bugreport-error {
+  background: rgba(255, 100, 100, 0.1);
+  border: 1px solid rgba(255, 100, 100, 0.3);
+  border-radius: 8px;
+  color: #ff6b6b;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+}
+
+.bugreport-success {
+  text-align: center;
+  padding: 20px 0;
+}
+
+.bugreport-success-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(100, 220, 100, 0.15), rgba(100, 220, 100, 0.05));
+  border: 2px solid rgba(100, 220, 100, 0.4);
+  color: #64dc64;
+  font-size: 1.8rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+}
+
+.bugreport-success p {
+  color: #ffffff;
+  font-size: 1.05rem;
+  margin: 0 0 8px;
+}
+
+.bugreport-id {
+  color: rgba(255, 255, 255, 0.4) !important;
+  font-size: 0.85rem !important;
+  font-family: monospace;
+  margin-bottom: 20px !important;
+}

@@ -62,6 +62,11 @@ fn check_for_updates() -> Result<licensing::UpdateInfo, String> {
 }
 
 #[tauri::command]
+fn submit_bug_report(data: licensing::BugReportData) -> Result<licensing::BugReportResponse, String> {
+    licensing::submit_bug_report(data)
+}
+
+#[tauri::command]
 fn is_agency_registered() -> Result<bool, String> {
     Ok(licensing::is_registration_saved())
 }
@@ -1999,6 +2004,7 @@ pub fn run() {
             get_license_status,
             activate_license_key,
             check_for_updates,
+            submit_bug_report,
             is_agency_registered,
             scan_questionable_applications,
             get_settings,

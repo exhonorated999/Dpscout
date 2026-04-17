@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import './StartScreen.css';
+import { BugReportModal } from './BugReportModal';
 
 export type DeviceType = 'windows' | 'usb' | 'android' | 'ios';
 
@@ -93,6 +94,7 @@ const AppleIcon = () => (
 export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSettings }) => {
   const [selectedDevice, setSelectedDevice] = useState<DeviceType>('windows');
   const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
+  const [showBugReport, setShowBugReport] = useState(false);
 
   useEffect(() => {
     loadTrialStatus();
@@ -125,9 +127,21 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
         </div>
       )}
 
+      <button className="bugreport-button-float" onClick={() => setShowBugReport(true)} title="Report a Bug">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M8 2l1.88 1.88M14.12 3.88L16 2M9 7.13v-1a3.003 3.003 0 116 0v1"/>
+          <path d="M12 20c-3.3 0-6-2.7-6-6v-3a4 4 0 014-4h4a4 4 0 014 4v3c0 3.3-2.7 6-6 6z"/>
+          <path d="M12 20v2M6 13H2M6 17H3M18 13h4M18 17h3"/>
+        </svg>
+      </button>
+
       <button className="settings-button-float" onClick={onOpenSettings} title="Settings">
         ⚙️
       </button>
+
+      {showBugReport && (
+        <BugReportModal onClose={() => setShowBugReport(false)} />
+      )}
       <div className="start-screen-content">
         <div className="logo-container">
           <div className="header-logo">
