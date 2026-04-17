@@ -1136,6 +1136,7 @@ dependencies = [
  "bcrypt",
  "cbc",
  "chrono",
+ "crossbeam-channel",
  "dirs 5.0.1",
  "evtx",
  "flate2",

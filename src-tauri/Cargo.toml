@@ -48,6 +48,7 @@ base64 = "0.22"
 urlencoding = "2.1"
 tar = "0.4"
 flate2 = "1.0"
+crossbeam-channel = "0.5"
 wmi = "0.14"
 ureq = "2.9"
 

@@ -153,8 +153,8 @@ impl HashDatabase {
         
         {
             let mut stmt = conn.prepare(
-                "INSERT INTO hashes (hash, hash_type, list_id, category, description) 
-                 VALUES (?1, ?2, ?3, ?4, ?5)"
+                "INSERT INTO hashes (hash, hash_type, list_id, category, description, file_size) 
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
             ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
             
             for entry_result in stream {
@@ -168,6 +168,7 @@ impl HashDatabase {
                                 list_id,
                                 entry.category.as_deref(),
                                 entry.description.as_deref(),
+                                entry.file_size,
                             ]).ok();
                             imported_count += 1;
                         }
@@ -180,6 +181,7 @@ impl HashDatabase {
                                 list_id,
                                 entry.category.as_deref(),
                                 entry.description.as_deref(),
+                                entry.file_size,
                             ]).ok();
                             imported_count += 1;
                         }
@@ -642,6 +644,8 @@ struct VicEntry {
     category: Option<String>,
     #[serde(alias = "Description", alias = "description")]
     description: Option<String>,
+    #[serde(alias = "FileSize", alias = "fileSize", alias = "file_size", alias = "Size", alias = "size")]
+    file_size: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
