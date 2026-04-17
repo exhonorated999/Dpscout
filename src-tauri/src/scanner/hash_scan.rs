@@ -47,7 +47,11 @@ pub struct HashScanOptions {
     pub scan_paths: Vec<String>,
     #[serde(rename = "maxFileSize")]
     pub max_file_size: u64, // in bytes, 0 = no limit (500MB default for safety)
+    #[serde(rename = "scanMode", default = "default_scan_mode")]
+    pub scan_mode: String, // "usb" or "windows"
 }
+
+fn default_scan_mode() -> String { "windows".to_string() }
 
 // ── Media extension filter (CSAM is overwhelmingly images/videos) ──
 const IMAGE_EXTENSIONS: &[&str] = &[
@@ -290,41 +294,62 @@ where
     
     // ── Spawn producer thread ──
     let scan_paths = options.scan_paths.clone();
+    let scan_mode = options.scan_mode.clone();
     let files_discovered_p = Arc::clone(&files_discovered);
     
     let producer_handle = std::thread::spawn(move || {
         let mut pivoted_dirs: HashSet<PathBuf> = HashSet::new();
         
-        // ── Phase 1: Tier 1 — High priority directories ──
-        eprintln!("[Producer] Phase 1: Tier 1 (high-priority user dirs)");
-        for scan_root in &scan_paths {
-            if is_cancelled() { break; }
-            discover_tier1_files(scan_root, &tx, &files_discovered_p, &known_sizes);
+        if scan_mode == "usb" {
+            // ══════════════════════════════════════════════════
+            // USB MODE: Evidence drive. No Windows structure.
+            // Walk entire drive top-down, hash ALL files,
+            // smallest first for fastest time-to-first-hit.
+            // ══════════════════════════════════════════════════
+            eprintln!("[Producer] USB MODE: scanning entire drive(s) top-down");
+            for scan_root in &scan_paths {
+                if is_cancelled() { break; }
+                discover_usb_files(scan_root, &tx, &files_discovered_p);
+                
+                // Process pivot requests (deep-scan hit directories)
+                drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &None, &mut pivoted_dirs);
+            }
+            // Final pivot drain
+            drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &None, &mut pivoted_dirs);
+        } else {
+            // ══════════════════════════════════════════════════
+            // WINDOWS MODE: System drive with Users/AppData.
+            // Tiered approach targeting high-value directories.
+            // ══════════════════════════════════════════════════
+            eprintln!("[Producer] WINDOWS MODE: tiered directory scanning");
             
-            // Check for pivot requests between tiers
+            // Phase 1: Tier 1 — High priority user directories
+            eprintln!("[Producer] Phase 1: Tier 1 (high-priority user dirs)");
+            for scan_root in &scan_paths {
+                if is_cancelled() { break; }
+                discover_tier1_files(scan_root, &tx, &files_discovered_p, &known_sizes);
+                drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
+            }
+            
+            // Phase 2: Tier 2 — User-created root folders
+            eprintln!("[Producer] Phase 2: Tier 2 (user-created folders)");
+            for scan_root in &scan_paths {
+                if is_cancelled() { break; }
+                discover_tier2_files(scan_root, &tx, &files_discovered_p, &known_sizes);
+                drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
+            }
+            
+            // Phase 3: Tier 3 — Remaining files on drive
+            eprintln!("[Producer] Phase 3: Tier 3 (full drive sweep)");
+            for scan_root in &scan_paths {
+                if is_cancelled() { break; }
+                discover_tier3_files(scan_root, &tx, &files_discovered_p, &known_sizes);
+                drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
+            }
+            
+            // Final pivot drain
             drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
         }
-        
-        // ── Phase 2: Tier 2 — User-created root folders ──
-        eprintln!("[Producer] Phase 2: Tier 2 (user-created folders)");
-        for scan_root in &scan_paths {
-            if is_cancelled() { break; }
-            discover_tier2_files(scan_root, &tx, &files_discovered_p, &known_sizes);
-            
-            drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
-        }
-        
-        // ── Phase 3: Tier 3 — Remaining files on drive ──
-        eprintln!("[Producer] Phase 3: Tier 3 (full drive sweep)");
-        for scan_root in &scan_paths {
-            if is_cancelled() { break; }
-            discover_tier3_files(scan_root, &tx, &files_discovered_p, &known_sizes);
-            
-            drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
-        }
-        
-        // Final pivot drain
-        drain_pivot_requests(&pivot_rx, &tx, &files_discovered_p, &known_sizes, &mut pivoted_dirs);
         
         eprintln!("[Producer] Discovery complete. {} files sent to workers.", 
             files_discovered_p.load(Ordering::Relaxed));
@@ -391,7 +416,95 @@ where
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// Producer: Tiered directory discovery
+// Producer: USB mode — flat walk of entire drive
+// ════════════════════════════════════════════════════════════════════════
+
+/// USB mode: Walk entire drive, hash ALL files (not just media), smallest first.
+/// Evidence drives have no Windows structure — treat every file as a candidate.
+/// Uses jwalk for parallel enumeration, streams in batches sorted by size.
+fn discover_usb_files(
+    scan_root: &str,
+    tx: &Sender<FileCandidate>,
+    counter: &Arc<AtomicUsize>,
+) {
+    if !Path::new(scan_root).exists() { return; }
+    
+    eprintln!("[USB Scan] Walking entire drive: {}", scan_root);
+    
+    // Collect files in batches of ~2000 for small-first sorting
+    // without needing to hold the entire drive in memory
+    let mut batch: Vec<FileCandidate> = Vec::with_capacity(2000);
+    
+    for entry in jwalk::WalkDir::new(scan_root)
+        .skip_hidden(false)
+        .follow_links(false)
+        .max_depth(50)
+        .process_read_dir(|_depth, _path, _state, children| {
+            // Skip only truly useless system dirs
+            children.retain(|child_result| {
+                if let Ok(child) = child_result {
+                    if child.file_type().is_dir() {
+                        if let Some(name) = child.file_name.to_str() {
+                            // On evidence drives: only skip Windows system internals + dev noise
+                            let skip = matches!(name,
+                                "System Volume Information" | "$Recycle.Bin" | "$WinREAgent" |
+                                "Recovery" | "Boot" | "EFI" | "Config.Msi" |
+                                "node_modules" | ".git" | ".svn" | "__pycache__" | ".venv" |
+                                "target" | ".cargo" | ".rustup"
+                            );
+                            return !skip;
+                        }
+                    }
+                }
+                true
+            });
+        })
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        if is_cancelled() { return; }
+        
+        if entry.file_type().is_dir() { continue; }
+        
+        let path = entry.path();
+        
+        if let Ok(metadata) = fs::metadata(&path) {
+            let file_size = metadata.len();
+            if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
+            
+            batch.push(FileCandidate {
+                path,
+                size: file_size,
+                tier: 1, // All USB files are equal priority
+            });
+            
+            // When batch is full, sort by size and send to workers
+            if batch.len() >= 2000 {
+                batch.sort_by_key(|f| f.size);
+                for candidate in batch.drain(..) {
+                    if is_cancelled() { return; }
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    let _ = tx.send(candidate);
+                }
+            }
+        }
+    }
+    
+    // Send remaining batch
+    if !batch.is_empty() {
+        batch.sort_by_key(|f| f.size);
+        for candidate in batch.drain(..) {
+            if is_cancelled() { return; }
+            counter.fetch_add(1, Ordering::Relaxed);
+            let _ = tx.send(candidate);
+        }
+    }
+    
+    eprintln!("[USB Scan] Walk complete. {} files queued.", counter.load(Ordering::Relaxed));
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Producer: Tiered directory discovery (Windows mode)
 // ════════════════════════════════════════════════════════════════════════
 
 /// Tier 1: Scan high-priority user directories (Downloads, Desktop, app caches)

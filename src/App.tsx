@@ -674,7 +674,9 @@ function App() {
     setBrowsers([]);
     setMediaFiles([]);
     setKeywordMatches([]);
+    setHashMatches([]);
     setIntrusionResults(null);
+    setSystemInfo(null);
     scanCancelledRef.current = false;
     setCurrentScanModule("System Information");
     
@@ -982,6 +984,7 @@ function App() {
           const hashScanOptions = {
             scanPaths: scanPaths,
             maxFileSize: 500 * 1024 * 1024, // 500MB max per file
+            scanMode: selectedDeviceType === 'usb' ? 'usb' : 'windows',
           };
           
           const matches = await invoke<any[]>("scan_for_hash_matches", { options: hashScanOptions });
