@@ -681,28 +681,34 @@ function App() {
     const progressList: ScanProgressType[] = [];
 
     try {
-      // Collect System Information First (in background)
+      // Collect device info — lightweight for USB, full system info for Windows
       setIsLoadingSystemInfo(true);
       try {
-        const sysInfo = await invoke<SystemInfo>("get_system_info");
-        
-        // For USB mode, also collect USB device information
         if (selectedDeviceType === 'usb' && keywordConfig?.selectedDrives && keywordConfig.selectedDrives.length > 0) {
-          try {
-            const drive = keywordConfig.selectedDrives[0].replace(':', '').replace('\\', '').trim();
-            const usbInfo = await invoke("get_usb_device_info", { driveLetter: drive });
-            sysInfo.usb_device_info = usbInfo;
-            console.log("USB device info collected:", usbInfo);
-          } catch (usbError) {
-            console.error("Failed to collect USB device info:", usbError);
-          }
+          // USB mode: skip heavy system info, just get drive name/size (instant)
+          const drive = keywordConfig.selectedDrives[0].replace(':', '').replace('\\', '').trim();
+          const usbInfo = await invoke("get_usb_device_info", { driveLetter: drive });
+          const minimalSysInfo: any = {
+            scan_id: crypto.randomUUID?.() || Date.now().toString(),
+            scan_timestamp: new Date().toISOString(),
+            computer_name: "USB Scan",
+            os_version: "",
+            usb_device_info: usbInfo,
+          };
+          setSystemInfo(minimalSysInfo);
+          console.log("USB device info collected (instant):", usbInfo);
+        } else {
+          // Windows mode: collect full system info (in background, don't block scans)
+          const sysInfoPromise = invoke<SystemInfo>("get_system_info").then(sysInfo => {
+            setSystemInfo(sysInfo);
+            console.log("System info collected:", sysInfo);
+          }).catch(error => {
+            console.error("Failed to collect system info:", error);
+          });
+          // Don't await — let it complete in background while scans start
         }
-        
-        setSystemInfo(sysInfo);
-        console.log("System info collected:", sysInfo);
       } catch (error) {
-        console.error("Failed to collect system info:", error);
-        // Continue with scan even if system info fails
+        console.error("Failed to collect device info:", error);
       } finally {
         setIsLoadingSystemInfo(false);
       }
@@ -860,14 +866,17 @@ function App() {
 
           // Setup event listener for progress updates
           const { listen } = await import("@tauri-apps/api/event");
+          let lastKwProgressUpdate = 0;
           const unlisten = await listen("scan:module_progress", (event: any) => {
             const data = event.payload;
             if (data.module === "keywords") {
+              const now = Date.now();
+              if (now - lastKwProgressUpdate < 300) return; // Throttle
+              lastKwProgressUpdate = now;
               keywordProgress.percentage = data.progress;
               keywordProgress.currentItem = data.current_item || "Scanning...";
               keywordProgress.itemsProcessed = data.items_processed || 0;
               keywordProgress.totalItems = data.total_items || 0;
-              // Processing overlay removed
               setScanProgress([...progressList]);
             }
           });
@@ -956,7 +965,7 @@ function App() {
             hashProgress.currentItem = data.current_item || "Checking...";
             hashProgress.itemsProcessed = data.items_processed || 0;
             hashProgress.totalItems = data.total_items || 0;
-            setScanProgress([...progressList]);
+            setScanProgress(prev => [...prev.filter(p => p.moduleId !== "hash_matching"), hashProgress]);
           }
         });
 
@@ -1017,20 +1026,34 @@ function App() {
         const { listen } = await import("@tauri-apps/api/event");
         
         // Listen for individual media files as they're found
+        let mediaBatch: MediaFile[] = [];
+        let mediaFlushTimer: ReturnType<typeof setTimeout> | null = null;
         const unlistenMediaFound = await listen("scan:media_found", (event: any) => {
           const mediaFile = event.payload as MediaFile;
-          // Add media file immediately to show progressive results
-          setMediaFiles(prevFiles => [...prevFiles, mediaFile]);
+          mediaBatch.push(mediaFile);
+          // Flush batch every 500ms to avoid per-file re-renders
+          if (!mediaFlushTimer) {
+            mediaFlushTimer = setTimeout(() => {
+              const batch = mediaBatch.splice(0);
+              if (batch.length > 0) {
+                setMediaFiles(prevFiles => [...prevFiles, ...batch]);
+              }
+              mediaFlushTimer = null;
+            }, 500);
+          }
         });
         
+        let lastMediaProgressUpdate = 0;
         const unlisten = await listen("scan:module_progress", (event: any) => {
           const data = event.payload;
           if (data.module === "media") {
+            const now = Date.now();
+            if (now - lastMediaProgressUpdate < 300) return; // Throttle to max ~3 updates/sec
+            lastMediaProgressUpdate = now;
             mediaProgress.percentage = data.progress;
             mediaProgress.currentItem = data.current_item || "Scanning...";
             mediaProgress.itemsProcessed = data.items_processed || 0;
             mediaProgress.totalItems = data.total_items || 0;
-            // Processing overlay removed
             setScanProgress([...progressList]);
           }
         });
@@ -1064,6 +1087,12 @@ function App() {
         } finally {
           unlisten();
           unlistenMediaFound();
+          // Flush any remaining media batch
+          if (mediaFlushTimer) clearTimeout(mediaFlushTimer);
+          if (mediaBatch.length > 0) {
+            const remaining = mediaBatch.splice(0);
+            setMediaFiles(prevFiles => [...prevFiles, ...remaining]);
+          }
         }
         
         setScanProgress([...progressList]);

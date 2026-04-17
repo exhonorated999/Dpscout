@@ -27,14 +27,11 @@ pub fn get_usb_device_info(drive_letter: &str) -> Result<UsbDeviceInfo, String> 
         return Err(format!("Drive {} does not exist", drive_letter));
     }
     
-    // Get drive name (label) - simplified with fallback
-    let drive_name = get_drive_label(drive_letter).unwrap_or_else(|_| format!("{}: Drive", drive_letter));
+    // Get drive name (label) via GetVolumeInformationW — instant, no WMIC
+    let drive_name = get_drive_label_fast(drive_letter)
+        .unwrap_or_else(|_| format!("{}: Drive", drive_letter));
     
-    // For USB scans, we don't need make/model
-    let make = None;
-    let model = None;
-    
-    // Get capacity info - with fallback
+    // Get capacity info via GetDiskFreeSpaceExW — instant
     let (capacity_gb, free_space_gb, used_space_gb) = match get_drive_capacity(drive_letter) {
         Ok((total_bytes, free_bytes)) => {
             let capacity = total_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -42,21 +39,21 @@ pub fn get_usb_device_info(drive_letter: &str) -> Result<UsbDeviceInfo, String> 
             let used = capacity - free;
             (capacity, free, used)
         }
-        Err(_) => (0.0, 0.0, 0.0), // Fallback to zero if we can't get capacity
+        Err(_) => (0.0, 0.0, 0.0),
     };
     
-    // Get serial number and volume ID - with fallback
-    let (serial_number, volume_id) = get_drive_identifiers(drive_letter)
+    // Get serial number and volume ID via GetVolumeInformationW — instant
+    let (serial_number, volume_id) = get_drive_identifiers_fast(drive_letter)
         .unwrap_or_else(|_| ("Unknown".to_string(), "Unknown".to_string()));
     
-    // Count files recursively (with timeout to avoid hanging on large drives)
-    let file_count = count_files_recursive(path);
+    // DO NOT count files — it walks the entire drive and can take minutes
+    let file_count = 0;
     
     Ok(UsbDeviceInfo {
         drive_letter: drive_letter.to_string(),
         drive_name,
-        make,
-        model,
+        make: None,
+        model: None,
         capacity_gb,
         used_space_gb,
         free_space_gb,
@@ -64,6 +61,89 @@ pub fn get_usb_device_info(drive_letter: &str) -> Result<UsbDeviceInfo, String> 
         serial_number,
         volume_id,
     })
+}
+
+/// Get drive label using GetVolumeInformationW — instant, no subprocess
+fn get_drive_label_fast(letter: &str) -> Result<String, String> {
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::um::fileapi::GetVolumeInformationW;
+        
+        let root = format!("{}:\\", letter);
+        let root_wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        
+        let mut name_buf: [u16; 256] = [0; 256];
+        let mut serial: u32 = 0;
+        
+        let result = unsafe {
+            GetVolumeInformationW(
+                root_wide.as_ptr(),
+                name_buf.as_mut_ptr(),
+                name_buf.len() as u32,
+                &mut serial,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                0,
+            )
+        };
+        
+        if result != 0 {
+            let len = name_buf.iter().position(|&c| c == 0).unwrap_or(name_buf.len());
+            let label = String::from_utf16_lossy(&name_buf[..len]);
+            if label.is_empty() {
+                Ok(format!("{}: Drive", letter))
+            } else {
+                Ok(label)
+            }
+        } else {
+            Ok(format!("{}: Drive", letter))
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Only supported on Windows".to_string())
+    }
+}
+
+/// Get drive serial/volume ID using GetVolumeInformationW — instant, no subprocess
+fn get_drive_identifiers_fast(letter: &str) -> Result<(String, String), String> {
+    #[cfg(target_os = "windows")]
+    {
+        use winapi::um::fileapi::GetVolumeInformationW;
+        
+        let root = format!("{}:\\", letter);
+        let root_wide: Vec<u16> = root.encode_utf16().chain(Some(0)).collect();
+        
+        let mut name_buf: [u16; 256] = [0; 256];
+        let mut serial: u32 = 0;
+        let mut fs_buf: [u16; 64] = [0; 64];
+        
+        let result = unsafe {
+            GetVolumeInformationW(
+                root_wide.as_ptr(),
+                name_buf.as_mut_ptr(),
+                name_buf.len() as u32,
+                &mut serial,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                fs_buf.as_mut_ptr(),
+                fs_buf.len() as u32,
+            )
+        };
+        
+        if result != 0 {
+            Ok((format!("{:08X}", serial), format!("VOL-{:08X}", serial)))
+        } else {
+            Err("GetVolumeInformationW failed".to_string())
+        }
+    }
+    
+    #[cfg(not(target_os = "windows"))]
+    {
+        Err("Only supported on Windows".to_string())
+    }
 }
 
 /// Get drive label/name
