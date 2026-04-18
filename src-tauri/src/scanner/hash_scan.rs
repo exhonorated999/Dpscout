@@ -364,17 +364,30 @@ where
     let progress_cb = &progress_callback;
     let match_cb = &match_callback;
     
+    // Use recv_timeout so progress updates every 500ms even between matches
+    // (old code used blocking .iter() which only reported when a match arrived)
     let mut last_progress_report = std::time::Instant::now();
     
-    for hash_match in match_rx.iter() {
-        if let Some(ref cb) = match_cb {
-            cb(&hash_match);
+    loop {
+        match match_rx.recv_timeout(std::time::Duration::from_millis(500)) {
+            Ok(hash_match) => {
+                if let Some(ref cb) = match_cb {
+                    cb(&hash_match);
+                }
+                all_matches.push(hash_match);
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+                // No match — still report progress below
+            }
+            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => {
+                break; // All senders dropped — workers are done
+            }
         }
         
-        all_matches.push(hash_match);
+        if is_cancelled() { break; }
         
-        // Emit progress periodically
-        if last_progress_report.elapsed().as_millis() > 250 {
+        // Report progress every 500ms regardless of whether a match arrived
+        if last_progress_report.elapsed().as_millis() >= 500 {
             let hashed = files_hashed.load(Ordering::Relaxed);
             let discovered = files_discovered.load(Ordering::Relaxed).max(hashed);
             progress_cb(hashed, discovered, format!("{} matches found", all_matches.len()));

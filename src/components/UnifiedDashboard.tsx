@@ -456,7 +456,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
   const renderContent = () => {
     switch (activeView) {
       case 'device-info':
-        return <DeviceInfoView systemInfo={systemInfo} deviceType={deviceType} selectedDrives={selectedDrives} />;
+        return <DeviceInfoView systemInfo={systemInfo} deviceType={deviceType} selectedDrives={selectedDrives} isScanning={isScanning} scanProgress={scanProgress} totalFilesScanned={totalFilesScanned} />;
       case 'ios-triage':
         return <IosTriageView onToggleFlag={toggleFlag} isFlagged={isFlagged} />;
       case 'applications':
@@ -744,7 +744,10 @@ const DeviceInfoView: React.FC<{
   systemInfo: SystemInfo | null; 
   deviceType?: DeviceType;
   selectedDrives?: string[];
-}> = ({ systemInfo, deviceType, selectedDrives = [] }) => {
+  isScanning?: boolean;
+  scanProgress?: any[];
+  totalFilesScanned?: number;
+}> = ({ systemInfo, deviceType, selectedDrives = [], isScanning = false, scanProgress = [], totalFilesScanned }) => {
   const [usbDeviceInfo, setUsbDeviceInfo] = React.useState<UsbDeviceInfo | null>(null);
   const [loadingUsbInfo, setLoadingUsbInfo] = React.useState(false);
 

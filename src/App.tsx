@@ -1106,12 +1106,9 @@ function App() {
       const scanDurationSecs = Math.floor((scanEndTime - scanStartTime) / 1000);
       
       // Update system info with scan duration
-      if (systemInfo) {
-        setSystemInfo({
-          ...systemInfo,
-          scan_duration_secs: scanDurationSecs
-        });
-      }
+      // Use functional updater to avoid stale closure — systemInfo in this
+      // closure is from when handleStartScan was created, not the current value
+      setSystemInfo(prev => prev ? { ...prev, scan_duration_secs: scanDurationSecs } : prev);
       
       console.log(`✓ Scan completed in ${scanDurationSecs} seconds`);
       setCurrentScanModule("");
