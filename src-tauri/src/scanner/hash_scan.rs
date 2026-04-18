@@ -264,6 +264,8 @@ where
                     &hash_db,
                     need_md5,
                     need_sha256,
+                    false,
+                    worker_id,
                 ) {
                     eprintln!("[Worker {}] ✓ HIT: {} (tier {})", 
                         worker_id, candidate.path.display(), candidate.tier);
@@ -419,9 +421,11 @@ where
 // Producer: USB mode — flat walk of entire drive
 // ════════════════════════════════════════════════════════════════════════
 
-/// USB mode: Walk entire drive, hash ALL files (not just media), smallest first.
-/// Evidence drives have no Windows structure — treat every file as a candidate.
-/// Uses jwalk for parallel enumeration, streams in batches sorted by size.
+/// USB mode: Walk entire drive, hash image/video files.
+/// Uses **depth-priority streaming**: shallow files go to workers immediately,
+/// deep files get buffered and sent after shallow ones finish.
+/// Evidence placed on a drive lives at root or 1-2 levels deep.
+/// Mobile backups, app icons, and cached thumbnails sit at depth 5+.
 fn discover_usb_files(
     scan_root: &str,
     tx: &Sender<FileCandidate>,
@@ -429,23 +433,28 @@ fn discover_usb_files(
 ) {
     if !Path::new(scan_root).exists() { return; }
     
-    eprintln!("[USB Scan] Walking entire drive: {}", scan_root);
+    eprintln!("[USB Scan] Depth-priority walk of: {}", scan_root);
     
-    // Collect files in batches of ~2000 for small-first sorting
-    // without needing to hold the entire drive in memory
-    let mut batch: Vec<FileCandidate> = Vec::with_capacity(2000);
+    // Threshold: files at depth <= this go directly to workers (streaming).
+    // Files deeper get buffered and sent after the walk.
+    const SHALLOW_DEPTH: usize = 3;
+    
+    let root_components = Path::new(scan_root).components().count();
+    let mut deep_buffer: Vec<FileCandidate> = Vec::new();
+    let mut shallow_count: usize = 0;
+    let mut deep_count: usize = 0;
+    
+    let mut entry_count: usize = 0;
     
     for entry in jwalk::WalkDir::new(scan_root)
         .skip_hidden(false)
         .follow_links(false)
         .max_depth(50)
         .process_read_dir(|_depth, _path, _state, children| {
-            // Skip only truly useless system dirs
             children.retain(|child_result| {
                 if let Ok(child) = child_result {
                     if child.file_type().is_dir() {
                         if let Some(name) = child.file_name.to_str() {
-                            // On evidence drives: only skip Windows system internals + dev noise
                             let skip = matches!(name,
                                 "System Volume Information" | "$Recycle.Bin" | "$WinREAgent" |
                                 "Recovery" | "Boot" | "EFI" | "Config.Msi" |
@@ -462,45 +471,60 @@ fn discover_usb_files(
         .into_iter()
         .filter_map(|e| e.ok())
     {
+        entry_count += 1;
+        if entry_count <= 5 {
+            eprintln!("[USB Scan] Entry {}: {:?} is_dir={}", entry_count, entry.path(), entry.file_type().is_dir());
+        }
+        
         if is_cancelled() { return; }
         
         if entry.file_type().is_dir() { continue; }
         
         let path = entry.path();
         
+        let ext_lower = match path.extension().and_then(|e| e.to_str()) {
+            Some(ext) => ext.to_lowercase(),
+            None => continue,
+        };
+        if !is_media_extension(&ext_lower) { continue; }
+        
         if let Ok(metadata) = fs::metadata(&path) {
             let file_size = metadata.len();
             if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
             
-            batch.push(FileCandidate {
+            // Depth relative to scan root
+            let file_depth = path.components().count().saturating_sub(root_components);
+            
+            let candidate = FileCandidate {
                 path,
                 size: file_size,
-                tier: 1, // All USB files are equal priority
-            });
+                tier: if file_depth <= SHALLOW_DEPTH { 0 } else { 1 },
+            };
             
-            // When batch is full, sort by size and send to workers
-            if batch.len() >= 2000 {
-                batch.sort_by_key(|f| f.size);
-                for candidate in batch.drain(..) {
-                    if is_cancelled() { return; }
-                    counter.fetch_add(1, Ordering::Relaxed);
-                    let _ = tx.send(candidate);
-                }
+            if file_depth <= SHALLOW_DEPTH {
+                // Shallow: stream immediately to workers
+                counter.fetch_add(1, Ordering::Relaxed);
+                let _ = tx.send(candidate);
+                shallow_count += 1;
+            } else {
+                // Deep: buffer for later — but count now so progress total is accurate
+                counter.fetch_add(1, Ordering::Relaxed);
+                deep_buffer.push(candidate);
+                deep_count += 1;
             }
         }
     }
     
-    // Send remaining batch
-    if !batch.is_empty() {
-        batch.sort_by_key(|f| f.size);
-        for candidate in batch.drain(..) {
-            if is_cancelled() { return; }
-            counter.fetch_add(1, Ordering::Relaxed);
-            let _ = tx.send(candidate);
-        }
+    eprintln!("[USB Scan] Walk done. Total entries: {}, Shallow (streamed): {}, Deep (buffered): {}", 
+        entry_count, shallow_count, deep_count);
+    
+    // Now send all buffered deep files
+    for candidate in deep_buffer {
+        if is_cancelled() { return; }
+        let _ = tx.send(candidate);
     }
     
-    eprintln!("[USB Scan] Walk complete. {} files queued.", counter.load(Ordering::Relaxed));
+    eprintln!("[USB Scan] All {} media files queued.", counter.load(Ordering::Relaxed));
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -787,6 +811,8 @@ fn check_file_hash(
     hash_db: &crate::hash_db::HashDatabase,
     need_md5: bool,
     need_sha256: bool,
+    _debug: bool,
+    _worker_id: usize,
 ) -> Option<HashMatch> {
     let (md5, sha256) = match compute_file_hashes_mmap(path, need_md5, need_sha256) {
         Ok(hashes) => hashes,

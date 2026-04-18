@@ -338,38 +338,46 @@ pub fn import_project_vic(json_path: String) -> Result<HashList, String> {
                 
                 // Extract MD5 hash if available
                 if let Some(md5) = entry.get("MD5").or_else(|| entry.get("md5")).and_then(|h| h.as_str()) {
-                    hashes.push(HashEntry {
-                        hash: md5.to_uppercase(),
-                        description: description.clone(),
-                        category: category.clone(),
-                    });
+                    if !md5.is_empty() {
+                        hashes.push(HashEntry {
+                            hash: md5.to_lowercase(),
+                            description: description.clone(),
+                            category: category.clone(),
+                        });
+                    }
                 }
                 
                 // Extract SHA1 hash if available
                 if let Some(sha1) = entry.get("SHA1").or_else(|| entry.get("sha1")).and_then(|h| h.as_str()) {
-                    hashes.push(HashEntry {
-                        hash: sha1.to_uppercase(),
-                        description: description.clone(),
-                        category: category.clone(),
-                    });
+                    if !sha1.is_empty() {
+                        hashes.push(HashEntry {
+                            hash: sha1.to_lowercase(),
+                            description: description.clone(),
+                            category: category.clone(),
+                        });
+                    }
                 }
                 
                 // Extract SHA256 hash if available
                 if let Some(sha256) = entry.get("SHA256").or_else(|| entry.get("sha256")).and_then(|h| h.as_str()) {
-                    hashes.push(HashEntry {
-                        hash: sha256.to_uppercase(),
-                        description: description.clone(),
-                        category: category.clone(),
-                    });
+                    if !sha256.is_empty() {
+                        hashes.push(HashEntry {
+                            hash: sha256.to_lowercase(),
+                            description: description.clone(),
+                            category: category.clone(),
+                        });
+                    }
                 }
                 
                 // Fallback: try generic "hash" field
                 if let Some(hash) = entry.get("hash").or_else(|| entry.get("Hash")).and_then(|h| h.as_str()) {
-                    hashes.push(HashEntry {
-                        hash: hash.to_uppercase(),
-                        description: description.clone(),
-                        category: category.clone(),
-                    });
+                    if !hash.is_empty() {
+                        hashes.push(HashEntry {
+                            hash: hash.to_lowercase(),
+                            description: description.clone(),
+                            category: category.clone(),
+                        });
+                    }
                 }
                 
                 // Log if no hash found in first few entries

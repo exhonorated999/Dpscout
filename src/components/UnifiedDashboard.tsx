@@ -574,6 +574,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
             onDismiss={() => setScanComplete(false)}
             onStopScan={isScanning ? onStopScan : undefined}
             backupProgress={backupProgress}
+            scanProgress={scanProgress}
           />
           
           <button 
@@ -831,11 +832,32 @@ const DeviceInfoView: React.FC<{
               <div className="info-value">{usbDeviceInfo.capacity_gb.toFixed(2)} GB</div>
             </div>
             <div className="info-card">
-              <div className="info-label">Files on Drive</div>
+              <div className="info-label">Media Files (Images/Video)</div>
               <div className="info-value">
-                {usbDeviceInfo.file_count >= 1000000
-                  ? '1,000,000+'
-                  : usbDeviceInfo.file_count.toLocaleString()}
+                {(() => {
+                  try {
+                    // After scan complete, use the saved total
+                    if (!isScanning && totalFilesScanned && totalFilesScanned > 0) {
+                      return totalFilesScanned.toLocaleString();
+                    }
+                    // During scan, show live progress from scan progress data
+                    const hashModule = (scanProgress || []).find((p: any) => p?.moduleId === 'hash_matching');
+                    const discovered = hashModule?.totalItems || 0;
+                    const processed = hashModule?.itemsProcessed || 0;
+                    if (discovered > 0) {
+                      if (isScanning && processed < discovered) {
+                        return `${processed.toLocaleString()} / ${discovered.toLocaleString()}`;
+                      }
+                      return discovered.toLocaleString();
+                    }
+                    if (usbDeviceInfo?.file_count > 0) {
+                      return usbDeviceInfo.file_count.toLocaleString();
+                    }
+                    return isScanning ? 'Scanning...' : '—';
+                  } catch {
+                    return '—';
+                  }
+                })()}
               </div>
             </div>
           </div>

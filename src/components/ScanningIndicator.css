@@ -249,6 +249,24 @@
   text-shadow: 0 0 10px rgba(0, 217, 255, 0.6);
 }
 
+/* Live file progress during scanning */
+.scanning-file-progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid rgba(65, 105, 225, 0.3);
+}
+
+.file-progress-text {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #9cb3ff;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 /* Scan Complete Indicator */
 .scan-complete-indicator {
   display: flex;

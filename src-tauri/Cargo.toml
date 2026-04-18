@@ -49,6 +49,7 @@ urlencoding = "2.1"
 tar = "0.4"
 flate2 = "1.0"
 crossbeam-channel = "0.5"
+bloomfilter = "1.0"
 wmi = "0.14"
 ureq = "2.9"
 

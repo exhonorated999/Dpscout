@@ -11,6 +11,7 @@ interface ScanningIndicatorProps {
   onDismiss?: () => void;
   onStopScan?: () => void;
   backupProgress?: number; // iOS backup progress (0-100)
+  scanProgress?: any[]; // Live scan progress data
 }
 
 export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({ 
@@ -22,7 +23,8 @@ export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({
   totalFilesScanned,
   onDismiss,
   onStopScan,
-  backupProgress = 0
+  backupProgress = 0,
+  scanProgress = []
 }) => {
   const [elapsedTime, setElapsedTime] = useState('00:00');
 
@@ -115,6 +117,26 @@ export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({
             <span className="timer-value">{elapsedTime}</span>
           </div>
         )}
+        {/* Live file progress during hash scanning */}
+        {isScanning && (scanProgress || []).length > 0 && (() => {
+          try {
+            const hashModule = (scanProgress || []).find((p: any) => p?.moduleId === 'hash_matching' && p?.status === 'scanning');
+            if (hashModule && hashModule.itemsProcessed > 0) {
+              const processed = hashModule.itemsProcessed;
+              const total = hashModule.totalItems || 0;
+              const pct = total > 0 ? Math.round((processed / total) * 100) : 0;
+              return (
+                <div className="scanning-file-progress">
+                  <span className="file-progress-text">
+                    FILES: {processed.toLocaleString()} {total > processed ? `/ ${total.toLocaleString()}` : ''} scanned
+                    {total > 0 && total > processed && ` (${pct}%)`}
+                  </span>
+                </div>
+              );
+            }
+          } catch { /* safe */ }
+          return null;
+        })()}
         {backupProgress > 0 && backupProgress < 100 && (
           <div className="backup-progress-container">
             <div className="backup-progress-bar">
