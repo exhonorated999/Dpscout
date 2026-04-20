@@ -851,63 +851,89 @@ fn check_file_hash(
         .unwrap_or("")
         .to_string();
     
+    // Size validation helper: if the DB has a stored file_size for this hash,
+    // the actual file must match. This eliminates MD5 collision false positives
+    // (e.g. small icons matching unrelated hashes in a 19M+ hash database).
+    let size_matches = |match_data: &crate::hash_db::HashMatch| -> bool {
+        match match_data.file_size {
+            Some(db_size) if db_size > 0 => {
+                let actual = file_size as i64;
+                let expected = db_size;
+                if actual == expected {
+                    true
+                } else {
+                    eprintln!("[Hash Scan] Size mismatch — rejecting false positive: {} (actual {}B vs DB {}B)",
+                        path.display(), actual, expected);
+                    false
+                }
+            }
+            _ => true, // No size data in DB — accept the match
+        }
+    };
+    
     // Check SHA256 first (most unique)
     if let Some(ref h) = sha256 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA256") {
-            return Some(HashMatch {
-                file_path: path.to_string_lossy().to_string(),
-                file_name: file_name(),
-                file_size,
-                extension: extension(),
-                md5_hash: md5.clone().unwrap_or_default(),
-                sha256_hash: h.clone(),
-                matched_hash: h.clone(),
-                hash_type: "SHA256".to_string(),
-                list_name: match_data.source.clone(),
-                list_source: match_data.source.clone(),
-                description: match_data.description.clone(),
-                severity: "Critical".to_string(),
-            });
+            if size_matches(&match_data) {
+                return Some(HashMatch {
+                    file_path: path.to_string_lossy().to_string(),
+                    file_name: file_name(),
+                    file_size,
+                    extension: extension(),
+                    md5_hash: md5.clone().unwrap_or_default(),
+                    sha256_hash: h.clone(),
+                    matched_hash: h.clone(),
+                    hash_type: "SHA256".to_string(),
+                    list_name: match_data.source.clone(),
+                    list_source: match_data.source.clone(),
+                    description: match_data.description.clone(),
+                    severity: "Critical".to_string(),
+                });
+            }
         }
     }
     
     // Check SHA1
     if let Some(ref h) = sha1 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA1") {
-            return Some(HashMatch {
-                file_path: path.to_string_lossy().to_string(),
-                file_name: file_name(),
-                file_size,
-                extension: extension(),
-                md5_hash: md5.clone().unwrap_or_default(),
-                sha256_hash: sha256.clone().unwrap_or_default(),
-                matched_hash: h.clone(),
-                hash_type: "SHA1".to_string(),
-                list_name: match_data.source.clone(),
-                list_source: match_data.source.clone(),
-                description: match_data.description.clone(),
-                severity: "Critical".to_string(),
-            });
+            if size_matches(&match_data) {
+                return Some(HashMatch {
+                    file_path: path.to_string_lossy().to_string(),
+                    file_name: file_name(),
+                    file_size,
+                    extension: extension(),
+                    md5_hash: md5.clone().unwrap_or_default(),
+                    sha256_hash: sha256.clone().unwrap_or_default(),
+                    matched_hash: h.clone(),
+                    hash_type: "SHA1".to_string(),
+                    list_name: match_data.source.clone(),
+                    list_source: match_data.source.clone(),
+                    description: match_data.description.clone(),
+                    severity: "Critical".to_string(),
+                });
+            }
         }
     }
     
     // Check MD5
     if let Some(ref h) = md5 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "MD5") {
-            return Some(HashMatch {
-                file_path: path.to_string_lossy().to_string(),
-                file_name: file_name(),
-                file_size,
-                extension: extension(),
-                md5_hash: h.clone(),
-                sha256_hash: sha256.unwrap_or_default(),
-                matched_hash: h.clone(),
-                hash_type: "MD5".to_string(),
-                list_name: match_data.source.clone(),
-                list_source: match_data.source.clone(),
-                description: match_data.description.clone(),
-                severity: "Critical".to_string(),
-            });
+            if size_matches(&match_data) {
+                return Some(HashMatch {
+                    file_path: path.to_string_lossy().to_string(),
+                    file_name: file_name(),
+                    file_size,
+                    extension: extension(),
+                    md5_hash: h.clone(),
+                    sha256_hash: sha256.unwrap_or_default(),
+                    matched_hash: h.clone(),
+                    hash_type: "MD5".to_string(),
+                    list_name: match_data.source.clone(),
+                    list_source: match_data.source.clone(),
+                    description: match_data.description.clone(),
+                    severity: "Critical".to_string(),
+                });
+            }
         }
     }
     

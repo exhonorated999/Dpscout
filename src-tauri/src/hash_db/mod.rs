@@ -12,6 +12,7 @@ pub struct HashMatch {
     pub source: String,
     pub category: Option<String>,
     pub description: Option<String>,
+    pub file_size: Option<i64>,
 }
 
 pub struct HashDatabase {
@@ -431,7 +432,7 @@ impl HashDatabase {
         // This path is VERY rare (only actual CSAM matches)
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description 
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE LOWER(h.hash) = ?1 
@@ -445,6 +446,7 @@ impl HashDatabase {
                 source: row.get(2)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
+                file_size: row.get(5)?,
             })
         }).ok()
     }
@@ -464,7 +466,7 @@ impl HashDatabase {
         let conn = self.conn.lock().unwrap();
         
         let mut stmt = conn.prepare(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description 
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE h.hash = ?1 AND h.hash_type = ?2 
@@ -478,6 +480,7 @@ impl HashDatabase {
                 source: row.get(2)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
+                file_size: row.get(5)?,
             })
         });
         
@@ -502,7 +505,7 @@ impl HashDatabase {
         let placeholders_str = placeholders.join(", ");
         
         let query = format!(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, l.name
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE h.hash = ? AND h.hash_type = ? 
@@ -528,6 +531,7 @@ impl HashDatabase {
                 source: row.get(2)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
+                file_size: row.get(5)?,
             })
         });
         
@@ -545,7 +549,7 @@ impl HashDatabase {
         
         for (hash, hash_type) in hashes {
             let mut stmt = conn.prepare_cached(
-                "SELECT h.hash, h.hash_type, l.source, h.category, h.description 
+                "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
                  FROM hashes h 
                  JOIN hash_lists l ON h.list_id = l.id 
                  WHERE h.hash = ?1 AND h.hash_type = ?2 
@@ -559,6 +563,7 @@ impl HashDatabase {
                     source: row.get(2)?,
                     category: row.get(3)?,
                     description: row.get(4)?,
+                    file_size: row.get(5)?,
                 })
             });
             
