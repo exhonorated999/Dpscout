@@ -353,6 +353,12 @@ async fn import_and_load_hash_list(
         })?;
         
         // Reload in-memory cache with new hashes
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "loading".to_string(),
+            message: format!("Loading {} hashes into memory for fast scanning...", imported_count),
+            total: Some(imported_count as usize),
+            progress: Some(imported_count as usize),
+        });
         let _ = hash_db.load_hashes_into_memory();
         
         let _ = app.emit("hash-import-progress", HashImportProgress {

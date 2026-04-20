@@ -1027,6 +1027,7 @@ const HashListsPanel: React.FC<{
     total: number;
     percentage: number;
     message: string;
+    stage?: string;
   } | null>(null);
   const [dbStats, setDbStats] = useState<any>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
@@ -1079,12 +1080,17 @@ const HashListsPanel: React.FC<{
           const data = event.payload;
           console.log('Import progress:', data);
           
-          // Update progress state
+          // Backend sends: { stage, message, total?, progress? }
+          const current = data.progress || 0;
+          const total = data.total || current;  // streaming: total unknown, use current
+          const pct = total > 0 ? Math.min((current / total) * 100, 100) : (data.stage === 'importing' ? 50 : 0);
+          
           setImportProgress({
-            current: data.hashes_processed || 0,
-            total: data.total_hashes || 0,
-            percentage: data.progress || 0,
-            message: data.message || 'Processing...'
+            current,
+            total,
+            percentage: data.stage === 'complete' ? 100 : pct,
+            message: data.message || 'Processing...',
+            stage: data.stage || 'importing'
           });
         });
         
@@ -1147,11 +1153,13 @@ const HashListsPanel: React.FC<{
         const { listen } = await import('@tauri-apps/api/event');
         const unlisten = await listen<any>('hash-import-progress', (event) => {
           const data = event.payload;
+          const current = data.progress || 0;
+          const total = data.total || current;
           setImportProgress({
             stage: data.stage || 'importing',
-            current: data.progress || 0,
-            total: data.total_hashes || 0,
-            percentage: data.progress || 0,
+            current,
+            total,
+            percentage: total > 0 ? Math.min((current / total) * 100, 100) : 0,
             message: data.message || 'Processing...'
           });
         });
@@ -1264,20 +1272,26 @@ const HashListsPanel: React.FC<{
             <div className="progress-info">
               <p className="progress-message">{importProgress.message}</p>
               <p className="progress-stats">
-                {importProgress.current.toLocaleString()} / {importProgress.total.toLocaleString()} hashes
+                {importProgress.current.toLocaleString()} hashes imported
               </p>
             </div>
             <div className="progress-bar-container">
               <div 
                 className="progress-bar-fill" 
-                style={{ width: `${importProgress.percentage}%` }}
+                style={{ width: `${Math.max(importProgress.percentage, importProgress.current > 0 ? 5 : 0)}%` }}
               >
-                <span className="progress-percentage">{Math.round(importProgress.percentage)}%</span>
               </div>
             </div>
-            <p className="progress-note">
-              ⏱️ Large files (Project VIC) may take 20+ minutes. Please wait...
-            </p>
+            {importProgress.stage === 'importing' && (
+              <p className="progress-note">
+                ⏱️ Large files (Project VIC) may take a few minutes. Please wait...
+              </p>
+            )}
+            {importProgress.stage === 'loading' && (
+              <p className="progress-note">
+                🧠 Loading hashes into memory for fast scanning...
+              </p>
+            )}
           </div>
         </div>
       )}
