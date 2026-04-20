@@ -60,12 +60,10 @@ impl HashDatabase {
         hash_db.initialize_schema()?;
         hash_db.create_indexes()?;
         
-        // Automatically load hashes into memory on initialization
-        eprintln!("[Hash DB] Loading hashes into memory cache...");
-        match hash_db.load_hashes_into_memory() {
-            Ok(count) => eprintln!("[Hash DB] ✓ Loaded {} hashes into memory cache", count),
-            Err(e) => eprintln!("[Hash DB] Warning: Failed to load cache: {}", e),
-        }
+        // NOTE: hashes are NOT loaded into memory here — call load_hashes_into_memory()
+        // explicitly when needed (after import, after delete, before scan).
+        // Loading 19M+ hashes (~1.7 GB) on every HashDatabase::new() would freeze the UI
+        // since many commands create a new instance just for quick queries.
         
         Ok(hash_db)
     }
@@ -582,8 +580,10 @@ impl HashDatabase {
             |row| row.get(0)
         ).unwrap_or(0);
         
+        // Use pre-computed hash_count from hash_lists table (instant)
+        // instead of COUNT(*) on hashes table (full scan on 19M+ rows = 10-30s)
         let total_hashes: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM hashes",
+            "SELECT COALESCE(SUM(hash_count), 0) FROM hash_lists",
             [],
             |row| row.get(0)
         ).unwrap_or(0);

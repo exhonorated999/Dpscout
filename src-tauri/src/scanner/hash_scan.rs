@@ -193,6 +193,12 @@ where
             .map_err(|e| format!("Failed to open hash database: {}", e))?
     );
     
+    // Load hashes into memory for fast scanning (bloom + HashSet)
+    eprintln!("[Hash Scan] Loading hashes into memory...");
+    let loaded = hash_db.load_hashes_into_memory()
+        .map_err(|e| format!("Failed to load hashes into memory: {}", e))?;
+    eprintln!("[Hash Scan] ✓ {} hashes loaded into memory", loaded);
+    
     let stats = hash_db.get_stats()
         .map_err(|e| format!("Failed to get database stats: {}", e))?;
     
