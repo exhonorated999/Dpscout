@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use sha2::{Sha256, Digest};
+use sha1::Sha1;
 use md5::Md5;
 use std::io::Read;
 use std::collections::HashSet;
@@ -204,8 +205,9 @@ where
     // Which hash types to compute
     let db_hash_types = hash_db.get_hash_types();
     let need_md5 = db_hash_types.contains("MD5");
+    let need_sha1 = db_hash_types.contains("SHA1");
     let need_sha256 = db_hash_types.contains("SHA256") || db_hash_types.is_empty();
-    eprintln!("[Hash Scan] Hash types: MD5={}, SHA256={}", need_md5, need_sha256);
+    eprintln!("[Hash Scan] Hash types: MD5={}, SHA1={}, SHA256={}", need_md5, need_sha1, need_sha256);
     
     // File size pre-filter from DB
     let known_sizes = hash_db.get_known_sizes();
@@ -263,6 +265,7 @@ where
                     candidate.size,
                     &hash_db,
                     need_md5,
+                    need_sha1,
                     need_sha256,
                     false,
                     worker_id,
@@ -823,11 +826,12 @@ fn check_file_hash(
     file_size: u64,
     hash_db: &crate::hash_db::HashDatabase,
     need_md5: bool,
+    need_sha1: bool,
     need_sha256: bool,
     _debug: bool,
     _worker_id: usize,
 ) -> Option<HashMatch> {
-    let (md5, sha256) = match compute_file_hashes_mmap(path, need_md5, need_sha256) {
+    let (md5, sha1, sha256) = match compute_file_hashes_mmap(path, need_md5, need_sha1, need_sha256) {
         Ok(hashes) => hashes,
         Err(_) => return None,
     };
@@ -841,7 +845,7 @@ fn check_file_hash(
         .unwrap_or("")
         .to_string();
     
-    // Check SHA256 first (more unique, preferred)
+    // Check SHA256 first (most unique)
     if let Some(ref h) = sha256 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA256") {
             return Some(HashMatch {
@@ -861,7 +865,27 @@ fn check_file_hash(
         }
     }
     
-    // Check MD5 as fallback
+    // Check SHA1
+    if let Some(ref h) = sha1 {
+        if let Some(match_data) = hash_db.check_hash_fast(h, "SHA1") {
+            return Some(HashMatch {
+                file_path: path.to_string_lossy().to_string(),
+                file_name: file_name(),
+                file_size,
+                extension: extension(),
+                md5_hash: md5.clone().unwrap_or_default(),
+                sha256_hash: sha256.clone().unwrap_or_default(),
+                matched_hash: h.clone(),
+                hash_type: "SHA1".to_string(),
+                list_name: match_data.source.clone(),
+                list_source: match_data.source.clone(),
+                description: match_data.description.clone(),
+                severity: "Critical".to_string(),
+            });
+        }
+    }
+    
+    // Check MD5
     if let Some(ref h) = md5 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "MD5") {
             return Some(HashMatch {
@@ -889,8 +913,9 @@ fn check_file_hash(
 fn compute_file_hashes_mmap(
     path: &Path,
     need_md5: bool,
+    need_sha1: bool,
     need_sha256: bool,
-) -> Result<(Option<String>, Option<String>), String> {
+) -> Result<(Option<String>, Option<String>, Option<String>), String> {
     let file = fs::File::open(path)
         .map_err(|e| format!("Failed to open: {}", e))?;
     
@@ -900,8 +925,9 @@ fn compute_file_hashes_mmap(
     
     if file_len == 0 {
         let md5 = if need_md5 { Some("d41d8cd98f00b204e9800998ecf8427e".to_string()) } else { None };
+        let sha1 = if need_sha1 { Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string()) } else { None };
         let sha256 = if need_sha256 { Some("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string()) } else { None };
-        return Ok((md5, sha256));
+        return Ok((md5, sha1, sha256));
     }
     
     // Memory-mapped I/O for files <= 512MB
@@ -917,6 +943,14 @@ fn compute_file_hashes_mmap(
             None
         };
         
+        let sha1_hash = if need_sha1 {
+            let mut h = Sha1::new();
+            h.update(&mmap[..]);
+            Some(format!("{:x}", h.finalize()))
+        } else {
+            None
+        };
+        
         let sha256_hash = if need_sha256 {
             let mut h = Sha256::new();
             h.update(&mmap[..]);
@@ -925,13 +959,14 @@ fn compute_file_hashes_mmap(
             None
         };
         
-        return Ok((md5_hash, sha256_hash));
+        return Ok((md5_hash, sha1_hash, sha256_hash));
     }
     
     // Streaming fallback for very large files
     let mut file = file;
     let mut buffer = vec![0u8; HASH_BUFFER_SIZE];
     let mut md5_hasher = if need_md5 { Some(Md5::new()) } else { None };
+    let mut sha1_hasher = if need_sha1 { Some(Sha1::new()) } else { None };
     let mut sha256_hasher = if need_sha256 { Some(Sha256::new()) } else { None };
     
     loop {
@@ -939,11 +974,13 @@ fn compute_file_hashes_mmap(
             .map_err(|e| format!("Read error: {}", e))?;
         if n == 0 { break; }
         if let Some(ref mut h) = md5_hasher { h.update(&buffer[..n]); }
+        if let Some(ref mut h) = sha1_hasher { h.update(&buffer[..n]); }
         if let Some(ref mut h) = sha256_hasher { h.update(&buffer[..n]); }
     }
     
     Ok((
         md5_hasher.map(|h| format!("{:x}", h.finalize())),
+        sha1_hasher.map(|h| format!("{:x}", h.finalize())),
         sha256_hasher.map(|h| format!("{:x}", h.finalize())),
     ))
 }

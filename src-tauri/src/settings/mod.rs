@@ -45,6 +45,8 @@ pub struct HashList {
     pub hashes: Vec<HashEntry>,
     pub enabled: bool,
     pub source: String,
+    #[serde(rename = "hashCount", default)]
+    pub hash_count: usize,
     #[serde(rename = "createdAt")]
     pub created_at: String,
     #[serde(rename = "modifiedAt")]
@@ -414,6 +416,7 @@ pub fn import_project_vic(json_path: String) -> Result<HashList, String> {
         name: "Project VIC Import".to_string(),
         description: format!("Imported from {}", json_path),
         hash_type: detected_hash_type,
+        hash_count: hashes.len(),
         hashes,
         enabled: true,
         source: "Project VIC".to_string(),

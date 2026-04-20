@@ -186,14 +186,30 @@ impl HashDatabase {
         for obj_str in Self::extract_json_objects(data, search_from) {
             // Parse each entry individually — cheap because obj_str is a small slice
             if let Ok(entry) = serde_json::from_str::<VicEntry>(obj_str) {
-                if let Some(sha256) = entry.sha256 {
-                    if !sha256.is_empty() {
-                        batch.push(("SHA256".to_string(), sha256, entry.category.clone(), entry.description.clone(), entry.file_size));
-                    }
-                }
-                if let Some(md5) = entry.md5 {
+                // Import ONE hash per entry (priority: MD5 > SHA1 > SHA256)
+                // MD5 is fastest to compute during scans and covers ~100% of VIC entries.
+                // Importing all types would double DB size/RAM with zero benefit.
+                let imported = if let Some(ref md5) = entry.md5 {
                     if !md5.is_empty() {
-                        batch.push(("MD5".to_string(), md5, entry.category.clone(), entry.description.clone(), entry.file_size));
+                        batch.push(("MD5".to_string(), md5.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
+                        true
+                    } else { false }
+                } else { false };
+                
+                if !imported {
+                    let imported2 = if let Some(ref sha1) = entry.sha1 {
+                        if !sha1.is_empty() {
+                            batch.push(("SHA1".to_string(), sha1.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
+                            true
+                        } else { false }
+                    } else { false };
+                    
+                    if !imported2 {
+                        if let Some(ref sha256) = entry.sha256 {
+                            if !sha256.is_empty() {
+                                batch.push(("SHA256".to_string(), sha256.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
+                            }
+                        }
                     }
                 }
             }
@@ -783,13 +799,15 @@ impl<'a> Iterator for VicObjectIter<'a> {
 struct VicEntry {
     #[serde(alias = "SHA256", alias = "sha256")]
     sha256: Option<String>,
+    #[serde(alias = "SHA1", alias = "sha1", alias = "Sha1")]
+    sha1: Option<String>,
     #[serde(alias = "MD5", alias = "md5")]
     md5: Option<String>,
     #[serde(alias = "Category", alias = "category")]
     category: Option<String>,
-    #[serde(alias = "Description", alias = "description")]
+    #[serde(alias = "Description", alias = "description", alias = "Series", alias = "series")]
     description: Option<String>,
-    #[serde(alias = "FileSize", alias = "fileSize", alias = "file_size", alias = "Size", alias = "size")]
+    #[serde(alias = "FileSize", alias = "fileSize", alias = "file_size", alias = "Size", alias = "size", alias = "MediaSize", alias = "mediaSize")]
     file_size: Option<i64>,
 }
 

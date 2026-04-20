@@ -293,6 +293,7 @@ async fn import_txt_hash_list(
             category: None,
             description: None,
         }).collect(),
+        hash_count: total_hashes,
         enabled: true,
         created_at: now.clone(),
         modified_at: now,
@@ -309,78 +310,137 @@ async fn import_and_load_hash_list(
 ) -> Result<settings::HashList, String> {
     use tauri::Emitter;
     
-    // Parse the JSON file
     let _ = app.emit("hash-import-progress", HashImportProgress {
         stage: "parsing".to_string(),
-        message: "Reading JSON file...".to_string(),
+        message: "Analyzing file...".to_string(),
         total: None,
         progress: None,
     });
     
-    let hash_list = import_project_vic(json_path)?;
-    let total_hashes = hash_list.hashes.len();
+    // Check file size — large files use streaming import (no full-memory load)
+    let file_size = std::fs::metadata(&json_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     
-    // Load into database with progress updates
-    let _ = app.emit("hash-import-progress", HashImportProgress {
-        stage: "importing".to_string(),
-        message: format!("Importing {} hashes...", total_hashes),
-        total: Some(total_hashes),
-        progress: Some(0),
-    });
+    let is_large = file_size > 10_000_000; // >10 MB → streaming path
+    eprintln!("[Hash Import] File: {} ({:.1} MB) — using {} path", 
+        json_path, file_size as f64 / 1_048_576.0, if is_large { "streaming" } else { "standard" });
     
-    let hash_db = hash_db::HashDatabase::new()?;
-    
-    // Default hash type from the list
-    let default_hash_type = match hash_list.hash_type {
-        settings::HashType::MD5 => "MD5",
-        settings::HashType::SHA1 => "SHA1",
-        settings::HashType::SHA256 => "SHA256",
-    };
-    
-    // Import the hash list
-    let list_id = hash_db.import_hash_list(
-        &hash_list.name,
-        &hash_list.source,
-        default_hash_type,
-    )?;
-    
-    // Import all hashes in batches with progress updates
-    let batch_size = 5000; // Larger batches for better performance
-    let _total_batches = (hash_list.hashes.len() + batch_size - 1) / batch_size;
-    
-    for (batch_idx, chunk) in hash_list.hashes.chunks(batch_size).enumerate() {
-        // Build batch data
-        let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
-            let hash_type_str = match entry.hash.len() {
-                32 => "MD5".to_string(),
-                40 => "SHA1".to_string(),
-                64 => "SHA256".to_string(),
-                _ => default_hash_type.to_string(),
-            };
-            (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
-        }).collect();
-        
-        hash_db.add_hashes_batch(list_id, &batch_data).ok();
-        
-        // Emit progress every batch
-        let processed = ((batch_idx + 1) * batch_size).min(hash_list.hashes.len());
+    if is_large {
+        // ── STREAMING PATH: mmap + brace-counting, ~50MB peak RAM ──
         let _ = app.emit("hash-import-progress", HashImportProgress {
             stage: "importing".to_string(),
-            message: format!("Imported {} of {} hashes...", processed, total_hashes),
-            total: Some(total_hashes),
-            progress: Some(processed),
+            message: format!("Streaming import of {:.0} MB file...", file_size as f64 / 1_048_576.0),
+            total: None,
+            progress: None,
         });
+        
+        let file_name = std::path::Path::new(&json_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Project VIC Import")
+            .to_string();
+        
+        let hash_db = hash_db::HashDatabase::new()?;
+        let imported_count = hash_db.import_vic_json(&json_path, &file_name)?;
+        
+        // Reload in-memory cache with new hashes
+        let _ = hash_db.load_hashes_into_memory();
+        
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "complete".to_string(),
+            message: format!("Imported {} hashes!", imported_count),
+            total: Some(imported_count as usize),
+            progress: Some(imported_count as usize),
+        });
+        
+        // Return metadata-only HashList (hashes: [] — they live in SQLite only)
+        let now = chrono::Utc::now().to_rfc3339();
+        let hash_list = settings::HashList {
+            id: chrono::Utc::now().timestamp().to_string(),
+            name: file_name,
+            description: format!("Project VIC — {} hashes from {}", imported_count, 
+                std::path::Path::new(&json_path).file_name().unwrap_or_default().to_string_lossy()),
+            hash_type: settings::HashType::MD5, // VIC primarily uses MD5
+            hashes: vec![], // DB-only — no inline hashes
+            hash_count: imported_count as usize,
+            enabled: true,
+            source: "Project VIC".to_string(),
+            created_at: now.clone(),
+            modified_at: now,
+        };
+        
+        eprintln!("✓ Streaming import complete: {} hashes (metadata-only HashList)", imported_count);
+        Ok(hash_list)
+    } else {
+        // ── STANDARD PATH: small files, load into memory ──
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "parsing".to_string(),
+            message: "Reading JSON file...".to_string(),
+            total: None,
+            progress: None,
+        });
+        
+        let hash_list = import_project_vic(json_path)?;
+        let total_hashes = hash_list.hashes.len();
+        
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "importing".to_string(),
+            message: format!("Importing {} hashes...", total_hashes),
+            total: Some(total_hashes),
+            progress: Some(0),
+        });
+        
+        let hash_db = hash_db::HashDatabase::new()?;
+        
+        let default_hash_type = match hash_list.hash_type {
+            settings::HashType::MD5 => "MD5",
+            settings::HashType::SHA1 => "SHA1",
+            settings::HashType::SHA256 => "SHA256",
+        };
+        
+        let list_id = hash_db.import_hash_list(
+            &hash_list.name,
+            &hash_list.source,
+            default_hash_type,
+        )?;
+        
+        let batch_size = 5000;
+        for (batch_idx, chunk) in hash_list.hashes.chunks(batch_size).enumerate() {
+            let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
+                let hash_type_str = match entry.hash.len() {
+                    32 => "MD5".to_string(),
+                    40 => "SHA1".to_string(),
+                    64 => "SHA256".to_string(),
+                    _ => default_hash_type.to_string(),
+                };
+                (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
+            }).collect();
+            
+            hash_db.add_hashes_batch(list_id, &batch_data).ok();
+            
+            let processed = ((batch_idx + 1) * batch_size).min(hash_list.hashes.len());
+            let _ = app.emit("hash-import-progress", HashImportProgress {
+                stage: "importing".to_string(),
+                message: format!("Imported {} of {} hashes...", processed, total_hashes),
+                total: Some(total_hashes),
+                progress: Some(processed),
+            });
+        }
+        
+        // Reload in-memory cache
+        let _ = hash_db.load_hashes_into_memory();
+        
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "complete".to_string(),
+            message: "Import complete!".to_string(),
+            total: Some(total_hashes),
+            progress: Some(total_hashes),
+        });
+        
+        eprintln!("✓ Hash list imported successfully");
+        Ok(hash_list)
     }
-    
-    let _ = app.emit("hash-import-progress", HashImportProgress {
-        stage: "complete".to_string(),
-        message: "Import complete!".to_string(),
-        total: Some(total_hashes),
-        progress: Some(total_hashes),
-    });
-    
-    eprintln!("✓ Hash list imported successfully");
-    Ok(hash_list)
 }
 
 #[tauri::command]

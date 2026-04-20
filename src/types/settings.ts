@@ -25,6 +25,7 @@ export interface HashList {
   description: string;
   hashType: 'MD5' | 'SHA1' | 'SHA256';
   hashes: HashEntry[];
+  hashCount?: number; // DB-stored count (for large VIC imports where hashes=[] to save memory)
   enabled: boolean;
   source: string; // e.g., "Project VIC", "NCMEC", "Custom"
   createdAt: string;

@@ -1103,7 +1103,7 @@ const HashListsPanel: React.FC<{
           // Refresh stats
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashes.length}\nTotal lists: ${updatedLists.length}\n\nLook for it in the left sidebar!`);
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nTotal lists: ${updatedLists.length}\n\nLook for it in the left sidebar!`);
         } finally {
           unlisten();
         }
@@ -1345,7 +1345,7 @@ const HashListsPanel: React.FC<{
                     className="list-checkbox"
                   />
                   <span className="list-name">{list.name}</span>
-                  <span className="list-count">{list.hashes.length.toLocaleString()}</span>
+                  <span className="list-count">{(list.hashCount || list.hashes.length).toLocaleString()}</span>
                 </div>
                 <div className="list-item-meta">
                   <span className="badge">{list.hashType}</span>
@@ -1362,7 +1362,7 @@ const HashListsPanel: React.FC<{
               <div className="details-header-panel">
                 <div>
                   <h3>{selectedList.name}</h3>
-                  <p className="details-meta">{selectedList.hashes.length.toLocaleString()} hashes • {selectedList.hashType}</p>
+                  <p className="details-meta">{(selectedList.hashCount || selectedList.hashes.length).toLocaleString()} hashes • {selectedList.hashType}</p>
                 </div>
                 <div className="details-actions">
                   <Button variant="danger" size="sm" onClick={() => deleteList(selectedList.id)}>
