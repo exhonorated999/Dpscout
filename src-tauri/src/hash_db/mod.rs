@@ -136,7 +136,9 @@ impl HashDatabase {
     ///
     /// Uses memory-mapped I/O + streaming object extraction — peak RAM ~50 MB
     /// regardless of file size. Inserts in 50K-entry batched transactions.
-    pub fn import_vic_json(&self, json_path: &str, list_name: &str) -> Result<u64, String> {
+    pub fn import_vic_json<F>(&self, json_path: &str, list_name: &str, on_progress: F) -> Result<u64, String> 
+    where F: Fn(u64, u64) // (imported_count, objects_scanned)
+    {
         eprintln!("[VIC Import] Starting import of: {}", json_path);
         
         let file = std::fs::File::open(json_path)
@@ -183,32 +185,44 @@ impl HashDatabase {
         conn.execute_batch("BEGIN TRANSACTION")
             .map_err(|e| format!("Failed to begin transaction: {}", e))?;
         
+        let mut parse_errors = 0u64;
+        let mut objects_seen = 0u64;
         for obj_str in Self::extract_json_objects(data, search_from) {
+            objects_seen += 1;
             // Parse each entry individually — cheap because obj_str is a small slice
-            if let Ok(entry) = serde_json::from_str::<VicEntry>(obj_str) {
-                // Import ONE hash per entry (priority: MD5 > SHA1 > SHA256)
-                // MD5 is fastest to compute during scans and covers ~100% of VIC entries.
-                // Importing all types would double DB size/RAM with zero benefit.
-                let imported = if let Some(ref md5) = entry.md5 {
-                    if !md5.is_empty() {
-                        batch.push(("MD5".to_string(), md5.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
+            let entry = match serde_json::from_str::<VicEntry>(obj_str) {
+                Ok(e) => e,
+                Err(e) => {
+                    parse_errors += 1;
+                    if parse_errors <= 3 {
+                        eprintln!("[VIC Import] Parse error #{}: {} — entry: {}", 
+                            parse_errors, e, &obj_str[..obj_str.len().min(200)]);
+                    }
+                    continue;
+                }
+            };
+            // Import ONE hash per entry (priority: MD5 > SHA1 > SHA256)
+            // MD5 is fastest to compute during scans and covers ~100% of VIC entries.
+            // Importing all types would double DB size/RAM with zero benefit.
+            let imported = if let Some(ref md5) = entry.md5 {
+                if !md5.is_empty() {
+                    batch.push(("MD5".to_string(), md5.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
+                    true
+                } else { false }
+            } else { false };
+            
+            if !imported {
+                let imported2 = if let Some(ref sha1) = entry.sha1 {
+                    if !sha1.is_empty() {
+                        batch.push(("SHA1".to_string(), sha1.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
                         true
                     } else { false }
                 } else { false };
                 
-                if !imported {
-                    let imported2 = if let Some(ref sha1) = entry.sha1 {
-                        if !sha1.is_empty() {
-                            batch.push(("SHA1".to_string(), sha1.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
-                            true
-                        } else { false }
-                    } else { false };
-                    
-                    if !imported2 {
-                        if let Some(ref sha256) = entry.sha256 {
-                            if !sha256.is_empty() {
-                                batch.push(("SHA256".to_string(), sha256.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
-                            }
+                if !imported2 {
+                    if let Some(ref sha256) = entry.sha256 {
+                        if !sha256.is_empty() {
+                            batch.push(("SHA256".to_string(), sha256.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
                         }
                     }
                 }
@@ -219,6 +233,7 @@ impl HashDatabase {
                 Self::flush_vic_batch(&conn, list_id, &batch, &mut imported_count)?;
                 batch.clear();
                 conn.execute_batch("COMMIT; BEGIN TRANSACTION").ok();
+                on_progress(imported_count, objects_seen);
                 eprintln!("[VIC Import] {} hashes imported...", imported_count);
             }
         }
@@ -238,7 +253,11 @@ impl HashDatabase {
             params![imported_count, list_id],
         ).ok();
         
-        eprintln!("[VIC Import] Complete: {} hashes imported from {}", imported_count, json_path);
+        if parse_errors > 0 {
+            eprintln!("[VIC Import] Warning: {} parse errors out of {} objects", parse_errors, objects_seen);
+        }
+        eprintln!("[VIC Import] Complete: {} hashes imported from {} ({} objects scanned)", 
+            imported_count, json_path, objects_seen);
         Ok(imported_count)
     }
     
@@ -795,6 +814,20 @@ impl<'a> Iterator for VicObjectIter<'a> {
     }
 }
 
+/// Deserialize a JSON value that might be a string, number, or bool into Option<String>.
+/// VIC uses integer categories (0, 1, 2, 3) but we store as strings.
+fn string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    use serde::Deserialize;
+    let val = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(val.and_then(|v| match v {
+        serde_json::Value::String(s) => Some(s),
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        serde_json::Value::Null => None,
+        _ => None,
+    }))
+}
+
 #[derive(Debug, Deserialize)]
 struct VicEntry {
     #[serde(alias = "SHA256", alias = "sha256")]
@@ -803,7 +836,7 @@ struct VicEntry {
     sha1: Option<String>,
     #[serde(alias = "MD5", alias = "md5")]
     md5: Option<String>,
-    #[serde(alias = "Category", alias = "category")]
+    #[serde(alias = "Category", alias = "category", default, deserialize_with = "string_or_number")]
     category: Option<String>,
     #[serde(alias = "Description", alias = "description", alias = "Series", alias = "series")]
     description: Option<String>,

@@ -342,7 +342,15 @@ async fn import_and_load_hash_list(
             .to_string();
         
         let hash_db = hash_db::HashDatabase::new()?;
-        let imported_count = hash_db.import_vic_json(&json_path, &file_name)?;
+        let app_clone = app.clone();
+        let imported_count = hash_db.import_vic_json(&json_path, &file_name, move |imported, scanned| {
+            let _ = app_clone.emit("hash-import-progress", HashImportProgress {
+                stage: "importing".to_string(),
+                message: format!("Streaming import... {} hashes from {} objects", imported, scanned),
+                total: None,
+                progress: Some(imported as usize),
+            });
+        })?;
         
         // Reload in-memory cache with new hashes
         let _ = hash_db.load_hashes_into_memory();
