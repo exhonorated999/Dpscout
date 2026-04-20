@@ -956,6 +956,7 @@ function App() {
         
         // Listen for live hash matches (CRITICAL for immediate triage)
         const unlistenHashMatch = await listen("scan:hash_match", (event: any) => {
+          if (scanCancelledRef.current) return; // Stop accumulating after user cancelled
           const hashMatch = event.payload;
           console.log("⚠️ LIVE HASH MATCH:", hashMatch.fileName);
           // Add match immediately to state for live display
@@ -1130,13 +1131,15 @@ function App() {
   async function handleStopScan() {
     scanCancelledRef.current = true;
     setScanStopped(true);
+    setCurrentScanModule('Stopping scan...');
     try {
       await invoke('cancel_scan');
     } catch (err) {
       console.warn('cancel_scan invoke failed:', err);
     }
-    setIsScanning(false);
-    setCurrentScanModule('');
+    // Do NOT set isScanning=false here — let the scan function's finally block
+    // handle it after the Rust scan actually stops and event listeners are cleaned up.
+    // Setting it here causes "SCAN COMPLETE" to appear while matches are still streaming in.
   }
 
   function handleNewScan() {
