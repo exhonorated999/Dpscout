@@ -58,6 +58,7 @@ function App() {
   const [smsMessages, setSmsMessages] = useState<any>(null); // SMS extraction result
   const [intrusionResults, setIntrusionResults] = useState<IntrusionScanResults | null>(null);
   const [isScanning, setIsScanning] = useState(false);
+  const [scanStopped, setScanStopped] = useState(false);
   const scanCancelledRef = useRef(false);
   const [isScanningMedia, setIsScanningMedia] = useState(false);
   const [isScanningBrowser, setIsScanningBrowser] = useState(false);
@@ -678,6 +679,7 @@ function App() {
     setIntrusionResults(null);
     setSystemInfo(null);
     scanCancelledRef.current = false;
+    setScanStopped(false);
     setCurrentScanModule("System Information");
     
     const progressList: ScanProgressType[] = [];
@@ -1127,6 +1129,7 @@ function App() {
 
   async function handleStopScan() {
     scanCancelledRef.current = true;
+    setScanStopped(true);
     try {
       await invoke('cancel_scan');
     } catch (err) {
@@ -1677,6 +1680,7 @@ function App() {
           selectedDrives={selectedDrives}
           scannedModules={scannedModules}
           onStopScan={handleStopScan}
+          scanStopped={scanStopped}
         />
       </>
     );

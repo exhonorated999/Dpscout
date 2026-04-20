@@ -388,6 +388,67 @@
   border: 1px solid rgba(65, 105, 225, 0.3);
 }
 
+/* Scan Stopped (user-cancelled) — red variant */
+.scan-complete-indicator.scan-stopped {
+  background: linear-gradient(135deg, rgba(220, 50, 50, 0.15), rgba(200, 60, 60, 0.1));
+  border-color: rgba(220, 50, 50, 0.5);
+  box-shadow: 0 0 20px rgba(220, 50, 50, 0.15), 0 0 40px rgba(220, 50, 50, 0.08);
+}
+
+.scan-complete-indicator.scan-stopped::before {
+  background: linear-gradient(90deg,
+    transparent,
+    rgba(220, 50, 50, 0.2),
+    transparent
+  );
+}
+
+.complete-icon.stopped-icon {
+  background: linear-gradient(135deg, #dc3232, #c83c3c);
+  font-size: 18px;
+  box-shadow:
+    0 0 20px rgba(220, 50, 50, 0.6),
+    0 0 40px rgba(200, 60, 60, 0.4);
+  animation: stoppedPulse 2s ease-in-out infinite;
+}
+
+@keyframes stoppedPulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow:
+      0 0 20px rgba(220, 50, 50, 0.6),
+      0 0 40px rgba(200, 60, 60, 0.4);
+  }
+  50% {
+    transform: scale(1.05);
+    box-shadow:
+      0 0 30px rgba(220, 50, 50, 0.8),
+      0 0 60px rgba(200, 60, 60, 0.6);
+  }
+}
+
+.complete-label.stopped-label {
+  color: #dc3232;
+  text-shadow: 0 0 10px rgba(220, 50, 50, 0.5);
+}
+
+.scan-stopped .complete-stats .stat {
+  background: rgba(220, 50, 50, 0.15);
+  border-color: rgba(220, 50, 50, 0.3);
+}
+
+.scan-stopped .dismiss-button {
+  background: rgba(220, 50, 50, 0.1);
+  border-color: rgba(220, 50, 50, 0.3);
+  color: #dc3232;
+}
+
+.scan-stopped .dismiss-button:hover {
+  background: rgba(220, 50, 50, 0.2);
+  border-color: #dc3232;
+  box-shadow: 0 0 15px rgba(220, 50, 50, 0.4);
+}
+
 .dismiss-button {
   display: flex;
   align-items: center;

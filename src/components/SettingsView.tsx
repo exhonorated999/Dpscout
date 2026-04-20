@@ -1358,10 +1358,6 @@ const HashListsPanel: React.FC<{
               <div className="stat-label">Total Hashes</div>
             </div>
             <div className="stat-card">
-              <div className="stat-value">{dbStats.total_lists || 0}</div>
-              <div className="stat-label">Hash Lists</div>
-            </div>
-            <div className="stat-card">
               <div className="stat-value">{formatBytes(dbStats.database_size_bytes || 0)}</div>
               <div className="stat-label">Database Size</div>
             </div>

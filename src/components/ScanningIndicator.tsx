@@ -8,6 +8,7 @@ interface ScanningIndicatorProps {
   scanComplete?: boolean;
   scanDuration?: string;
   totalFilesScanned?: number;
+  scanStopped?: boolean;
   onDismiss?: () => void;
   onStopScan?: () => void;
   backupProgress?: number; // iOS backup progress (0-100)
@@ -21,6 +22,7 @@ export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({
   scanComplete = false,
   scanDuration,
   totalFilesScanned,
+  scanStopped = false,
   onDismiss,
   onStopScan,
   backupProgress = 0,
@@ -50,11 +52,15 @@ export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({
   // Show completion summary
   if (scanComplete && !isScanning) {
     return (
-      <div className="scan-complete-indicator">
+      <div className={`scan-complete-indicator ${scanStopped ? 'scan-stopped' : ''}`}>
         <div className="complete-content">
-          <div className="complete-icon">✓</div>
+          <div className={`complete-icon ${scanStopped ? 'stopped-icon' : ''}`}>
+            {scanStopped ? '■' : '✓'}
+          </div>
           <div className="complete-info">
-            <span className="complete-label">SCAN COMPLETE</span>
+            <span className={`complete-label ${scanStopped ? 'stopped-label' : ''}`}>
+              {scanStopped ? 'SCAN STOPPED' : 'SCAN COMPLETE'}
+            </span>
             <div className="complete-stats">
               {scanDuration && <span className="stat">Duration: {scanDuration}</span>}
               {totalFilesScanned !== undefined && (

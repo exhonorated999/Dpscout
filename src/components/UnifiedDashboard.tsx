@@ -86,6 +86,7 @@ interface UnifiedDashboardProps {
   backupProgress?: number; // iOS backup progress (0-100)
   onNewScan?: () => void;
   onStopScan?: () => void;
+  scanStopped?: boolean;
   onGenerateReport?: () => void;
   onViewHashDetails?: () => void;
   onViewKeywordDetails?: () => void;
@@ -120,7 +121,8 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
   deviceType = 'windows', // Default to windows
   settings,
   selectedDrives = [],
-  scannedModules = null
+  scannedModules = null,
+  scanStopped = false
 }) => {
   const [activeView, setActiveView] = useState<ViewType>('device-info');
   const [browserExpanded, setBrowserExpanded] = useState(false);
@@ -156,11 +158,10 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
       setScanDuration(`${minutes}m ${remainingSeconds}s`);
       
       // Calculate total files SCANNED (not just results) from scan progress data
-      // This shows the actual number of files examined, demonstrating thorough scanning
+      // Count both completed and in-progress modules (user may have stopped the scan)
       const totalScanned = scanProgress.reduce((sum, progress) => {
-        // Only count completed scans with actual totals
-        if (progress.status === 'complete' && progress.totalItems) {
-          return sum + progress.totalItems;
+        if (progress.totalItems) {
+          return sum + (progress.status === 'complete' ? progress.totalItems : (progress.itemsProcessed || 0));
         }
         return sum;
       }, 0);
@@ -571,6 +572,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
             scanComplete={scanComplete}
             scanDuration={scanDuration}
             totalFilesScanned={totalFilesScanned}
+            scanStopped={scanStopped}
             onDismiss={() => setScanComplete(false)}
             onStopScan={isScanning ? onStopScan : undefined}
             backupProgress={backupProgress}
