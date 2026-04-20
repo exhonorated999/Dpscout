@@ -1243,7 +1243,16 @@ const HashListsPanel: React.FC<{
       const sizeLabel = hashCount > 100000 ? ` (${hashCount.toLocaleString()} hashes — this may take a moment)` : '';
       setIsDeleting(`Deleting "${listToDelete.name}"${sizeLabel}...`);
       
+      let unlistenPhase: (() => void) | null = null;
       try {
+        // Listen for phase updates from the backend
+        const { listen } = await import('@tauri-apps/api/event');
+        unlistenPhase = await listen<string>('hash_db:delete_phase', (event) => {
+          if (event.payload && event.payload !== 'Done') {
+            setIsDeleting(event.payload);
+          }
+        });
+        
         // Small delay so the UI renders the deleting overlay before the heavy invoke
         await new Promise(r => setTimeout(r, 50));
         
@@ -1253,6 +1262,8 @@ const HashListsPanel: React.FC<{
       } catch (error) {
         console.error('Failed to delete from hash database:', error);
         // Continue removing from settings even if DB delete fails
+      } finally {
+        if (unlistenPhase) unlistenPhase();
       }
       
       const updatedLists = localLists.filter(l => l.id !== id);

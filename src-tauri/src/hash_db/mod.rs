@@ -657,10 +657,12 @@ impl HashDatabase {
         
         // Find list IDs matching this name
         let mut stmt = conn.prepare(
-            "SELECT id FROM hash_lists WHERE name = ?1"
+            "SELECT id, hash_count FROM hash_lists WHERE name = ?1"
         ).map_err(|e| format!("Failed to prepare query: {}", e))?;
         
-        let ids: Vec<i64> = stmt.query_map(params![name], |row| row.get(0))
+        let ids: Vec<(i64, i64)> = stmt.query_map(params![name], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1).unwrap_or(0)))
+        })
             .map_err(|e| format!("Query failed: {}", e))?
             .filter_map(|r| r.ok())
             .collect();
@@ -670,21 +672,49 @@ impl HashDatabase {
             return Ok(());
         }
         
-        for id in &ids {
-            // Delete hashes first
-            conn.execute(
-                "DELETE FROM hashes WHERE list_id = ?1",
-                params![id],
-            ).map_err(|e| format!("Failed to delete hashes for list {}: {}", id, e))?;
+        for (id, hash_count) in &ids {
+            let start = std::time::Instant::now();
+            eprintln!("[Delete] Removing {} hashes for list id={} name='{}'...", hash_count, id, name);
+            
+            // For large lists, delete in batches to avoid locking the DB for minutes
+            // SQLite journal rollback on a single massive DELETE is the main bottleneck
+            if *hash_count > 100_000 {
+                // Batch delete: 50k rows at a time — much faster than one giant DELETE
+                loop {
+                    let deleted: usize = conn.execute(
+                        "DELETE FROM hashes WHERE rowid IN (SELECT rowid FROM hashes WHERE list_id = ?1 LIMIT 50000)",
+                        params![id],
+                    ).map_err(|e| format!("Failed to delete hash batch for list {}: {}", id, e))?;
+                    
+                    if deleted == 0 { break; }
+                    eprintln!("[Delete] ... removed batch of {} rows", deleted);
+                }
+            } else {
+                conn.execute(
+                    "DELETE FROM hashes WHERE list_id = ?1",
+                    params![id],
+                ).map_err(|e| format!("Failed to delete hashes for list {}: {}", id, e))?;
+            }
             
             conn.execute(
                 "DELETE FROM hash_lists WHERE id = ?1",
                 params![id],
             ).map_err(|e| format!("Failed to delete list {}: {}", id, e))?;
             
-            eprintln!("✓ Deleted hash list id={} name='{}'", id, name);
+            eprintln!("✓ Deleted hash list id={} name='{}' in {:.1}s", id, name, start.elapsed().as_secs_f64());
         }
         
+        Ok(())
+    }
+    
+    /// Reclaim disk space after large deletes
+    pub fn vacuum(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        eprintln!("[VACUUM] Reclaiming disk space...");
+        let start = std::time::Instant::now();
+        conn.execute("VACUUM", [])
+            .map_err(|e| format!("VACUUM failed: {}", e))?;
+        eprintln!("✓ VACUUM completed in {:.1}s", start.elapsed().as_secs_f64());
         Ok(())
     }
     
@@ -692,13 +722,48 @@ impl HashDatabase {
     pub fn clear_all(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         
-        conn.execute("DELETE FROM hashes", [])
-            .map_err(|e| format!("Failed to clear hashes: {}", e))?;
+        let start = std::time::Instant::now();
+        eprintln!("[Clear] Dropping all hashes...");
+        
+        // DROP + recreate is orders of magnitude faster than DELETE for large tables
+        conn.execute("DROP TABLE IF EXISTS hashes", [])
+            .map_err(|e| format!("Failed to drop hashes table: {}", e))?;
         
         conn.execute("DELETE FROM hash_lists", [])
             .map_err(|e| format!("Failed to clear hash lists: {}", e))?;
         
-        eprintln!("✓ Cleared all hashes and hash lists from database");
+        // Recreate hashes table
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS hashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL,
+                hash_type TEXT NOT NULL,
+                list_id INTEGER NOT NULL,
+                category TEXT,
+                description TEXT,
+                file_size INTEGER,
+                FOREIGN KEY (list_id) REFERENCES hash_lists(id) ON DELETE CASCADE
+            )",
+            [],
+        ).map_err(|e| format!("Failed to recreate hashes table: {}", e))?;
+        
+        // Recreate indexes
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hash_lookup ON hashes(hash, hash_type)",
+            [],
+        ).map_err(|e| format!("Failed to recreate hash index: {}", e))?;
+        
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_list_id ON hashes(list_id)",
+            [],
+        ).map_err(|e| format!("Failed to recreate list index: {}", e))?;
+        
+        // VACUUM to reclaim disk space
+        eprintln!("[Clear] Running VACUUM...");
+        conn.execute("VACUUM", [])
+            .map_err(|e| format!("VACUUM failed: {}", e))?;
+        
+        eprintln!("✓ Cleared database in {:.1}s", start.elapsed().as_secs_f64());
         
         Ok(())
     }

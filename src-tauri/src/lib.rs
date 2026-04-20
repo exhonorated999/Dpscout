@@ -550,22 +550,33 @@ fn clear_hash_database() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn delete_hash_list(list_name: String) -> Result<(), String> {
+async fn delete_hash_list(app: tauri::AppHandle, list_name: String) -> Result<(), String> {
     eprintln!("Deleting hash list from database: {}", list_name);
     
-    let hash_db = hash_db::HashDatabase::new()?;
-    
-    // Find the list by name and delete it
-    hash_db.delete_list_by_name(&list_name)?;
-    
-    // Reload memory cache after deletion
-    match hash_db.load_hashes_into_memory() {
-        Ok(count) => eprintln!("✓ Reloaded {} hashes into memory after deletion", count),
-        Err(e) => eprintln!("Warning: Failed to reload cache after deletion: {}", e),
-    }
-    
-    eprintln!("✓ Hash list '{}' deleted from database", list_name);
-    Ok(())
+    let name = list_name.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        use tauri::Emitter;
+        let hash_db = hash_db::HashDatabase::new()?;
+        
+        // Phase 1: Delete the hashes
+        app.emit("hash_db:delete_phase", "Deleting hashes...").ok();
+        hash_db.delete_list_by_name(&name)?;
+        
+        // Phase 2: VACUUM to reclaim disk space
+        app.emit("hash_db:delete_phase", "Compacting database...").ok();
+        hash_db.vacuum()?;
+        
+        // Phase 3: Reload memory cache
+        app.emit("hash_db:delete_phase", "Reloading hash cache...").ok();
+        match hash_db.load_hashes_into_memory() {
+            Ok(count) => eprintln!("✓ Reloaded {} hashes into memory after deletion", count),
+            Err(e) => eprintln!("Warning: Failed to reload cache after deletion: {}", e),
+        }
+        
+        app.emit("hash_db:delete_phase", "Done").ok();
+        eprintln!("✓ Hash list '{}' deleted from database", name);
+        Ok(())
+    }).await.map_err(|e| format!("Task failed: {}", e))?
 }
 
 #[tauri::command]
