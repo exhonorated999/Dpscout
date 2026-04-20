@@ -976,17 +976,25 @@ function App() {
         });
 
         try {
-          // Get scan paths based on selected drives
-          let scanPaths: string[];
+          // Get scan paths for hash scanning
+          // Hash scanner uses its own tiered directory traversal (Tier 1/2/3)
+          // which expects DRIVE ROOTS (e.g., "C:\"), not user subdirectories.
+          // The keyword scan paths (Downloads, Pictures, etc.) are too narrow.
+          let hashScanPaths: string[];
           if (keywordConfig?.selectedDrives && keywordConfig.selectedDrives.length > 0) {
-            scanPaths = await invoke<string[]>("get_scan_paths_for_selected_drives", { drives: keywordConfig.selectedDrives });
+            // Convert drive letters to root paths for the tiered scanner
+            hashScanPaths = keywordConfig.selectedDrives.map((d: string) => {
+              if (d.endsWith('\\') || d.endsWith('/')) return d;
+              if (d.endsWith(':')) return d + '\\';
+              return d + ':\\';
+            });
           } else {
-            // Get default scan paths (Documents, Downloads, Desktop, Pictures, Videos, etc.)
-            scanPaths = await invoke<string[]>("get_keyword_scan_paths");
+            // Default: scan C:\ drive root
+            hashScanPaths = ['C:\\'];
           }
           
           const hashScanOptions = {
-            scanPaths: scanPaths,
+            scanPaths: hashScanPaths,
             maxFileSize: 500 * 1024 * 1024, // 500MB max per file
             minFileSize: 50000, // 50KB — filters system icons that pollute VIC DB
             scanMode: selectedDeviceType === 'usb' ? 'usb' : 'windows',
