@@ -589,6 +589,7 @@ function App() {
           options: {
             scanPaths: [mtpResult.tempDirectory],
             maxFileSize: 524288000, // 500MB
+            minFileSize: 50000, // 50KB — filters system icons that pollute VIC DB
           }
         });
         console.log("Hash scan complete:", hashResults.length, "matches");
@@ -987,6 +988,7 @@ function App() {
           const hashScanOptions = {
             scanPaths: scanPaths,
             maxFileSize: 500 * 1024 * 1024, // 500MB max per file
+            minFileSize: 50000, // 50KB — filters system icons that pollute VIC DB
             scanMode: selectedDeviceType === 'usb' ? 'usb' : 'windows',
           };
           

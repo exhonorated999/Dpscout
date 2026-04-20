@@ -6,12 +6,17 @@ use sha1::Sha1;
 use md5::Md5;
 use std::io::Read;
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use crossbeam_channel::{bounded, Sender};
 
 // ── Global scan cancellation flag ──
 static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
+
+// ── Configurable minimum file size (set at scan start from options) ──
+// Filters out system icons/thumbnails that pollute hash databases like Project VIC.
+// Default 50KB — VIC contains hashes of stock Android icons (1-20KB) that are NOT CSAM.
+static SCAN_MIN_FILE_SIZE: AtomicU64 = AtomicU64::new(50_000);
 
 /// Request cancellation of the current scan
 pub fn cancel_scan() {
@@ -23,6 +28,12 @@ pub fn cancel_scan() {
 #[inline]
 fn is_cancelled() -> bool {
     SCAN_CANCELLED.load(Ordering::Relaxed)
+}
+
+/// Get the configured minimum file size for this scan
+#[inline]
+fn min_file_size() -> u64 {
+    SCAN_MIN_FILE_SIZE.load(Ordering::Relaxed)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,11 +59,14 @@ pub struct HashScanOptions {
     pub scan_paths: Vec<String>,
     #[serde(rename = "maxFileSize")]
     pub max_file_size: u64, // in bytes, 0 = no limit (500MB default for safety)
+    #[serde(rename = "minFileSize", default = "default_min_file_size")]
+    pub min_file_size: u64, // in bytes — skip files smaller than this (default 50KB)
     #[serde(rename = "scanMode", default = "default_scan_mode")]
     pub scan_mode: String, // "usb" or "windows"
 }
 
 fn default_scan_mode() -> String { "windows".to_string() }
+fn default_min_file_size() -> u64 { 50_000 } // 50KB — filters out system icons that pollute VIC DB
 
 // ── Media extension filter (CSAM is overwhelmingly images/videos) ──
 const IMAGE_EXTENSIONS: &[&str] = &[
@@ -65,7 +79,10 @@ const VIDEO_EXTENSIONS: &[&str] = &[
 ];
 
 // Triage size limits — small files are hashed first and fastest
-const MIN_FILE_SIZE: u64 = 1_024;           // 1KB min (skip truly empty)
+// NOTE: MIN_FILE_SIZE is the absolute floor. The configurable `options.min_file_size`
+// (default 50KB) is the real threshold — it filters out system icons/thumbnails 
+// that pollute hash databases like Project VIC.
+const MIN_FILE_SIZE: u64 = 1_024;           // 1KB absolute min (skip truly empty/corrupt)
 const MAX_FILE_SIZE: u64 = 500_000_000;     // 500MB max
 
 // I/O buffer for streaming fallback — 128KB
@@ -184,6 +201,12 @@ where
     
     // Reset cancellation flag
     SCAN_CANCELLED.store(false, Ordering::SeqCst);
+    
+    // Set configurable min file size (filters system icons that pollute VIC DB)
+    let effective_min = options.min_file_size.max(MIN_FILE_SIZE);
+    SCAN_MIN_FILE_SIZE.store(effective_min, Ordering::SeqCst);
+    eprintln!("[Hash Scan] Min file size: {} bytes ({}KB) — files below this are skipped",
+        effective_min, effective_min / 1024);
     
     let start_time = std::time::Instant::now();
     
@@ -512,7 +535,7 @@ fn discover_usb_files(
         
         if let Ok(metadata) = fs::metadata(&path) {
             let file_size = metadata.len();
-            if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
+            if file_size < min_file_size() || file_size > MAX_FILE_SIZE { continue; }
             
             // Depth relative to scan root
             let file_depth = path.components().count().saturating_sub(root_components);
@@ -694,7 +717,7 @@ fn discover_tier3_files(
         
         if let Ok(metadata) = fs::metadata(&path) {
             let file_size = metadata.len();
-            if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
+            if file_size < min_file_size() || file_size > MAX_FILE_SIZE { continue; }
             
             counter.fetch_add(1, Ordering::Relaxed);
             let _ = tx.send(FileCandidate {
@@ -729,7 +752,7 @@ fn discover_pivot_files(
         
         if let Ok(metadata) = fs::metadata(&path) {
             let file_size = metadata.len();
-            if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
+            if file_size < min_file_size() || file_size > MAX_FILE_SIZE { continue; }
             
             // In pivot mode, hash ALL file types (not just media)
             // because CSAM is often renamed with wrong extensions
@@ -787,7 +810,7 @@ fn send_directory_files(
         
         if let Ok(metadata) = fs::metadata(&path) {
             let file_size = metadata.len();
-            if file_size < MIN_FILE_SIZE || file_size > MAX_FILE_SIZE { continue; }
+            if file_size < min_file_size() || file_size > MAX_FILE_SIZE { continue; }
             candidates.push((path, file_size));
         }
     }
