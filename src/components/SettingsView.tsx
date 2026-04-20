@@ -1050,14 +1050,35 @@ const HashListsPanel: React.FC<{
       const { invoke } = await import('@tauri-apps/api/core');
       const dbLists = await invoke<Array<{id: number, name: string, source: string, hash_count: number, imported_at: string}>>('get_db_hash_lists');
       
-      // Find DB lists not in settings.json (e.g. VIC import that wasn't saved)
+      const dbNames = new Set(dbLists.map(dl => dl.name));
+      
       setLocalLists(prev => {
-        const existingNames = new Set(prev.map(l => l.name));
+        // 1. Remove orphan entries — settings entries whose list no longer exists in the DB
+        //    (e.g. user deleted a hash list but didn't click Save Settings)
+        const cleaned = prev.filter(l => {
+          // Keep non-DB lists (text file imports stored in settings only)
+          if (!l.source && !l.id.toString().startsWith('db-')) {
+            // Check if this looks like a DB-backed list (has hashCount > 0 or came from an import)
+            // If the list has a name that's NOT in the DB, it's orphaned
+            if (l.hashCount && l.hashCount > 0 && !dbNames.has(l.name)) {
+              console.log(`[Sync] Removing orphaned hash list from settings: "${l.name}"`);
+              return false;
+            }
+          }
+          // DB-synced entries: keep only if still in DB
+          if (l.id.toString().startsWith('db-') && !dbNames.has(l.name)) {
+            console.log(`[Sync] Removing orphaned db-synced hash list: "${l.name}"`);
+            return false;
+          }
+          return true;
+        });
+        
+        // 2. Add DB lists not yet in settings (e.g. VIC import that wasn't saved)
+        const existingNames = new Set(cleaned.map(l => l.name));
         const newLists: HashList[] = [];
         
         for (const dbList of dbLists) {
           if (!existingNames.has(dbList.name)) {
-            // Create a HashList entry for this DB-only list
             newLists.push({
               id: `db-${dbList.id}`,
               name: dbList.name,
@@ -1073,12 +1094,14 @@ const HashListsPanel: React.FC<{
           }
         }
         
-        if (newLists.length > 0) {
-          const merged = [...prev, ...newLists];
-          onChange(merged); // Notify parent so it can save
-          return merged;
+        const merged = [...cleaned, ...newLists];
+        
+        // If anything changed, notify parent to persist
+        if (merged.length !== prev.length || newLists.length > 0 || cleaned.length !== prev.length) {
+          onChange(merged);
         }
-        return prev;
+        
+        return merged;
       });
     } catch (error) {
       console.error('Failed to sync DB hash lists:', error);
@@ -1269,6 +1292,8 @@ const HashListsPanel: React.FC<{
       const updatedLists = localLists.filter(l => l.id !== id);
       setLocalLists(updatedLists);
       onChange(updatedLists);
+      // Auto-save so deleted lists don't ghost back on relaunch
+      if (onAutoSave) onAutoSave(updatedLists);
       if (selectedList?.id === id) {
         setSelectedList(null);
       }
@@ -1293,10 +1318,11 @@ const HashListsPanel: React.FC<{
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('clear_hash_database');
         await loadDatabaseStats();
-        // Also clear the local list state for any DB-synced entries
-        const updatedLists = localLists.filter(l => !l.id.startsWith('db-'));
+        // Clear ALL hash list entries — entire DB is wiped
+        const updatedLists: typeof localLists = [];
         setLocalLists(updatedLists);
         onChange(updatedLists);
+        if (onAutoSave) onAutoSave(updatedLists);
       } catch (error) {
         alert(`Failed to clear database: ${error}`);
       } finally {

@@ -154,11 +154,17 @@ export const ScanningIndicator: React.FC<ScanningIndicatorProps> = ({
             <div className="backup-progress-text">{backupProgress}%</div>
           </div>
         )}
-        {onStopScan && (
+        {onStopScan && !scanStopped && (
           <button className="stop-scan-button" onClick={onStopScan}>
             <span className="stop-icon">■</span>
             STOP SCAN
           </button>
+        )}
+        {scanStopped && isScanning && (
+          <div className="stopping-indicator">
+            <div className="stopping-spinner" />
+            STOPPING SCAN...
+          </div>
         )}
       </div>
     </div>

@@ -854,27 +854,42 @@ fn check_file_hash(
     // Size validation helper: if the DB has a stored file_size for this hash,
     // the actual file must match. This eliminates MD5 collision false positives
     // (e.g. small icons matching unrelated hashes in a 19M+ hash database).
-    let size_matches = |match_data: &crate::hash_db::HashMatch| -> bool {
+    //
+    // For MD5-only databases (like Project VIC), this is our primary defense 
+    // against false positives. MD5 collisions are statistically inevitable 
+    // at 19M+ scale, so we REQUIRE size validation for MD5 matches.
+    let validate_match = |match_data: &crate::hash_db::HashMatch, hash_type: &str| -> bool {
+        let actual = file_size as i64;
         match match_data.file_size {
             Some(db_size) if db_size > 0 => {
-                let actual = file_size as i64;
-                let expected = db_size;
-                if actual == expected {
+                if actual == db_size {
                     true
                 } else {
                     eprintln!("[Hash Scan] Size mismatch — rejecting false positive: {} (actual {}B vs DB {}B)",
-                        path.display(), actual, expected);
+                        path.display(), actual, db_size);
                     false
                 }
             }
-            _ => true, // No size data in DB — accept the match
+            _ => {
+                // No valid size data in DB (NULL or 0).
+                // SHA-256/SHA-1: accept anyway — collision probability is negligible
+                // MD5: REJECT — at 19M+ scale, MD5 collisions are common and we 
+                // have no way to distinguish real matches from false positives
+                if hash_type == "MD5" {
+                    eprintln!("[Hash Scan] MD5 match with no size data — rejecting unverifiable match: {} ({}B)",
+                        path.display(), actual);
+                    false
+                } else {
+                    true
+                }
+            }
         }
     };
     
     // Check SHA256 first (most unique)
     if let Some(ref h) = sha256 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA256") {
-            if size_matches(&match_data) {
+            if validate_match(&match_data, "SHA256") {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
@@ -896,7 +911,7 @@ fn check_file_hash(
     // Check SHA1
     if let Some(ref h) = sha1 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA1") {
-            if size_matches(&match_data) {
+            if validate_match(&match_data, "SHA1") {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
@@ -918,7 +933,7 @@ fn check_file_hash(
     // Check MD5
     if let Some(ref h) = md5 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "MD5") {
-            if size_matches(&match_data) {
+            if validate_match(&match_data, "MD5") {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
