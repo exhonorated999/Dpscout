@@ -601,6 +601,30 @@ impl HashDatabase {
         })
     }
     
+    /// Get all hash lists from the database (metadata only)
+    pub fn get_lists(&self) -> Result<Vec<DbHashListInfo>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, name, source, hash_count, imported_at FROM hash_lists ORDER BY id"
+        ).map_err(|e| format!("Failed to query hash lists: {}", e))?;
+        
+        let lists = stmt.query_map([], |row| {
+            Ok(DbHashListInfo {
+                id: row.get(0)?,
+                name: row.get::<_, String>(1)?,
+                source: row.get::<_, String>(2).unwrap_or_default(),
+                hash_count: row.get::<_, i64>(3).unwrap_or(0) as u64,
+                imported_at: row.get::<_, String>(4).unwrap_or_default(),
+            })
+        }).map_err(|e| format!("Failed to read hash lists: {}", e))?;
+        
+        let mut result = Vec::new();
+        for list in lists {
+            if let Ok(l) = list { result.push(l); }
+        }
+        Ok(result)
+    }
+    
     /// Delete a hash list and all its hashes
     pub fn delete_list(&self, list_id: i64) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
@@ -849,4 +873,13 @@ pub struct DatabaseStats {
     pub total_lists: u64,
     pub total_hashes: u64,
     pub database_size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbHashListInfo {
+    pub id: i64,
+    pub name: String,
+    pub source: String,
+    pub hash_count: u64,
+    pub imported_at: String,
 }

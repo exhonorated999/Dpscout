@@ -1038,10 +1038,51 @@ const HashListsPanel: React.FC<{
     setLocalLists(lists);
   }, [lists]);
 
-  // Load database statistics on mount
+  // Load database statistics and sync DB lists on mount
   React.useEffect(() => {
     loadDatabaseStats();
+    syncDbLists();
   }, []);
+
+  const syncDbLists = async () => {
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const dbLists = await invoke<Array<{id: number, name: string, source: string, hash_count: number, imported_at: string}>>('get_db_hash_lists');
+      
+      // Find DB lists not in settings.json (e.g. VIC import that wasn't saved)
+      setLocalLists(prev => {
+        const existingNames = new Set(prev.map(l => l.name));
+        const newLists: HashList[] = [];
+        
+        for (const dbList of dbLists) {
+          if (!existingNames.has(dbList.name)) {
+            // Create a HashList entry for this DB-only list
+            newLists.push({
+              id: `db-${dbList.id}`,
+              name: dbList.name,
+              description: `${dbList.source} — ${dbList.hash_count.toLocaleString()} hashes`,
+              hashType: 'MD5' as any,
+              hashes: [],
+              hashCount: dbList.hash_count,
+              enabled: true,
+              source: dbList.source,
+              createdAt: dbList.imported_at,
+              modifiedAt: dbList.imported_at,
+            });
+          }
+        }
+        
+        if (newLists.length > 0) {
+          const merged = [...prev, ...newLists];
+          onChange(merged); // Notify parent so it can save
+          return merged;
+        }
+        return prev;
+      });
+    } catch (error) {
+      console.error('Failed to sync DB hash lists:', error);
+    }
+  };
 
   const loadDatabaseStats = async () => {
     setIsLoadingStats(true);

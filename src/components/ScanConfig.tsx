@@ -227,11 +227,30 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     try {
       const settings = await invoke<any>('get_settings');
       const lists = settings.hashLists || [];
-      setAvailableHashLists(lists.map((list: any) => ({
-        id: list.id,
-        name: list.name,
-        enabled: list.enabled !== false, // Default to true if not specified
-      })));
+      
+      // Also fetch lists from DB (covers VIC imports not saved to settings.json)
+      let dbLists: Array<{id: number, name: string, source: string, hash_count: number}> = [];
+      try {
+        dbLists = await invoke<any>('get_db_hash_lists');
+      } catch (_) {}
+      
+      const settingsNames = new Set(lists.map((l: any) => l.name));
+      const merged = [
+        ...lists.map((list: any) => ({
+          id: list.id,
+          name: list.name,
+          enabled: list.enabled !== false,
+        })),
+        ...dbLists
+          .filter(dl => !settingsNames.has(dl.name))
+          .map(dl => ({
+            id: `db-${dl.id}`,
+            name: dl.name,
+            enabled: true,
+          }))
+      ];
+      
+      setAvailableHashLists(merged);
       setHashListsLoaded(true);
     } catch (error) {
       console.error('Failed to load hash lists:', error);

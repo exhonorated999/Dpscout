@@ -504,6 +504,12 @@ fn get_hash_database_stats() -> Result<hash_db::DatabaseStats, String> {
 }
 
 #[tauri::command]
+fn get_db_hash_lists() -> Result<Vec<hash_db::DbHashListInfo>, String> {
+    let hash_db = hash_db::HashDatabase::new()?;
+    hash_db.get_lists()
+}
+
+#[tauri::command]
 fn clear_hash_database() -> Result<(), String> {
     use std::fs;
     
@@ -2210,6 +2216,7 @@ pub fn run() {
             get_reports_directory,
             load_hash_list_into_db,
             get_hash_database_stats,
+            get_db_hash_lists,
             clear_hash_database,
             delete_hash_list,
             check_is_registered,
