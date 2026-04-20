@@ -1022,6 +1022,7 @@ const HashListsPanel: React.FC<{
   const [localLists, setLocalLists] = useState<HashList[]>(lists);
   const [selectedList, setSelectedList] = useState<HashList | null>(null);
   const [isImporting, setIsImporting] = useState(false);
+  const [isDeleting, setIsDeleting] = useState<string | null>(null);
   const [importProgress, setImportProgress] = useState<{
     current: number;
     total: number;
@@ -1238,7 +1239,14 @@ const HashListsPanel: React.FC<{
     if (!listToDelete) return;
     
     if (confirm(`Are you sure you want to delete "${listToDelete.name}"?\n\nThis will remove it from settings AND delete all its hashes from the database.`)) {
+      const hashCount = listToDelete.hashCount || 0;
+      const sizeLabel = hashCount > 100000 ? ` (${hashCount.toLocaleString()} hashes — this may take a moment)` : '';
+      setIsDeleting(`Deleting "${listToDelete.name}"${sizeLabel}...`);
+      
       try {
+        // Small delay so the UI renders the deleting overlay before the heavy invoke
+        await new Promise(r => setTimeout(r, 50));
+        
         // Delete from backend hash database
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('delete_hash_list', { listName: listToDelete.name });
@@ -1256,6 +1264,7 @@ const HashListsPanel: React.FC<{
       
       // Refresh database stats
       await loadDatabaseStats();
+      setIsDeleting(null);
     }
   };
 
@@ -1267,13 +1276,20 @@ const HashListsPanel: React.FC<{
 
   const clearDatabase = async () => {
     if (confirm('⚠️ WARNING: This will clear ALL hash lists from the database.\n\nYou will need to re-import them. This cannot be undone.\n\nAre you sure?')) {
+      setIsDeleting('Clearing entire hash database...');
       try {
+        await new Promise(r => setTimeout(r, 50));
         const { invoke } = await import('@tauri-apps/api/core');
         await invoke('clear_hash_database');
         await loadDatabaseStats();
-        alert('✓ Hash database cleared successfully');
+        // Also clear the local list state for any DB-synced entries
+        const updatedLists = localLists.filter(l => !l.id.startsWith('db-'));
+        setLocalLists(updatedLists);
+        onChange(updatedLists);
       } catch (error) {
         alert(`Failed to clear database: ${error}`);
+      } finally {
+        setIsDeleting(null);
       }
     }
   };
@@ -1348,6 +1364,18 @@ const HashListsPanel: React.FC<{
         </div>
       )}
 
+      {/* Deleting overlay */}
+      {isDeleting && (
+        <div className="import-progress-overlay">
+          <div className="import-progress-modal">
+            <h3>🗑️ Deleting Hash List</h3>
+            <div className="loading-spinner"></div>
+            <p className="progress-message">{isDeleting}</p>
+            <p className="progress-note">This may take a moment for large databases. Please wait...</p>
+          </div>
+        </div>
+      )}
+
       {/* Database Statistics */}
       {dbStats && (
         <div className="hash-stats-panel">
@@ -1362,7 +1390,7 @@ const HashListsPanel: React.FC<{
               <div className="stat-label">Database Size</div>
             </div>
             <div className="stat-card-action">
-              <Button variant="danger" size="sm" onClick={clearDatabase}>
+              <Button variant="danger" size="sm" onClick={clearDatabase} disabled={!!isDeleting}>
                 🗑️ Clear Database
               </Button>
             </div>
