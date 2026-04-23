@@ -100,30 +100,24 @@ export const ReportsManager: React.FC = () => {
     const pwd = prompt('Enter password to decrypt report for export:');
     if (!pwd) return;
 
-    const destination = prompt(
-      `Enter destination path for ${report.report_name}:`,
-      `C:\\Users\\Desktop\\${report.report_name}.pdf`
-    );
-
-    if (!destination) return;
-
     try {
-      // Load and decrypt the PDF
-      const pdfData = await invoke<number[]>('load_encrypted_pdf_report', { reportId: report.id, password: pwd });
-      
-      // Convert to Uint8Array
-      const uint8Array = new Uint8Array(pdfData);
-      
-      // Create blob and download
-      const blob = new Blob([uint8Array], { type: 'application/pdf' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${report.report_name}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Use Tauri save dialog to let user choose destination
+      // This ensures portable USB users save to their USB drive, not the suspect machine
+      const { save } = await import('@tauri-apps/plugin-dialog');
+      const destination = await save({
+        title: `Export ${report.report_name}`,
+        defaultPath: `${report.report_name}.pdf`,
+        filters: [{ name: 'PDF Files', extensions: ['pdf'] }],
+      });
+
+      if (!destination) return; // User cancelled
+
+      // Decrypt and write directly to the chosen path via Rust backend
+      await invoke('export_encrypted_report_to_file', {
+        reportId: report.id,
+        password: pwd,
+        destination: destination,
+      });
       
       alert('Report exported successfully!');
     } catch (err) {

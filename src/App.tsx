@@ -1086,7 +1086,8 @@ function App() {
           
           const mediaOptions: MediaScanOptions = {
             ...defaultMediaScanOptions,
-            scanPaths: scanPaths
+            scanPaths: scanPaths,
+            checkKeywords: modules.keywordSearch,
           };
           
           const result = await invoke<MediaFile[]>("scan_media_progressive", { options: mediaOptions });
@@ -1192,6 +1193,7 @@ function App() {
       const options: MediaScanOptions = {
         ...defaultMediaScanOptions,
         scanPaths: scanPaths,
+        checkKeywords: false,
       };
       const result = await invoke<MediaFile[]>("scan_media", { options });
       setMediaFiles(result);

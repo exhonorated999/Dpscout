@@ -425,19 +425,15 @@ fn draw_flagged_apps(ctx: &mut PdfContext, apps: &[serde_json::Value], payload: 
             apps.iter().enumerate().collect()
         }
         ReportScope::Flagged => {
-            // Filter for flagged apps only
+            // Filter for flagged apps only (user-flagged via UI)
             apps.iter()
                 .enumerate()
                 .filter(|(idx, app)| {
                     let is_flagged = app.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let idx_suffix = format!("-{}", idx);
-                    let app_id = format!("app-{}", idx);
                     let in_flagged_list = payload.flagged_item_ids.iter().any(|id| {
-                        id.starts_with("app-") && (id.contains(&idx_suffix) || id == &app_id)
+                        id == &format!("app-{}", idx)
                     });
-                    let has_flags = app.get("flags").and_then(|f| f.as_array()).map(|arr| !arr.is_empty()).unwrap_or(false);
-                    
-                    is_flagged || in_flagged_list || has_flags
+                    is_flagged || in_flagged_list
                 })
                 .collect()
         }
@@ -482,9 +478,8 @@ fn draw_flagged_apps(ctx: &mut PdfContext, apps: &[serde_json::Value], payload: 
         layer.use_text(&format!("   Category: {}", category), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
         ctx.y_position -= Mm(LINE_HEIGHT_BODY);
         
-        // Install path
-        layer.use_text(&format!("   Location: {}", install_path), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        // Install path (wrapped for long paths)
+        draw_wrapped_text(&layer, &format!("   Location: {}", install_path), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
         
         // Install date and version
         layer.use_text(&format!("   Installed: {} | Version: {}", install_date, version), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
@@ -532,14 +527,13 @@ fn draw_flagged_media(ctx: &mut PdfContext, media: &[serde_json::Value], payload
         media.iter()
             .enumerate()
             .filter(|(idx, m)| {
-                // Check if explicitly flagged by user
+                // Check if explicitly flagged by user (clicked "Flag" button)
                 let is_flagged = m.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                // Media with flags array
-                let has_flags = m.get("flags").and_then(|f| f.as_array()).map(|arr| !arr.is_empty()).unwrap_or(false);
-                // In flagged_item_ids list
-                let idx_suffix = format!("-{}", idx);
-                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| id.starts_with("media-") && id.contains(&idx_suffix));
-                is_flagged || has_flags || in_flagged_list
+                // In flagged_item_ids list (user-selected items)
+                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| {
+                    id == &format!("media-{}", idx)
+                });
+                is_flagged || in_flagged_list
             })
             .collect()
     };
@@ -586,10 +580,9 @@ fn draw_flagged_media(ctx: &mut PdfContext, media: &[serde_json::Value], payload
         layer.use_text(&format!("{}. {}", idx + 1, file_name), FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
         ctx.y_position -= Mm(LINE_HEIGHT_BODY);
         
-        // File path
+        // File path (wrapped for long paths)
         layer.set_fill_color(color_gray());
-        layer.use_text(&format!("   Location: {}", file_path), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        draw_wrapped_text(&layer, &format!("   Location: {}", file_path), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
         
         // Dates
         layer.use_text(&format!("   Created: {} | Last Accessed: {}", date_created, date_accessed), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
@@ -679,10 +672,9 @@ fn draw_flagged_keywords(ctx: &mut PdfContext, keywords: &[serde_json::Value], p
         layer.use_text(&format!("{}. File: {}", match_idx + 1, file_name), FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
         ctx.y_position -= Mm(LINE_HEIGHT_BODY);
         
-        // File path
+        // File path (wrapped for long paths)
         layer.set_fill_color(color_gray());
-        layer.use_text(&format!("   Path: {}", file_path), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        draw_wrapped_text(&layer, &format!("   Path: {}", file_path), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
         
         // Process each match location
         if let Some(locations) = match_locations {
@@ -746,12 +738,10 @@ fn draw_flagged_browsers(ctx: &mut PdfContext, browsers: &[serde_json::Value], p
                     true
                 } else {
                     let is_flagged = item.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let has_flags = item.get("flags").and_then(|f| f.as_array()).map(|arr| !arr.is_empty()).unwrap_or(false);
-                    let idx_str = idx.to_string();
                     let in_list = payload.flagged_item_ids.iter().any(|id| {
-                        id.contains("browser-history") || id.contains("browser") && id.contains(&idx_str)
+                        id == &format!("browser-history-{}-{}", browser_name, idx)
                     });
-                    is_flagged || has_flags || in_list
+                    is_flagged || in_list
                 };
                 
                 if should_include {
@@ -767,12 +757,10 @@ fn draw_flagged_browsers(ctx: &mut PdfContext, browsers: &[serde_json::Value], p
                     true
                 } else {
                     let is_flagged = item.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let has_flags = item.get("flags").and_then(|f| f.as_array()).map(|arr| !arr.is_empty()).unwrap_or(false);
-                    let idx_str = idx.to_string();
                     let in_list = payload.flagged_item_ids.iter().any(|id| {
-                        id.contains("browser-download") || id.contains("download") && id.contains(&idx_str)
+                        id == &format!("browser-download-{}-{}", browser_name, idx)
                     });
-                    is_flagged || has_flags || in_list
+                    is_flagged || in_list
                 };
                 
                 if should_include {
@@ -788,12 +776,10 @@ fn draw_flagged_browsers(ctx: &mut PdfContext, browsers: &[serde_json::Value], p
                     true
                 } else {
                     let is_flagged = item.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                    let has_flags = item.get("flags").and_then(|f| f.as_array()).map(|arr| !arr.is_empty()).unwrap_or(false);
-                    let idx_str = idx.to_string();
                     let in_list = payload.flagged_item_ids.iter().any(|id| {
-                        id.contains("browser-credential") || id.contains("credential") && id.contains(&idx_str)
+                        id == &format!("browser-credential-{}-{}", browser_name, idx)
                     });
-                    is_flagged || has_flags || in_list
+                    is_flagged || in_list
                 };
                 
                 if should_include {
@@ -853,8 +839,7 @@ fn draw_flagged_browsers(ctx: &mut PdfContext, browsers: &[serde_json::Value], p
                     layer.use_text(&format!("   Title: {}", title), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
                     ctx.y_position -= Mm(LINE_HEIGHT_BODY);
                 }
-                layer.use_text(&format!("   URL: {}", url), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-                ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+                draw_wrapped_text(&layer, &format!("   URL: {}", url), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
                 layer.use_text(&format!("   Last Visit: {}", visit_time), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
                 ctx.y_position -= Mm(LINE_HEIGHT_BODY);
                 
@@ -876,10 +861,8 @@ fn draw_flagged_browsers(ctx: &mut PdfContext, browsers: &[serde_json::Value], p
                 let url = item.get("url").and_then(|v| v.as_str()).unwrap_or("Unknown");
                 let end_time = item.get("endTime").and_then(|v| v.as_str()).unwrap_or("Unknown");
                 
-                layer.use_text(&format!("   File: {}", target), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-                ctx.y_position -= Mm(LINE_HEIGHT_BODY);
-                layer.use_text(&format!("   From: {}", url), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
-                ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+                draw_wrapped_text(&layer, &format!("   File: {}", target), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
+                draw_wrapped_text(&layer, &format!("   From: {}", url), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
                 layer.use_text(&format!("   Downloaded: {}", end_time), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
                 ctx.y_position -= Mm(LINE_HEIGHT_BODY);
                 
@@ -1178,6 +1161,54 @@ fn draw_info_field(layer: &PdfLayerReference, label: &str, value: &str, x: Mm, m
     layer.use_text(&format!(" {}", value), FONT_SIZE_LABEL, x + Mm(45.0), y, font);
     y -= Mm(LINE_HEIGHT_BODY);
     y
+}
+
+/// Wrap long text into multiple lines that fit within the usable page width.
+/// Uses an approximate character width for the given font size.
+/// Returns the lines and the total vertical space consumed.
+fn draw_wrapped_text(
+    layer: &printpdf::PdfLayerReference,
+    text: &str,
+    font_size: f32,
+    x: Mm,
+    y: &mut Mm,
+    font: &printpdf::IndirectFontRef,
+    line_height: f32,
+) {
+    // Approximate characters per line at given font size
+    // Usable width = PAGE_WIDTH - 2*PAGE_MARGIN = 170mm
+    // At 9pt, ~2.2mm per char average ≈ 77 chars. At 11pt, ~2.6mm ≈ 65 chars.
+    let usable_width_mm = PAGE_WIDTH - 2.0 * PAGE_MARGIN;
+    let avg_char_width_mm = font_size * 0.24; // empirical ratio for Helvetica
+    let max_chars = (usable_width_mm / avg_char_width_mm) as usize;
+    
+    if max_chars == 0 || text.len() <= max_chars {
+        layer.use_text(text, font_size, x, *y, font);
+        *y -= Mm(line_height);
+        return;
+    }
+    
+    // Split into lines, preferring to break at path separators or spaces
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if remaining.len() <= max_chars {
+            layer.use_text(remaining, font_size, x, *y, font);
+            *y -= Mm(line_height);
+            break;
+        }
+        
+        // Find a good break point: look for backslash, forward slash, or space near the limit
+        let chunk = &remaining[..max_chars];
+        let break_at = chunk.rfind('\\')
+            .or_else(|| chunk.rfind('/'))
+            .or_else(|| chunk.rfind(' '))
+            .map(|pos| pos + 1) // break after the separator
+            .unwrap_or(max_chars); // hard break if no separator found
+        
+        layer.use_text(&remaining[..break_at], font_size, x, *y, font);
+        *y -= Mm(line_height);
+        remaining = &remaining[break_at..];
+    }
 }
 
 fn format_number(n: u64) -> String {

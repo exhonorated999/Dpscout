@@ -1840,6 +1840,15 @@ fn load_encrypted_pdf_report(report_id: i64, password: String) -> Result<Vec<u8>
 }
 
 #[tauri::command]
+fn export_encrypted_report_to_file(report_id: i64, password: String, destination: String) -> Result<(), String> {
+    let pdf_data = security::load_encrypted_report(report_id, password)?;
+    std::fs::write(&destination, pdf_data)
+        .map_err(|e| format!("Failed to write report to {}: {}", destination, e))?;
+    eprintln!("Report exported to: {}", destination);
+    Ok(())
+}
+
+#[tauri::command]
 fn delete_saved_report(report_id: i64) -> Result<(), String> {
     security::delete_encrypted_report(report_id)
 }
@@ -2238,6 +2247,7 @@ pub fn run() {
             save_encrypted_pdf_report,
             list_saved_reports,
             load_encrypted_pdf_report,
+            export_encrypted_report_to_file,
             delete_saved_report,
             open_encrypted_report,
             // Forensic mode commands

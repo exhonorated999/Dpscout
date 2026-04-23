@@ -344,11 +344,10 @@ fn process_media_file(
     // Create media file entry
     let mut media_file = create_media_file_entry(path, media_type, file_size)?;
 
-    // Check for suspicious filename patterns
-    check_suspicious_filename(&mut media_file);
-
-    // Check keywords in filename
+    // Check for suspicious filename patterns and custom keywords
+    // Only run when the user has explicitly enabled keyword scanning
     if options.check_keywords {
+        check_suspicious_filename(&mut media_file);
         check_filename_keywords(&mut media_file, keyword_lists);
     }
 

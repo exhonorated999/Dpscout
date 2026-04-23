@@ -73,7 +73,7 @@ export const defaultMediaScanOptions: MediaScanOptions = {
   generateThumbnails: true,
   computeHashes: true,
   checkHashLists: true,
-  checkKeywords: true,
+  checkKeywords: false,
   maxFileSize: 0,
   thumbnailSize: 200,
 };
