@@ -1014,8 +1014,9 @@ pub fn scan_android_media_hashes(
         "matchesFound": 0
     }));
     
-    // Discover ALL files for hashing — not just media extensions.
-    // CSAM content can have any extension or be renamed.
+    // Discover files for hashing — scan user-accessible media directories.
+    // Avoid /sdcard/Android/data — it's massive (every app's internal cache/data)
+    // and causes discovery to take 4+ minutes on typical devices.
     let adb_path = get_bundled_adb_path(app_handle);
     let hash_scan_paths = vec![
         "/sdcard/DCIM",
@@ -1028,32 +1029,25 @@ pub fn scan_android_media_hashes(
         "/sdcard/WhatsApp/Media/WhatsApp Images",
         "/sdcard/WhatsApp/Media/WhatsApp Video",
         "/sdcard/Telegram",
-        "/sdcard/Android/data",
     ];
     
     let mut all_files: Vec<serde_json::Value> = Vec::new();
     
-    for base_path in &hash_scan_paths {
-        // Check if path exists
-        let check_output = create_hidden_command(&adb_path)
-            .args(&["-s", serial, "shell", "test", "-d", base_path, "&&", "echo", "exists"])
-            .output();
+    // ── Single ADB call to discover files across ALL paths ──
+    // Instead of 10+ separate ADB calls (one per path with test -d + find),
+    // run a single find command that checks all paths at once.
+    {
+        let find_paths: Vec<String> = hash_scan_paths.iter()
+            .map(|p| format!("'{}'", p))
+            .collect();
         
-        let path_exists = if let Ok(output) = check_output {
-            String::from_utf8_lossy(&output.stdout).contains("exists")
-        } else {
-            false
-        };
+        let find_cmd = format!(
+            "find {} -type f 2>/dev/null",
+            find_paths.join(" ")
+        );
         
-        if !path_exists {
-            eprintln!("[Android Hash Scan] Path not found, skipping: {}", base_path);
-            continue;
-        }
+        eprintln!("[Android Hash Scan] Running file discovery: {}", &find_cmd[..find_cmd.len().min(200)]);
         
-        let files_before = all_files.len();
-        
-        // Find ALL files in a SINGLE adb call — no per-file stat needed for hash scanning
-        let find_cmd = format!("find '{}' -type f 2>/dev/null", base_path);
         let find_output = create_hidden_command(&adb_path)
             .args(&["-s", serial, "shell", &find_cmd])
             .output();
@@ -1081,13 +1075,9 @@ pub fn scan_android_media_hashes(
                     break;
                 }
             }
+        } else {
+            eprintln!("[Android Hash Scan] Failed to run find command");
         }
-        
-        if all_files.len() >= 15000 {
-            break;
-        }
-        
-        eprintln!("[Android Hash Scan] {} => {} files found", base_path, all_files.len() - files_before);
     }
     
     let total_files = all_files.len();
