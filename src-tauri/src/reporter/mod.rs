@@ -62,6 +62,8 @@ pub struct AllDataPayload {
     pub browsers: serde_json::Value,
     pub intrusion: serde_json::Value,
     pub system_info: serde_json::Value,
+    #[serde(default)]
+    pub hash_matches: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,6 +278,11 @@ pub fn delete_report(file_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Generate Datapilot hash list file from flagged evidence (public wrapper for lib.rs)
+pub fn generate_datapilot_hashlist_public(payload: &ReportPayload, reports_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+    generate_datapilot_hashlist(payload, reports_dir)
+}
+
 /// Generate Datapilot hash list file from flagged evidence
 fn generate_datapilot_hashlist(payload: &ReportPayload, reports_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
     use std::io::Write;
@@ -331,6 +338,36 @@ fn generate_datapilot_hashlist(payload: &ReportPayload, reports_dir: &PathBuf) -
                     }
                 } else {
                     eprintln!("    ⚠ Skipping file {} (no file path)", idx + 1);
+                    files_skipped += 1;
+                }
+            }
+        }
+    }
+    
+    // Process CSAM hash match results (Android/standalone hash scan hits)
+    if let Some(hash_array) = payload.all_data.hash_matches.as_array() {
+        eprintln!("  → Processing {} hash match results for hash list", hash_array.len());
+        
+        for item in hash_array.iter() {
+            let is_flagged = item.get("isFlagged")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            
+            if include_all || is_flagged {
+                files_processed += 1;
+                
+                // Hash matches already have computed hashes — use matchedHash, md5Hash, or sha256Hash
+                let hash = item.get("matchedHash").and_then(|v| v.as_str())
+                    .or_else(|| item.get("sha256Hash").and_then(|v| v.as_str()))
+                    .or_else(|| item.get("sha256_hash").and_then(|v| v.as_str()))
+                    .or_else(|| item.get("md5Hash").and_then(|v| v.as_str()))
+                    .or_else(|| item.get("md5_hash").and_then(|v| v.as_str()))
+                    .filter(|s| !s.is_empty());
+                
+                if let Some(h) = hash {
+                    hashes.insert(h.to_uppercase());
+                    files_with_hash += 1;
+                } else {
                     files_skipped += 1;
                 }
             }

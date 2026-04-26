@@ -372,6 +372,15 @@ fn draw_flagged_evidence_sections(ctx: &mut PdfContext, payload: &ReportPayload)
         }
     }
     
+    // CSAM Hash Matches - Show hash scan hits (Android hash matches, USB hash matches)
+    if let Some(hash_matches) = payload.all_data.hash_matches.as_array() {
+        if !hash_matches.is_empty() {
+            eprintln!("Drawing CSAM hash matches section with {} items...", hash_matches.len());
+            add_new_page(ctx);
+            draw_flagged_hash_matches(ctx, hash_matches, payload)?;
+        }
+    }
+    
     // Keywords - Always show section if keyword search was performed
     if let Some(keywords) = payload.all_data.keywords.as_array() {
         if !keywords.is_empty() {
@@ -603,6 +612,107 @@ fn draw_flagged_media(ctx: &mut PdfContext, media: &[serde_json::Value], payload
                 layer.use_text(&format!("   ⚠ [{}] {}: {}", severity.to_uppercase(), flag_type, reason), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font_bold);
                 ctx.y_position -= Mm(LINE_HEIGHT_BODY);
             }
+        }
+        
+        ctx.y_position -= Mm(LINE_HEIGHT_SECTION - LINE_HEIGHT_BODY);
+        layer.set_fill_color(color_text());
+    }
+    
+    ctx.y_position -= Mm(5.0);
+    Ok(())
+}
+
+fn draw_flagged_hash_matches(ctx: &mut PdfContext, hash_matches: &[serde_json::Value], payload: &ReportPayload) -> Result<(), Box<dyn Error>> {
+    let show_all = payload.scope == ReportScope::All;
+    
+    // Filter based on scope
+    let items: Vec<(usize, &serde_json::Value)> = if show_all {
+        hash_matches.iter().enumerate().collect()
+    } else {
+        hash_matches.iter()
+            .enumerate()
+            .filter(|(idx, m)| {
+                let is_flagged = m.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
+                let file_path = m.get("filePath").and_then(|v| v.as_str()).unwrap_or("");
+                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| {
+                    id == &format!("hash-match-{}-{}", file_path, idx)
+                });
+                is_flagged || in_flagged_list
+            })
+            .collect()
+    };
+    
+    ctx.check_page_break(30.0);
+    let layer = ctx.current_layer();
+    let left_margin = Mm(PAGE_MARGIN);
+    
+    // Section header with colored left border
+    draw_left_border(&layer, left_margin, ctx.y_position, Mm(6.0), color_critical());
+    layer.set_fill_color(color_primary());
+    let section_label = if show_all {
+        format!("CSAM HASH MATCHES ({} hits)", items.len())
+    } else {
+        format!("CSAM HASH MATCHES ({} flagged)", items.len())
+    };
+    layer.use_text(&section_label, FONT_SIZE_SUBHEADING, left_margin + Mm(5.0), ctx.y_position, ctx.font_bold);
+    ctx.y_position -= Mm(18.0);
+    
+    layer.set_fill_color(color_text());
+    
+    if items.is_empty() {
+        let msg = if show_all {
+            "No CSAM hash matches detected."
+        } else {
+            "No flagged CSAM hash matches."
+        };
+        layer.use_text(msg, FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font);
+        ctx.y_position -= Mm(10.0);
+        return Ok(());
+    }
+    
+    for (idx, item) in items {
+        ctx.check_page_break(30.0);
+        let layer = ctx.current_layer();
+        
+        let file_name = item.get("fileName").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let file_path = item.get("filePath").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let hash_type = item.get("hashType").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let matched_hash = item.get("matchedHash").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let list_source = item.get("listSource").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let description = item.get("description").and_then(|v| v.as_str()).unwrap_or("");
+        let severity = item.get("severity").and_then(|v| v.as_str()).unwrap_or("Critical");
+        let file_size = item.get("fileSize").and_then(|v| v.as_u64()).unwrap_or(0);
+        
+        // File name (bold) with severity indicator
+        layer.set_fill_color(color_critical());
+        layer.use_text(&format!("{}. ⚠ {} [{}]", idx + 1, file_name, severity.to_uppercase()), FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
+        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        
+        // File path
+        layer.set_fill_color(color_gray());
+        draw_wrapped_text(&layer, &format!("   Location: {}", file_path), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
+        
+        // Hash info
+        layer.set_fill_color(color_text());
+        layer.use_text(&format!("   {}: {}", hash_type, matched_hash), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        
+        // Source database
+        layer.use_text(&format!("   Source: {}", list_source), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+        ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        
+        // Description (if any)
+        if !description.is_empty() {
+            layer.set_fill_color(color_primary());
+            layer.use_text(&format!("   Description: {}", description), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font_bold);
+            ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        }
+        
+        // File size
+        if file_size > 0 {
+            layer.set_fill_color(color_gray());
+            layer.use_text(&format!("   Size: {} bytes", format_number(file_size)), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+            ctx.y_position -= Mm(LINE_HEIGHT_BODY);
         }
         
         ctx.y_position -= Mm(LINE_HEIGHT_SECTION - LINE_HEIGHT_BODY);

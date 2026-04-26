@@ -259,6 +259,10 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
           apps: apps.map((app, idx) => ({ ...app, isFlagged: flaggedItems.has(`app-${idx}`) })) as any,
           keywords: keywords.map((kw, idx) => ({ ...kw, isFlagged: flaggedItems.has(`keyword-${idx}`) })) as any,
           csam: media.map((m, idx) => ({ ...m, isFlagged: flaggedItems.has(`media-${idx}`) })) as any,
+          hash_matches: hashMatches.map((match: any, idx: number) => ({
+            ...match,
+            isFlagged: flaggedItems.has(`hash-match-${match.filePath}-${idx}`)
+          })) as any,
           browsers: browsers.map(browser => ({
             ...browser,
             history: browser.history?.map((h: any, idx: number) => ({

@@ -1673,6 +1673,16 @@ fn generate_report(payload: reporter::ReportPayload, password: String) -> Result
     let pdf_data = reporter::generate_report_bytes(payload.clone())
         .map_err(|e| format!("Failed to generate report: {}", e))?;
     
+    // Generate Datapilot hash file if requested (runs before encryption step)
+    if payload.metadata.generate_datapilot_file.unwrap_or(false) {
+        let reports_dir = reporter::get_reports_dir()
+            .map_err(|e| format!("Failed to get reports dir: {}", e))?;
+        match reporter::generate_datapilot_hashlist_public(&payload, &reports_dir) {
+            Ok(path) => eprintln!("✓ Generated Datapilot hash file: {}", path.display()),
+            Err(e) => eprintln!("⚠ Failed to generate Datapilot hash file: {}", e),
+        }
+    }
+    
     // Generate report name from metadata
     let report_name = format!(
         "Hindsight_Report_{}_{}",
