@@ -1410,6 +1410,12 @@ pub fn scan_android_media_hashes(
 /// Shared helper: check MD5/SHA1/SHA256 against the hash database and emit match events.
 /// Uses indexed SQLite lookups (check_hash) — fast enough for Android's ~100-500 files.
 /// We don't load the 2GB hash DB into RAM for Android scans (that takes 3-5 min).
+/// Well-known hashes of empty (0-byte) files — these match in hash databases
+/// like Project VIC but are false positives (.nomedia, empty placeholders, etc.)
+const EMPTY_FILE_MD5: &str = "d41d8cd98f00b204e9800998ecf8427e";
+const EMPTY_FILE_SHA1: &str = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+const EMPTY_FILE_SHA256: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
 fn check_android_hash_match(
     file_path: &str,
     md5: &str,
@@ -1424,6 +1430,13 @@ fn check_android_hash_match(
     use tauri::Emitter;
     
     let filename = file_path.split('/').last().unwrap_or("unknown");
+    
+    // Skip empty-file hashes — 0-byte files (.nomedia etc.) produce known constant
+    // hashes that exist in Project VIC but are always false positives.
+    if md5 == EMPTY_FILE_MD5 || sha1 == EMPTY_FILE_SHA1 || sha256 == EMPTY_FILE_SHA256 {
+        return;
+    }
+    
     let mut found_match = false;
     
     // Check SHA256 first (preferred)
