@@ -117,6 +117,16 @@ impl HashDatabase {
             [],
         ).map_err(|e| format!("Failed to create hash index: {}", e))?;
         
+        // Case-insensitive index — hashes may be stored mixed-case but queried lowercase.
+        // Without this, LOWER(hash) queries force full table scans on 14M+ rows.
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_hash_nocase ON hashes(hash COLLATE NOCASE, hash_type)",
+            [],
+        ).map_err(|e| {
+            eprintln!("[Hash DB] Warning: Could not create NOCASE index: {}", e);
+            format!("Failed to create NOCASE index: {}", e)
+        })?;
+        
         // Index for list management
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_list_id ON hashes(list_id)",
@@ -435,7 +445,7 @@ impl HashDatabase {
             "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
-             WHERE LOWER(h.hash) = ?1 
+             WHERE h.hash = ?1 COLLATE NOCASE 
              LIMIT 1"
         ).ok()?;
         
@@ -464,16 +474,17 @@ impl HashDatabase {
     /// Check if a hash exists in the database (ultra-fast with index)
     pub fn check_hash(&self, hash: &str, hash_type: &str) -> Result<Option<HashMatch>, String> {
         let conn = self.conn.lock().unwrap();
+        let hash_lower = hash.to_lowercase();
         
         let mut stmt = conn.prepare(
             "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
-             WHERE h.hash = ?1 AND h.hash_type = ?2 
+             WHERE h.hash = ?1 COLLATE NOCASE AND h.hash_type = ?2 
              LIMIT 1"
         ).map_err(|e| format!("Failed to prepare query: {}", e))?;
         
-        let result = stmt.query_row(params![hash, hash_type], |row| {
+        let result = stmt.query_row(params![hash_lower, hash_type], |row| {
             Ok(HashMatch {
                 hash: row.get(0)?,
                 hash_type: row.get(1)?,
@@ -499,6 +510,7 @@ impl HashDatabase {
         }
         
         let conn = self.conn.lock().unwrap();
+        let hash_lower = hash.to_lowercase();
         
         // Build placeholders for list_ids
         let placeholders: Vec<String> = list_ids.iter().map(|_| "?".to_string()).collect();
@@ -508,7 +520,7 @@ impl HashDatabase {
             "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
-             WHERE h.hash = ? AND h.hash_type = ? 
+             WHERE h.hash = ? COLLATE NOCASE AND h.hash_type = ? 
              AND l.name IN ({})
              LIMIT 1",
             placeholders_str
@@ -517,8 +529,8 @@ impl HashDatabase {
         let mut stmt = conn.prepare(&query)
             .map_err(|e| format!("Failed to prepare filtered query: {}", e))?;
         
-        // Build params: [hash, hash_type, ...list_ids]
-        let mut query_params: Vec<&dyn rusqlite::ToSql> = vec![&hash, &hash_type];
+        // Build params: [hash_lower, hash_type, ...list_ids]
+        let mut query_params: Vec<&dyn rusqlite::ToSql> = vec![&hash_lower, &hash_type];
         let list_id_refs: Vec<&dyn rusqlite::ToSql> = list_ids.iter()
             .map(|id| id as &dyn rusqlite::ToSql)
             .collect();

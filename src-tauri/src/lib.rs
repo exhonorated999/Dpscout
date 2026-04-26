@@ -1029,17 +1029,26 @@ fn get_android_device_info(app_handle: tauri::AppHandle, serial: String) -> Resu
 }
 
 #[tauri::command]
-fn scan_android_media(app_handle: tauri::AppHandle, serial: String) -> Result<Vec<serde_json::Value>, String> {
-    android::scan_android_media(&app_handle, &serial)
+async fn scan_android_media(app_handle: tauri::AppHandle, serial: String) -> Result<Vec<serde_json::Value>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        android::scan_android_media(&app_handle, &serial)
+    })
+    .await
+    .map_err(|e| format!("Media scan task failed: {}", e))?
 }
 
 #[tauri::command]
-fn scan_android_media_hashes(
+async fn scan_android_media_hashes(
     app_handle: tauri::AppHandle, 
     serial: String,
     selected_hash_list_ids: Option<Vec<String>>
 ) -> Result<Vec<android::AndroidHashMatch>, String> {
-    android::scan_android_media_hashes(&app_handle, &serial, None, selected_hash_list_ids)
+    // Run on a dedicated blocking thread so the main thread stays free for UI
+    tauri::async_runtime::spawn_blocking(move || {
+        android::scan_android_media_hashes(&app_handle, &serial, None, selected_hash_list_ids)
+    })
+    .await
+    .map_err(|e| format!("Hash scan task failed: {}", e))?
 }
 
 #[tauri::command]

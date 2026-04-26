@@ -227,16 +227,24 @@ function App() {
       setState("results");
       setIsScanning(true);
       scanCancelledRef.current = false;
+      // Clear ALL previous scan state to prevent stale data
       setApps([]);
       setMediaFiles([]);
+      setHashMatches([]);
+      setBrowsers([]);
+      setSmsMessages(null);
+      setKeywordMatches([]);
       setCurrentScanModule("Android Device");
       
       const progressList: ScanProgressType[] = [];
       
-      // Helper to force UI update between operations
-      const forceUIUpdate = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+      // Helper to force UI update between operations — double-rAF ensures
+      // the browser actually paints before we continue, preventing white-screen freezes
+      const forceUIUpdate = () => new Promise<void>(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
       
-      // Collect Android device information
+      // ─── PHASE 1: Device Info (always) ───────────────────────────────
       setIsLoadingSystemInfo(true);
       try {
         const androidDeviceInfo = await invoke("get_android_device_info", { serial: selectedDevice });
@@ -252,18 +260,15 @@ function App() {
         setIsLoadingSystemInfo(false);
       }
       
-      // Force UI update so device info is visible
       await forceUIUpdate();
       
-      // Scan Android apps if selected
+      // ─── PHASE 2: Android Applications ──────────────────────────────
       if (modules.questionableApps && !scanCancelledRef.current) {
         setCurrentScanModule("Android Applications");
         try {
           const androidApps = await invoke<any[]>("get_android_apps", { serial: selectedDevice });
           console.log("Android apps received:", androidApps);
-          console.log("First app sample:", androidApps[0]);
           
-          // Convert Android apps to QuestionableApp format
           const convertedApps = androidApps.map(app => ({
             name: app.appName || app.packageName || "Unknown App",
             category: "Unknown" as any,
@@ -277,8 +282,6 @@ function App() {
             confidence: 0.5,
           }));
           
-          console.log("Converted apps:", convertedApps);
-          console.log("First converted app:", convertedApps[0]);
           setApps(convertedApps);
           progressList.push({
             module: "Apps",
@@ -296,11 +299,166 @@ function App() {
           });
         }
         
-        // Force UI update so apps are visible before continuing
         await forceUIUpdate();
       }
       
-      // Scan browser history if selected
+      // ─── PHASE 3: SMS/MMS Messages ──────────────────────────────────
+      if (modules.smsMessages && !scanCancelledRef.current) {
+        setCurrentScanModule("SMS/MMS Messages");
+        try {
+          const smsResult = await invoke<any>("extract_android_sms", { 
+            deviceId: selectedDevice,
+            limit: null
+          });
+          
+          console.log("SMS extraction complete:", smsResult);
+          setSmsMessages(smsResult);
+          
+          progressList.push({
+            module: "SMS",
+            status: "completed",
+            count: smsResult.totalMessages || 0,
+            details: `Found ${smsResult.totalMessages || 0} messages in ${smsResult.threads?.length || 0} conversations`
+          });
+        } catch (error) {
+          console.error("Failed to extract SMS:", error);
+          progressList.push({
+            module: "SMS",
+            status: "failed",
+            count: 0,
+            details: `Error: ${error}`
+          });
+        }
+        
+        await forceUIUpdate();
+      }
+      
+      // ─── PHASE 4: CSAM Hash Matching ────────────────────────────────
+      if (modules.hashMatching && !scanCancelledRef.current) {
+        setCurrentScanModule("Hash Matching (CSAM)");
+        
+        // Listen for live hash matches and progress from backend
+        const { listen } = await import("@tauri-apps/api/event");
+        
+        const unlistenHashMatch = await listen("android:hash_match", (event: any) => {
+          if (scanCancelledRef.current) return;
+          const hashMatch = event.payload;
+          console.log("⚠️ LIVE ANDROID HASH MATCH:", hashMatch.fileName);
+          setHashMatches(prev => [...prev, hashMatch]);
+        });
+        
+        // Debounce progress updates with rAF to prevent re-render flooding
+        let pendingProgressData: any = null;
+        let progressRafId: number | null = null;
+        const unlistenProgress = await listen("android:hash_scan_progress", (event: any) => {
+          if (scanCancelledRef.current) return;
+          pendingProgressData = event.payload;
+          if (progressRafId === null) {
+            progressRafId = requestAnimationFrame(() => {
+              progressRafId = null;
+              if (pendingProgressData) {
+                const data = pendingProgressData;
+                setCurrentScanModule(
+                  data.status === "discovering" 
+                    ? "Hash Matching (CSAM) - Discovering files..."
+                    : `Hash Matching (CSAM) - ${data.filesScanned}/${data.totalFiles} files (${data.matchesFound} hits)`
+                );
+              }
+            });
+          }
+        });
+        
+        try {
+          const selectedHashLists = hashConfig?.selectedHashLists
+            ?.filter((list: any) => list.enabled)
+            .map((list: any) => list.name) || [];
+          
+          console.log("Hash scan using lists:", selectedHashLists.length > 0 ? selectedHashLists : "all available lists");
+          
+          const matches = await invoke<any[]>("scan_android_media_hashes", { 
+            serial: selectedDevice,
+            selectedHashListIds: selectedHashLists.length > 0 ? selectedHashLists : null
+          });
+          
+          console.log("Hash scan complete:", matches.length, "matches found");
+          
+          // Set final results (replaces any live-accumulated matches with authoritative list)
+          setHashMatches(matches);
+          
+          progressList.push({
+            module: "Hash Matching",
+            status: "completed",
+            count: matches.length,
+            details: matches.length > 0 
+              ? `⚠️ CRITICAL: ${matches.length} hash match${matches.length > 1 ? 'es' : ''} found!`
+              : `No hash matches found`
+          });
+        } catch (error) {
+          console.error("Failed to scan hashes:", error);
+          progressList.push({
+            module: "Hash Matching",
+            status: "failed",
+            count: 0,
+            details: `Error: ${error}`
+          });
+        } finally {
+          unlistenHashMatch();
+          unlistenProgress();
+          if (progressRafId !== null) cancelAnimationFrame(progressRafId);
+        }
+        
+        await forceUIUpdate();
+      }
+
+      // ─── PHASE 5: Media Files ───────────────────────────────────────
+      if (modules.mediaScan && !scanCancelledRef.current) {
+        setCurrentScanModule("Media Files");
+        try {
+          const androidMediaFiles = await invoke<any[]>("scan_android_media", { serial: selectedDevice });
+          
+          const convertedMediaFiles = androidMediaFiles.map((file, index) => {
+            const mediaType = file.fileType === "Image" ? "image" : file.fileType === "Video" ? "video" : "unknown";
+            return {
+              id: `android-media-${index}`,
+              filePath: file.path || "",
+              fileName: file.filename || "Unknown",
+              fileSize: Number(file.sizeBytes) || 0,
+              extension: file.filename ? file.filename.split('.').pop() || "" : "",
+              mediaType: mediaType,
+              thumbnailPath: "",
+              dateCreated: file.createdDate || "Unknown",
+              dateModified: file.modifiedDate || "Unknown",
+              flags: [],
+              isAndroidFile: true,
+              androidSerial: selectedDevice,
+            };
+          });
+          
+          setMediaFiles(convertedMediaFiles);
+          progressList.push({
+            module: "Media",
+            status: "completed",
+            count: convertedMediaFiles.length,
+            details: `Found ${convertedMediaFiles.length} media files`
+          });
+        } catch (error) {
+          console.error("Failed to scan media:", error);
+          progressList.push({
+            module: "Media",
+            status: "failed",
+            count: 0,
+            details: `Error: ${error}`
+          });
+        }
+        
+        // NOTE: The useEffect for merging hash matches into media files will
+        // automatically fire when both hashMatches and mediaFiles are populated.
+        // No need for manual merge here.
+        
+        await forceUIUpdate();
+      }
+
+      // ─── PHASE 6: Browser History ──────────────────────────────────
       if (modules.browserHistory && !scanCancelledRef.current) {
         setCurrentScanModule("Browser History");
         try {
@@ -324,157 +482,6 @@ function App() {
           });
         }
         
-        // Force UI update so browser data is visible
-        await forceUIUpdate();
-      }
-
-      // Scan media files if selected
-      if (modules.mediaScan && !scanCancelledRef.current) {
-        setCurrentScanModule("Media Files");
-        try {
-          const androidMediaFiles = await invoke<any[]>("scan_android_media", { serial: selectedDevice });
-          
-          // Convert to standard media file format
-          const convertedMediaFiles = androidMediaFiles.map((file, index) => {
-            const mediaType = file.fileType === "Image" ? "image" : file.fileType === "Video" ? "video" : "unknown";
-            console.log(`Converting file: ${file.filename}, fileType: ${file.fileType}, mediaType: ${mediaType}, size: ${file.sizeBytes}`);
-            return {
-              id: `android-media-${index}`,
-              filePath: file.path || "",  // Android device path
-              fileName: file.filename || "Unknown",
-              fileSize: Number(file.sizeBytes) || 0,
-              extension: file.filename ? file.filename.split('.').pop() || "" : "",
-              mediaType: mediaType,
-              thumbnailPath: "",  // Will be generated when file is pulled
-              dateCreated: file.createdDate || "Unknown",
-              dateModified: file.modifiedDate || "Unknown",
-              flags: [], // Initialize empty flags array
-              // Android-specific metadata
-              isAndroidFile: true,
-              androidSerial: selectedDevice,
-            };
-          });
-          
-          setMediaFiles(convertedMediaFiles);
-          progressList.push({
-            module: "Media",
-            status: "completed",
-            count: convertedMediaFiles.length,
-            details: `Found ${convertedMediaFiles.length} media files`
-          });
-        } catch (error) {
-          console.error("Failed to scan media:", error);
-          progressList.push({
-            module: "Media",
-            status: "failed",
-            count: 0,
-            details: `Error: ${error}`
-          });
-        }
-        
-        // Force UI update so media files are visible
-        await forceUIUpdate();
-      }
-
-      // Scan for hash matches if selected
-      if (modules.hashMatching && !scanCancelledRef.current) {
-        setCurrentScanModule("Hash Matching (CSAM)");
-        try {
-          // Get selected hash list names from hashConfig
-          const selectedHashLists = hashConfig?.selectedHashLists
-            ?.filter(list => list.enabled)
-            .map(list => list.name) || [];
-          
-          console.log("Hash scan using lists:", selectedHashLists.length > 0 ? selectedHashLists : "all available lists");
-          
-          const matches = await invoke<any[]>("scan_android_media_hashes", { 
-            serial: selectedDevice,
-            selectedHashListIds: selectedHashLists.length > 0 ? selectedHashLists : null
-          });
-          
-          console.log("Hash scan complete:", matches.length, "matches found");
-          
-          // Store hash matches in state
-          setHashMatches(matches);
-          
-          // Add to scan progress
-          progressList.push({
-            module: "Hash Matching",
-            status: matches.length > 0 ? "completed" : "completed",
-            count: matches.length,
-            details: matches.length > 0 
-              ? `⚠️ CRITICAL: ${matches.length} hash match${matches.length > 1 ? 'es' : ''} found!`
-              : `No hash matches found`
-          });
-
-          // Update media files with hash match flags (if media was scanned)
-          if (matches.length > 0 && modules.mediaScan) {
-            setMediaFiles(prevMediaFiles => {
-              return prevMediaFiles.map(mediaFile => {
-                const match = matches.find((m: any) => m.filePath === mediaFile.filePath);
-                if (match) {
-                  return {
-                    ...mediaFile,
-                    flags: [
-                      ...mediaFile.flags,
-                      {
-                        flagType: "HashMatch",
-                        severity: "Critical",
-                        reason: match.description || "Known CSAM hash match",
-                        source: match.listSource || "Hash Database"
-                      }
-                    ],
-                    md5Hash: match.md5Hash,
-                    sha256Hash: match.sha256Hash,
-                  };
-                }
-                return mediaFile;
-              });
-            });
-          }
-        } catch (error) {
-          console.error("Failed to scan hashes:", error);
-          progressList.push({
-            module: "Hash Matching",
-            status: "failed",
-            count: 0,
-            details: `Error: ${error}`
-          });
-        }
-        
-        // Force UI update so hash matches are visible
-        await forceUIUpdate();
-      }
-
-      // Extract SMS messages if selected
-      if (modules.smsMessages && !scanCancelledRef.current) {
-        setCurrentScanModule("SMS/MMS Messages");
-        try {
-          const smsResult = await invoke<any>("extract_android_sms", { 
-            deviceId: selectedDevice,
-            limit: null // Get all messages
-          });
-          
-          console.log("SMS extraction complete:", smsResult);
-          setSmsMessages(smsResult);
-          
-          progressList.push({
-            module: "SMS",
-            status: "completed",
-            count: smsResult.totalMessages || 0,
-            details: `Found ${smsResult.totalMessages || 0} messages in ${smsResult.threads?.length || 0} conversations`
-          });
-        } catch (error) {
-          console.error("Failed to extract SMS:", error);
-          progressList.push({
-            module: "SMS",
-            status: "failed",
-            count: 0,
-            details: `Error: ${error}`
-          });
-        }
-        
-        // Force final UI update so SMS messages are visible
         await forceUIUpdate();
       }
       

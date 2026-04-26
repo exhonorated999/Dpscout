@@ -30,6 +30,17 @@ fn is_cancelled() -> bool {
     SCAN_CANCELLED.load(Ordering::Relaxed)
 }
 
+/// Public check for scan cancellation — used by Android scanner
+#[inline]
+pub fn is_scan_cancelled() -> bool {
+    SCAN_CANCELLED.load(Ordering::Relaxed)
+}
+
+/// Reset cancellation flag — call at the start of any scan
+pub fn reset_scan_cancelled() {
+    SCAN_CANCELLED.store(false, Ordering::SeqCst);
+}
+
 /// Get the configured minimum file size for this scan
 #[inline]
 fn min_file_size() -> u64 {

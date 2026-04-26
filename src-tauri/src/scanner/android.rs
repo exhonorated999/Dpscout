@@ -1001,6 +1001,7 @@ pub fn scan_android_media_hashes(
     use tauri::Emitter;
     
     eprintln!("[Android Hash Scan] Starting hash scan for device {}", serial);
+    let scan_start = std::time::Instant::now();
     
     // Reset cancellation flag so previous cancellations don't block this scan
     crate::scanner::hash_scan::reset_scan_cancelled();
@@ -1033,20 +1034,23 @@ pub fn scan_android_media_hashes(
     
     let mut all_files: Vec<serde_json::Value> = Vec::new();
     
-    // ── Discover files per-directory using separate ADB args (matches v0.8.0 pattern) ──
-    // Pass find args as separate ADB arguments — more reliable than shell string on Android.
+    // ── Discover files per-directory with per-path timing ──
     for base_path in &hash_scan_paths {
         if crate::scanner::hash_scan::is_scan_cancelled() { break; }
         
         let files_before = all_files.len();
+        let path_start = std::time::Instant::now();
         
         let find_output = create_hidden_command(&adb_path)
             .args(&["-s", serial, "shell", "find", base_path, "-type", "f"])
             .output();
         
+        let path_elapsed = path_start.elapsed();
+        
         if let Ok(output) = find_output {
             if !output.status.success() {
-                continue; // Path doesn't exist or access denied — skip
+                eprintln!("[Android Hash Scan] {} => FAILED ({:.1}s)", base_path, path_elapsed.as_secs_f64());
+                continue;
             }
             
             let file_list = String::from_utf8_lossy(&output.stdout).replace('\r', "");
@@ -1074,11 +1078,11 @@ pub fn scan_android_media_hashes(
         
         if all_files.len() >= 15000 { break; }
         
-        eprintln!("[Android Hash Scan] {} => {} new files", base_path, all_files.len() - files_before);
+        eprintln!("[Android Hash Scan] {} => {} new files ({:.1}s)", base_path, all_files.len() - files_before, path_elapsed.as_secs_f64());
     }
     
     let total_files = all_files.len();
-    eprintln!("[Android Hash Scan] Found {} files to hash-check", total_files);
+    eprintln!("[Android Hash Scan] Found {} files to hash-check (discovery took {:.1}s)", total_files, scan_start.elapsed().as_secs_f64());
     
     if total_files == 0 {
         return Ok(Vec::new());
