@@ -998,13 +998,100 @@ pub fn scan_android_media_hashes(
     progress_callback: Option<Box<dyn Fn(AndroidHashScanProgress) + Send>>,
     selected_hash_list_ids: Option<Vec<String>>
 ) -> Result<Vec<AndroidHashMatch>, String> {
+    use tauri::Emitter;
+    
     eprintln!("[Android Hash Scan] Starting hash scan for device {}", serial);
     
-    // First, get list of media files
-    let media_files = scan_android_media(app_handle, serial)?;
-    let total_files = media_files.len();
+    // Reset cancellation flag so previous cancellations don't block this scan
+    crate::scanner::hash_scan::reset_scan_cancelled();
     
-    eprintln!("[Android Hash Scan] Found {} media files to check", total_files);
+    // Emit initial progress event
+    let _ = app_handle.emit("android:hash_scan_progress", serde_json::json!({
+        "status": "discovering",
+        "currentFile": "",
+        "filesScanned": 0,
+        "totalFiles": 0,
+        "matchesFound": 0
+    }));
+    
+    // Discover ALL files for hashing — not just media extensions.
+    // CSAM content can have any extension or be renamed.
+    let adb_path = get_bundled_adb_path(app_handle);
+    let hash_scan_paths = vec![
+        "/sdcard/DCIM",
+        "/sdcard/Camera",
+        "/sdcard/Pictures",
+        "/sdcard/Download",
+        "/sdcard/Downloads",
+        "/sdcard/Movies",
+        "/sdcard/Video",
+        "/sdcard/WhatsApp/Media/WhatsApp Images",
+        "/sdcard/WhatsApp/Media/WhatsApp Video",
+        "/sdcard/Telegram",
+        "/sdcard/Android/data",
+    ];
+    
+    let mut all_files: Vec<serde_json::Value> = Vec::new();
+    
+    for base_path in &hash_scan_paths {
+        // Check if path exists
+        let check_output = create_hidden_command(&adb_path)
+            .args(&["-s", serial, "shell", "test", "-d", base_path, "&&", "echo", "exists"])
+            .output();
+        
+        let path_exists = if let Ok(output) = check_output {
+            String::from_utf8_lossy(&output.stdout).contains("exists")
+        } else {
+            false
+        };
+        
+        if !path_exists {
+            eprintln!("[Android Hash Scan] Path not found, skipping: {}", base_path);
+            continue;
+        }
+        
+        let files_before = all_files.len();
+        
+        // Find ALL files in a SINGLE adb call — no per-file stat needed for hash scanning
+        let find_cmd = format!("find '{}' -type f 2>/dev/null", base_path);
+        let find_output = create_hidden_command(&adb_path)
+            .args(&["-s", serial, "shell", &find_cmd])
+            .output();
+        
+        if let Ok(output) = find_output {
+            let file_list = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+            
+            for line in file_list.lines() {
+                let file_path = line.trim();
+                if file_path.is_empty() {
+                    continue;
+                }
+                
+                let filename = file_path.split('/').last().unwrap_or("unknown").to_string();
+                
+                let mut entry = serde_json::Map::new();
+                entry.insert("path".to_string(), serde_json::Value::String(file_path.to_string()));
+                entry.insert("filename".to_string(), serde_json::Value::String(filename));
+                entry.insert("sizeBytes".to_string(), serde_json::Value::Number(0.into()));
+                all_files.push(serde_json::Value::Object(entry));
+                
+                // Safety cap
+                if all_files.len() >= 15000 {
+                    eprintln!("[Android Hash Scan] Reached 15,000 file limit, stopping discovery");
+                    break;
+                }
+            }
+        }
+        
+        if all_files.len() >= 15000 {
+            break;
+        }
+        
+        eprintln!("[Android Hash Scan] {} => {} files found", base_path, all_files.len() - files_before);
+    }
+    
+    let total_files = all_files.len();
+    eprintln!("[Android Hash Scan] Found {} files to hash-check", total_files);
     
     if total_files == 0 {
         return Ok(Vec::new());
@@ -1025,150 +1112,469 @@ pub fn scan_android_media_hashes(
     eprintln!("[Android Hash Scan] Database contains {} hashes from {} lists", 
         db_stats.total_hashes, db_stats.total_lists);
     
-    // Log which hash lists will be used
-    if let Some(ref list_ids) = selected_hash_list_ids {
-        if !list_ids.is_empty() {
-            eprintln!("[Android Hash Scan] Filtering to {} selected hash list(s)", list_ids.len());
-        } else {
-            eprintln!("[Android Hash Scan] Using all available hash lists");
-        }
+    // ── Load hashes into memory for O(1) lookups (bloom + HashSet) ──
+    // Without this, every check_hash() does a SQLite query — extremely slow.
+    eprintln!("[Android Hash Scan] Loading hashes into memory for fast lookups...");
+    let loaded = hash_db.load_hashes_into_memory()
+        .map_err(|e| format!("Failed to load hashes into memory: {}", e))?;
+    eprintln!("[Android Hash Scan] ✓ {} hashes loaded into memory", loaded);
+    
+    // Determine if we need filtered lookups (only when specific lists are selected AND non-empty)
+    let use_filtered = selected_hash_list_ids.as_ref()
+        .map(|ids| !ids.is_empty())
+        .unwrap_or(false);
+    
+    if use_filtered {
+        eprintln!("[Android Hash Scan] Filtering to {} selected hash list(s)", 
+            selected_hash_list_ids.as_ref().unwrap().len());
     } else {
         eprintln!("[Android Hash Scan] Using all available hash lists");
     }
     
-    // Create temporary directory for pulled files
-    let temp_dir = std::env::temp_dir().join(format!("android_hash_scan_{}", serial));
-    fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    // Check if device has md5sum and sha256sum available
+    let has_md5sum = {
+        let out = create_hidden_command(&adb_path)
+            .args(&["-s", serial, "shell", "which", "md5sum"])
+            .output();
+        out.map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()).unwrap_or(false)
+    };
+    let has_sha256sum = {
+        let out = create_hidden_command(&adb_path)
+            .args(&["-s", serial, "shell", "which", "sha256sum"])
+            .output();
+        out.map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()).unwrap_or(false)
+    };
+    
+    let on_device_hashing = has_md5sum || has_sha256sum;
+    eprintln!("[Android Hash Scan] On-device hashing: md5sum={}, sha256sum={}, using={}", 
+        has_md5sum, has_sha256sum, if on_device_hashing { "on-device (fast)" } else { "pull-to-host (slow)" });
+    
+    // Also check for sha1sum (many CSAM hash lists use SHA-1)
+    let has_sha1sum = {
+        let out = create_hidden_command(&adb_path)
+            .args(&["-s", serial, "shell", "which", "sha1sum"])
+            .output();
+        out.map(|o| o.status.success() && !String::from_utf8_lossy(&o.stdout).trim().is_empty()).unwrap_or(false)
+    };
+    eprintln!("[Android Hash Scan] sha1sum available: {}", has_sha1sum);
+    
+    // Only need temp dir if falling back to pull-and-hash
+    let temp_dir = if !on_device_hashing {
+        let dir = std::env::temp_dir().join(format!("android_hash_scan_{}", serial));
+        fs::create_dir_all(&dir).map_err(|e| format!("Failed to create temp directory: {}", e))?;
+        Some(dir)
+    } else {
+        None
+    };
     
     let mut matches = Vec::new();
-    let adb_path = get_bundled_adb_path(app_handle);
     
-    // Process each file
-    for (index, media_file) in media_files.iter().enumerate() {
-        let file_path = media_file.get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing file path".to_string())?;
+    // ══════════════════════════════════════════════════════════════════════
+    // BATCHED ON-DEVICE HASHING — hash many files per ADB call
+    // Instead of 1 ADB call per file (~150ms overhead each = 3+ min for 1300 files),
+    // batch ~100 files into a single `adb shell` command.
+    // 1300 files / 100 per batch = ~13 ADB calls instead of 1300.
+    // ══════════════════════════════════════════════════════════════════════
+    const BATCH_SIZE: usize = 100;
+    
+    if on_device_hashing {
+        let batches: Vec<&[serde_json::Value]> = all_files.chunks(BATCH_SIZE).collect();
+        let num_batches = batches.len();
+        eprintln!("[Android Hash Scan] Processing {} files in {} batches of up to {}", 
+            total_files, num_batches, BATCH_SIZE);
         
-        let filename = media_file.get("filename")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Missing filename".to_string())?;
+        let mut files_scanned: usize = 0;
         
-        let file_size = media_file.get("sizeBytes")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        
-        // Send progress update
-        if let Some(ref callback) = progress_callback {
-            callback(AndroidHashScanProgress {
-                status: "scanning".to_string(),
-                current_file: filename.to_string(),
-                files_scanned: index + 1,
-                total_files,
-                matches_found: matches.len(),
-            });
-        }
-        
-        eprintln!("[Android Hash Scan] [{}/{}] Checking: {}", index + 1, total_files, filename);
-        
-        // Skip files larger than 500MB to prevent excessive memory usage
-        if file_size > 500 * 1024 * 1024 {
-            eprintln!("  Skipping large file ({}MB)", file_size / 1024 / 1024);
-            continue;
-        }
-        
-        // Pull file to temp location
-        let local_file = temp_dir.join(format!("{}_{}", index, filename));
-        let local_file_str = local_file.to_string_lossy().to_string();
-        let pull_result = create_hidden_command(&adb_path)
-            .args(&["-s", serial, "pull", file_path, &local_file_str])
-            .output();
-        
-        if let Err(e) = pull_result {
-            eprintln!("  Failed to pull file: {}", e);
-            continue;
-        }
-        
-        let pull_output = pull_result.unwrap();
-        if !pull_output.status.success() {
-            eprintln!("  Failed to pull file: {}", String::from_utf8_lossy(&pull_output.stderr));
-            continue;
-        }
-        
-        // Compute hashes
-        let hash_result = compute_file_hashes(&local_file);
-        
-        // Clean up pulled file immediately after hashing
-        let _ = fs::remove_file(&local_file);
-        
-        if let Err(e) = hash_result {
-            eprintln!("  Failed to compute hashes: {}", e);
-            continue;
-        }
-        
-        let (md5, sha256) = hash_result.unwrap();
-        
-        // Check against hash database (with optional list filtering)
-        let mut found_match = false;
-        
-        // Check SHA256 first (preferred)
-        let sha256_match = if let Some(ref list_ids) = selected_hash_list_ids {
-            hash_db.check_hash_filtered(&sha256, "SHA256", list_ids)
-        } else {
-            hash_db.check_hash(&sha256, "SHA256")
-        };
-        
-        if let Ok(Some(match_data)) = sha256_match {
-            eprintln!("  ✓ HASH MATCH FOUND (SHA256): {}", filename);
-            matches.push(AndroidHashMatch {
-                file_path: file_path.to_string(),
-                file_name: filename.to_string(),
-                file_size,
-                md5_hash: md5.clone(),
-                sha256_hash: sha256.clone(),
-                matched_hash: sha256.clone(),
-                hash_type: "SHA256".to_string(),
-                list_name: match_data.source.clone(),
-                list_source: match_data.source,
-                description: match_data.description,
-                severity: "Critical".to_string(),
-            });
-            found_match = true;
-        }
-        
-        // Check MD5 if SHA256 didn't match
-        if !found_match {
-            let md5_match = if let Some(ref list_ids) = selected_hash_list_ids {
-                hash_db.check_hash_filtered(&md5, "MD5", list_ids)
-            } else {
-                hash_db.check_hash(&md5, "MD5")
+        for (batch_idx, batch) in batches.iter().enumerate() {
+            if crate::scanner::hash_scan::is_scan_cancelled() {
+                eprintln!("[Android Hash Scan] ⛔ Scan cancelled at batch {}/{}", batch_idx + 1, num_batches);
+                break;
+            }
+            
+            // Build a single shell script that hashes ALL files in this batch.
+            // Output format: FILE_MARKER:<path>\nMD5:<hash>\nSHA1:<hash>\nSHA256:<hash>\n
+            let mut script_parts = Vec::new();
+            for file_entry in batch.iter() {
+                let file_path = file_entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                if file_path.is_empty() { continue; }
+                let escaped = file_path.replace("'", "'\\''");
+                
+                let mut file_cmds = vec![format!("echo 'FILE_MARKER:{}'", escaped)];
+                if has_md5sum {
+                    file_cmds.push(format!("md5sum '{}' 2>/dev/null | cut -d' ' -f1 | sed 's/^/MD5:/'", escaped));
+                }
+                if has_sha1sum {
+                    file_cmds.push(format!("sha1sum '{}' 2>/dev/null | cut -d' ' -f1 | sed 's/^/SHA1:/'", escaped));
+                }
+                if has_sha256sum {
+                    file_cmds.push(format!("sha256sum '{}' 2>/dev/null | cut -d' ' -f1 | sed 's/^/SHA256:/'", escaped));
+                }
+                script_parts.push(file_cmds.join(" ; "));
+            }
+            
+            let combined_script = script_parts.join(" ; ");
+            
+            // Single ADB call for entire batch
+            let output = create_hidden_command(&adb_path)
+                .args(&["-s", serial, "shell", &combined_script])
+                .output();
+            
+            let stdout = match output {
+                Ok(o) => String::from_utf8_lossy(&o.stdout).replace('\r', ""),
+                Err(e) => {
+                    eprintln!("[Android Hash Scan] Batch {} ADB error: {}", batch_idx + 1, e);
+                    files_scanned += batch.len();
+                    continue;
+                }
             };
             
-            if let Ok(Some(match_data)) = md5_match {
-                eprintln!("  ✓ HASH MATCH FOUND (MD5): {}", filename);
-                matches.push(AndroidHashMatch {
-                    file_path: file_path.to_string(),
-                    file_name: filename.to_string(),
-                    file_size,
-                    md5_hash: md5.clone(),
-                    sha256_hash: sha256.clone(),
-                    matched_hash: md5.clone(),
-                    hash_type: "MD5".to_string(),
-                    list_name: match_data.source.clone(),
-                    list_source: match_data.source,
-                    description: match_data.description,
-                    severity: "Critical".to_string(),
+            // Parse batched output — split by FILE_MARKER lines
+            let mut current_path = String::new();
+            let mut current_md5 = String::new();
+            let mut current_sha1 = String::new();
+            let mut current_sha256 = String::new();
+            
+            // Helper closure to check hashes for the current file
+            let mut check_current_file = |path: &str, md5: &str, sha1: &str, sha256: &str, matches: &mut Vec<AndroidHashMatch>| {
+                if path.is_empty() { return; }
+                
+                let filename = path.split('/').last().unwrap_or("unknown");
+                
+                // ── Fast path: bloom + HashSet (nanoseconds per check) ──
+                // Only falls back to SQLite on confirmed match (very rare)
+                let mut found_match = false;
+                
+                if !sha256.is_empty() {
+                    let sha256_match = if use_filtered {
+                        // Filtered check must use SQLite (needs list ID filtering)
+                        hash_db.check_hash_filtered(sha256, "SHA256", selected_hash_list_ids.as_ref().unwrap())
+                            .ok().flatten()
+                    } else {
+                        hash_db.check_hash_fast(sha256, "SHA256")
+                    };
+                    if let Some(match_data) = sha256_match {
+                        eprintln!("  ✓ HASH MATCH (SHA256): {}", filename);
+                        let hm = AndroidHashMatch {
+                            file_path: path.to_string(),
+                            file_name: filename.to_string(),
+                            file_size: 0,
+                            md5_hash: md5.to_string(),
+                            sha256_hash: sha256.to_string(),
+                            matched_hash: sha256.to_string(),
+                            hash_type: "SHA256".to_string(),
+                            list_name: match_data.source.clone(),
+                            list_source: match_data.source,
+                            description: match_data.description,
+                            severity: "Critical".to_string(),
+                        };
+                        let _ = app_handle.emit("android:hash_match", &hm);
+                        matches.push(hm);
+                        found_match = true;
+                    }
+                }
+                
+                if !found_match && !sha1.is_empty() {
+                    let sha1_match = if use_filtered {
+                        hash_db.check_hash_filtered(sha1, "SHA1", selected_hash_list_ids.as_ref().unwrap())
+                            .ok().flatten()
+                    } else {
+                        hash_db.check_hash_fast(sha1, "SHA1")
+                    };
+                    if let Some(match_data) = sha1_match {
+                        eprintln!("  ✓ HASH MATCH (SHA1): {}", filename);
+                        let hm = AndroidHashMatch {
+                            file_path: path.to_string(),
+                            file_name: filename.to_string(),
+                            file_size: 0,
+                            md5_hash: md5.to_string(),
+                            sha256_hash: sha256.to_string(),
+                            matched_hash: sha1.to_string(),
+                            hash_type: "SHA1".to_string(),
+                            list_name: match_data.source.clone(),
+                            list_source: match_data.source,
+                            description: match_data.description,
+                            severity: "Critical".to_string(),
+                        };
+                        let _ = app_handle.emit("android:hash_match", &hm);
+                        matches.push(hm);
+                        found_match = true;
+                    }
+                }
+                
+                if !found_match && !md5.is_empty() {
+                    let md5_match = if use_filtered {
+                        hash_db.check_hash_filtered(md5, "MD5", selected_hash_list_ids.as_ref().unwrap())
+                            .ok().flatten()
+                    } else {
+                        hash_db.check_hash_fast(md5, "MD5")
+                    };
+                    if let Some(match_data) = md5_match {
+                        eprintln!("  ✓ HASH MATCH (MD5): {}", filename);
+                        let hm = AndroidHashMatch {
+                            file_path: path.to_string(),
+                            file_name: filename.to_string(),
+                            file_size: 0,
+                            md5_hash: md5.to_string(),
+                            sha256_hash: sha256.to_string(),
+                            matched_hash: md5.to_string(),
+                            hash_type: "MD5".to_string(),
+                            list_name: match_data.source.clone(),
+                            list_source: match_data.source,
+                            description: match_data.description,
+                            severity: "Critical".to_string(),
+                        };
+                        let _ = app_handle.emit("android:hash_match", &hm);
+                        matches.push(hm);
+                    }
+                }
+            };
+            
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                
+                if let Some(path) = line.strip_prefix("FILE_MARKER:") {
+                    // Process previous file before moving to next
+                    check_current_file(&current_path, &current_md5, &current_sha1, &current_sha256, &mut matches);
+                    current_path = path.to_string();
+                    current_md5.clear();
+                    current_sha1.clear();
+                    current_sha256.clear();
+                } else if let Some(hash) = line.strip_prefix("MD5:") {
+                    current_md5 = hash.trim().to_lowercase();
+                } else if let Some(hash) = line.strip_prefix("SHA1:") {
+                    current_sha1 = hash.trim().to_lowercase();
+                } else if let Some(hash) = line.strip_prefix("SHA256:") {
+                    current_sha256 = hash.trim().to_lowercase();
+                }
+            }
+            // Process last file in batch
+            check_current_file(&current_path, &current_md5, &current_sha1, &current_sha256, &mut matches);
+            
+            files_scanned += batch.len();
+            
+            // Emit progress
+            if let Some(ref callback) = progress_callback {
+                callback(AndroidHashScanProgress {
+                    status: "scanning".to_string(),
+                    current_file: format!("Batch {}/{}", batch_idx + 1, num_batches),
+                    files_scanned,
+                    total_files,
+                    matches_found: matches.len(),
                 });
+            }
+            let _ = app_handle.emit("android:hash_scan_progress", serde_json::json!({
+                "status": "scanning",
+                "currentFile": format!("Batch {}/{}", batch_idx + 1, num_batches),
+                "filesScanned": files_scanned,
+                "totalFiles": total_files,
+                "matchesFound": matches.len()
+            }));
+            
+            // Log batch diagnostics for first batch
+            if batch_idx == 0 {
+                eprintln!("[Android Hash Scan] First batch complete: {}/{} files, {} matches", 
+                    files_scanned, total_files, matches.len());
+            }
+        }
+    } else {
+        // ══════════════════════════════════════════════════════════════════
+        // FALLBACK: pull-to-host — no on-device hash tools
+        // Still uses in-memory hash lookups (fast), but must pull each file.
+        // ══════════════════════════════════════════════════════════════════
+        eprintln!("[Android Hash Scan] Using pull-to-host fallback (slower — device lacks hash tools)");
+        let td = temp_dir.as_ref().unwrap();
+        
+        for (index, file_entry) in all_files.iter().enumerate() {
+            if crate::scanner::hash_scan::is_scan_cancelled() {
+                eprintln!("[Android Hash Scan] ⛔ Scan cancelled at file {}/{}", index + 1, total_files);
+                break;
+            }
+            
+            let file_path = file_entry.get("path").and_then(|v| v.as_str()).unwrap_or("");
+            let filename = file_entry.get("filename").and_then(|v| v.as_str()).unwrap_or("unknown");
+            let file_size = file_entry.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+            
+            if file_path.is_empty() { continue; }
+            
+            // Progress — throttled to every 10 files
+            if index == 0 || (index + 1) % 10 == 0 || index + 1 == total_files {
+                if let Some(ref callback) = progress_callback {
+                    callback(AndroidHashScanProgress {
+                        status: "scanning".to_string(),
+                        current_file: filename.to_string(),
+                        files_scanned: index + 1,
+                        total_files,
+                        matches_found: matches.len(),
+                    });
+                }
+                let _ = app_handle.emit("android:hash_scan_progress", serde_json::json!({
+                    "status": "scanning",
+                    "currentFile": filename,
+                    "filesScanned": index + 1,
+                    "totalFiles": total_files,
+                    "matchesFound": matches.len()
+                }));
+            }
+            
+            let local_file = td.join(format!("{}_{}", index, filename));
+            let local_file_str = local_file.to_string_lossy().to_string();
+            let pull_result = create_hidden_command(&adb_path)
+                .args(&["-s", serial, "pull", file_path, &local_file_str])
+                .output();
+            
+            if let Err(e) = pull_result {
+                if (index + 1) % 50 == 0 {
+                    eprintln!("  Failed to pull file: {}", e);
+                }
+                continue;
+            }
+            let pull_output = pull_result.unwrap();
+            if !pull_output.status.success() { 
+                let _ = fs::remove_file(&local_file);
+                continue; 
+            }
+            
+            let hash_result = compute_file_hashes(&local_file);
+            let _ = fs::remove_file(&local_file);
+            
+            if let Ok((md5, sha256)) = hash_result {
+                // Use fast in-memory lookups
+                let mut found_match = false;
+                
+                if !sha256.is_empty() {
+                    let m = if use_filtered {
+                        hash_db.check_hash_filtered(&sha256, "SHA256", selected_hash_list_ids.as_ref().unwrap()).ok().flatten()
+                    } else {
+                        hash_db.check_hash_fast(&sha256, "SHA256")
+                    };
+                    if let Some(match_data) = m {
+                        let hm = AndroidHashMatch {
+                            file_path: file_path.to_string(),
+                            file_name: filename.to_string(),
+                            file_size,
+                            md5_hash: md5.clone(),
+                            sha256_hash: sha256.clone(),
+                            matched_hash: sha256.clone(),
+                            hash_type: "SHA256".to_string(),
+                            list_name: match_data.source.clone(),
+                            list_source: match_data.source,
+                            description: match_data.description,
+                            severity: "Critical".to_string(),
+                        };
+                        let _ = app_handle.emit("android:hash_match", &hm);
+                        matches.push(hm);
+                        found_match = true;
+                    }
+                }
+                
+                if !found_match && !md5.is_empty() {
+                    let m = if use_filtered {
+                        hash_db.check_hash_filtered(&md5, "MD5", selected_hash_list_ids.as_ref().unwrap()).ok().flatten()
+                    } else {
+                        hash_db.check_hash_fast(&md5, "MD5")
+                    };
+                    if let Some(match_data) = m {
+                        let hm = AndroidHashMatch {
+                            file_path: file_path.to_string(),
+                            file_name: filename.to_string(),
+                            file_size,
+                            md5_hash: md5.clone(),
+                            sha256_hash: sha256.clone(),
+                            matched_hash: md5.clone(),
+                            hash_type: "MD5".to_string(),
+                            list_name: match_data.source.clone(),
+                            list_source: match_data.source,
+                            description: match_data.description,
+                            severity: "Critical".to_string(),
+                        };
+                        let _ = app_handle.emit("android:hash_match", &hm);
+                        matches.push(hm);
+                    }
+                }
             }
         }
     }
     
-    // Clean up temp directory
-    let _ = fs::remove_dir_all(&temp_dir);
+    // Clean up temp directory if used
+    if let Some(ref td) = temp_dir {
+        let _ = fs::remove_dir_all(td);
+    }
     
     eprintln!("[Android Hash Scan] Scan complete. Found {} matches", matches.len());
     
+    // Emit completion event
+    let _ = app_handle.emit("android:hash_scan_progress", serde_json::json!({
+        "status": "complete",
+        "currentFile": "",
+        "filesScanned": total_files,
+        "totalFiles": total_files,
+        "matchesFound": matches.len()
+    }));
+    
     Ok(matches)
+}
+
+/// Compute MD5, SHA1, and SHA256 hashes on the Android device itself via adb shell.
+/// Returns (md5, sha1, sha256) — any may be empty if that tool isn't available.
+/// Uses a SINGLE adb shell call with all hash commands chained via && to minimize
+/// USB round-trips (the main bottleneck for Android hash scanning speed).
+#[allow(dead_code)]
+fn compute_hashes_on_device(
+    adb_path: &Path,
+    serial: &str,
+    device_file_path: &str,
+    has_md5sum: bool,
+    has_sha1sum: bool,
+    has_sha256sum: bool,
+) -> Result<(String, String, String), String> {
+    let escaped_path = device_file_path.replace("'", "'\\''");
+    
+    // Build a single shell command that outputs all hashes with markers
+    // Format: "MD5:<hash>\nSHA1:<hash>\nSHA256:<hash>\n"
+    let mut parts = Vec::new();
+    if has_md5sum {
+        parts.push(format!("echo -n 'MD5:' && md5sum '{}' | cut -d' ' -f1", escaped_path));
+    }
+    if has_sha1sum {
+        parts.push(format!("echo -n 'SHA1:' && sha1sum '{}' | cut -d' ' -f1", escaped_path));
+    }
+    if has_sha256sum {
+        parts.push(format!("echo -n 'SHA256:' && sha256sum '{}' | cut -d' ' -f1", escaped_path));
+    }
+    
+    if parts.is_empty() {
+        return Err("No hash tools available on device".to_string());
+    }
+    
+    let combined_cmd = parts.join(" ; ");
+    let output = create_hidden_command(adb_path)
+        .args(&["-s", serial, "shell", &combined_cmd])
+        .output()
+        .map_err(|e| format!("Hash command failed: {}", e))?;
+    
+    let stdout = String::from_utf8_lossy(&output.stdout).replace('\r', "");
+    
+    let mut md5 = String::new();
+    let mut sha1 = String::new();
+    let mut sha256 = String::new();
+    
+    for line in stdout.lines() {
+        let line = line.trim();
+        if let Some(hash) = line.strip_prefix("MD5:") {
+            md5 = hash.trim().to_lowercase();
+        } else if let Some(hash) = line.strip_prefix("SHA1:") {
+            sha1 = hash.trim().to_lowercase();
+        } else if let Some(hash) = line.strip_prefix("SHA256:") {
+            sha256 = hash.trim().to_lowercase();
+        }
+    }
+    
+    if md5.is_empty() && sha1.is_empty() && sha256.is_empty() {
+        return Err("Could not compute any hash on device".to_string());
+    }
+    
+    Ok((md5, sha1, sha256))
 }
 
 /// Compute MD5 and SHA256 hashes for a file
@@ -1191,3 +1597,4 @@ fn compute_file_hashes(path: &Path) -> Result<(String, String), String> {
     
     Ok((md5_hash, sha256_hash))
 }
+
