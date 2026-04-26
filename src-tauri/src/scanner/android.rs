@@ -1033,26 +1033,22 @@ pub fn scan_android_media_hashes(
     
     let mut all_files: Vec<serde_json::Value> = Vec::new();
     
-    // ── Single ADB call to discover files across ALL paths ──
-    // Instead of 10+ separate ADB calls (one per path with test -d + find),
-    // run a single find command that checks all paths at once.
-    {
-        let find_paths: Vec<String> = hash_scan_paths.iter()
-            .map(|p| format!("'{}'", p))
-            .collect();
+    // ── Discover files per-directory using separate ADB args (matches v0.8.0 pattern) ──
+    // Pass find args as separate ADB arguments — more reliable than shell string on Android.
+    for base_path in &hash_scan_paths {
+        if crate::scanner::hash_scan::is_scan_cancelled() { break; }
         
-        let find_cmd = format!(
-            "find {} -type f 2>/dev/null",
-            find_paths.join(" ")
-        );
-        
-        eprintln!("[Android Hash Scan] Running file discovery: {}", &find_cmd[..find_cmd.len().min(200)]);
+        let files_before = all_files.len();
         
         let find_output = create_hidden_command(&adb_path)
-            .args(&["-s", serial, "shell", &find_cmd])
+            .args(&["-s", serial, "shell", "find", base_path, "-type", "f"])
             .output();
         
         if let Ok(output) = find_output {
+            if !output.status.success() {
+                continue; // Path doesn't exist or access denied — skip
+            }
+            
             let file_list = String::from_utf8_lossy(&output.stdout).replace('\r', "");
             
             for line in file_list.lines() {
@@ -1069,15 +1065,16 @@ pub fn scan_android_media_hashes(
                 entry.insert("sizeBytes".to_string(), serde_json::Value::Number(0.into()));
                 all_files.push(serde_json::Value::Object(entry));
                 
-                // Safety cap
                 if all_files.len() >= 15000 {
-                    eprintln!("[Android Hash Scan] Reached 15,000 file limit, stopping discovery");
+                    eprintln!("[Android Hash Scan] Reached 15,000 file limit");
                     break;
                 }
             }
-        } else {
-            eprintln!("[Android Hash Scan] Failed to run find command");
         }
+        
+        if all_files.len() >= 15000 { break; }
+        
+        eprintln!("[Android Hash Scan] {} => {} new files", base_path, all_files.len() - files_before);
     }
     
     let total_files = all_files.len();
@@ -1102,12 +1099,11 @@ pub fn scan_android_media_hashes(
     eprintln!("[Android Hash Scan] Database contains {} hashes from {} lists", 
         db_stats.total_hashes, db_stats.total_lists);
     
-    // ── Load hashes into memory for O(1) lookups (bloom + HashSet) ──
-    // Without this, every check_hash() does a SQLite query — extremely slow.
-    eprintln!("[Android Hash Scan] Loading hashes into memory for fast lookups...");
-    let loaded = hash_db.load_hashes_into_memory()
-        .map_err(|e| format!("Failed to load hashes into memory: {}", e))?;
-    eprintln!("[Android Hash Scan] ✓ {} hashes loaded into memory", loaded);
+    // NOTE: We do NOT call load_hashes_into_memory() for Android scans.
+    // The hash DB is 2GB+ / 14M+ hashes — loading into RAM takes 3-5 minutes.
+    // For Android we only have ~100-500 media files, so indexed SQLite lookups
+    // (check_hash) are fast enough: ~600 queries < 1 second with index.
+    // The USB/Windows scanner loads into memory because it hashes 100K+ files.
     
     // Determine if we need filtered lookups (only when specific lists are selected AND non-empty)
     let use_filtered = selected_hash_list_ids.as_ref()
@@ -1408,7 +1404,8 @@ pub fn scan_android_media_hashes(
 /// Uses a SINGLE adb shell call with all hash commands chained via && to minimize
 /// USB round-trips (the main bottleneck for Android hash scanning speed).
 /// Shared helper: check MD5/SHA1/SHA256 against the hash database and emit match events.
-/// Used by both the batched on-device hashing path and the pull-to-host fallback.
+/// Uses indexed SQLite lookups (check_hash) — fast enough for Android's ~100-500 files.
+/// We don't load the 2GB hash DB into RAM for Android scans (that takes 3-5 min).
 fn check_android_hash_match(
     file_path: &str,
     md5: &str,
@@ -1431,7 +1428,7 @@ fn check_android_hash_match(
             hash_db.check_hash_filtered(sha256, "SHA256", selected_hash_list_ids.as_ref().unwrap())
                 .ok().flatten()
         } else {
-            hash_db.check_hash_fast(sha256, "SHA256")
+            hash_db.check_hash(sha256, "SHA256").ok().flatten()
         };
         if let Some(match_data) = m {
             eprintln!("  ✓ HASH MATCH (SHA256): {}", filename);
@@ -1460,7 +1457,7 @@ fn check_android_hash_match(
             hash_db.check_hash_filtered(sha1, "SHA1", selected_hash_list_ids.as_ref().unwrap())
                 .ok().flatten()
         } else {
-            hash_db.check_hash_fast(sha1, "SHA1")
+            hash_db.check_hash(sha1, "SHA1").ok().flatten()
         };
         if let Some(match_data) = m {
             eprintln!("  ✓ HASH MATCH (SHA1): {}", filename);
@@ -1489,7 +1486,7 @@ fn check_android_hash_match(
             hash_db.check_hash_filtered(md5, "MD5", selected_hash_list_ids.as_ref().unwrap())
                 .ok().flatten()
         } else {
-            hash_db.check_hash_fast(md5, "MD5")
+            hash_db.check_hash(md5, "MD5").ok().flatten()
         };
         if let Some(match_data) = m {
             eprintln!("  ✓ HASH MATCH (MD5): {}", filename);
