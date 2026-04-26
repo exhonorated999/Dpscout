@@ -22,7 +22,25 @@ import './UnifiedDashboard.css';
 const ClickableFilePath: React.FC<{ path: string }> = ({ path }) => {
   const openFileLocation = async () => {
     try {
-      // Try to open file location using Tauri command
+      // Detect Android device paths (start with / but not a Windows path)
+      const isAndroidPath = path.startsWith('/sdcard/') || path.startsWith('/storage/') || 
+                            (path.startsWith('/') && !path.includes(':\\'));
+      
+      if (isAndroidPath) {
+        // Android path — pull file from device and open locally
+        try {
+          const localPath = await invoke<string>('pull_and_open_android_file', { devicePath: path });
+          console.log(`Pulled and opened: ${localPath}`);
+        } catch (pullError) {
+          console.error('Failed to pull Android file:', pullError);
+          // Fallback: copy path to clipboard
+          await navigator.clipboard.writeText(path);
+          alert(`Android device path (copied to clipboard):\n${path}\n\nCould not pull file: ${pullError}`);
+        }
+        return;
+      }
+      
+      // Windows/local path — open file location using explorer
       await invoke('open_file_location', { path });
       console.log(`Opened file location: ${path}`);
     } catch (invokeError) {

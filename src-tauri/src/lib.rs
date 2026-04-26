@@ -1693,6 +1693,56 @@ fn generate_report(payload: reporter::ReportPayload, password: String) -> Result
     })
 }
 
+/// Pull a file from a connected Android device via ADB and open it locally
+#[tauri::command]
+fn pull_and_open_android_file(app_handle: tauri::AppHandle, device_path: String) -> Result<String, String> {
+    use crate::scanner::android::{get_bundled_adb_path, create_hidden_command};
+    
+    eprintln!("Pulling Android file: {}", device_path);
+    
+    let adb_path = get_bundled_adb_path(&app_handle);
+    
+    // Get filename from device path
+    let filename = device_path.split('/').last().unwrap_or("file");
+    
+    // Create temp directory for pulled files
+    let temp_dir = std::env::temp_dir().join("scout_android_preview");
+    std::fs::create_dir_all(&temp_dir)
+        .map_err(|e| format!("Failed to create temp directory: {}", e))?;
+    
+    let local_path = temp_dir.join(filename);
+    let local_path_str = local_path.to_string_lossy().to_string();
+    
+    // Pull file from device (use first connected device)
+    let output = create_hidden_command(&adb_path)
+        .args(&["pull", &device_path, &local_path_str])
+        .output()
+        .map_err(|e| format!("Failed to run adb pull: {}", e))?;
+    
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("ADB pull failed: {}", stderr));
+    }
+    
+    eprintln!("File pulled to: {}", local_path_str);
+    
+    // Open the file with the default application
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        
+        // Use explorer /select to open the folder and highlight the file
+        std::process::Command::new("explorer")
+            .args(["/select,", &local_path_str])
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .map_err(|e| format!("Failed to open file: {}", e))?;
+    }
+    
+    Ok(local_path_str)
+}
+
 #[tauri::command]
 fn open_file_location(path: String) -> Result<(), String> {
     eprintln!("Opening file location: {}", path);
@@ -2237,6 +2287,7 @@ pub fn run() {
             generate_report,
             open_pdf_file,
             open_file_location,
+            pull_and_open_android_file,
             list_reports,
             open_report,
             delete_report,
