@@ -41,22 +41,68 @@ export const HashResults: React.FC<HashResultsProps> = ({
   const [accessEvents, setAccessEvents] = useState<FileAccessEvent[]>([]);
   const [loadingMetadata, setLoadingMetadata] = useState(false);
   const [loadingEvents, setLoadingEvents] = useState(false);
+  const [excludedPaths, setExcludedPaths] = useState<Set<string>>(new Set());
+  const [excludingFile, setExcludingFile] = useState<string | null>(null);
+  const [excludeReason, setExcludeReason] = useState('');
 
-  // Filter matches based on search query
+  // Filter matches based on search query, then hide excluded paths
   const filteredMatches = (): MediaFile[] => {
-    if (!searchQuery) return matches;
-    
-    const query = searchQuery.toLowerCase();
-    return matches.filter(
-      m =>
-        m.fileName.toLowerCase().includes(query) ||
-        m.filePath.toLowerCase().includes(query) ||
-        m.md5Hash?.toLowerCase().includes(query) ||
-        m.sha256Hash?.toLowerCase().includes(query)
-    );
+    let result = matches;
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(
+        m =>
+          m.fileName.toLowerCase().includes(query) ||
+          m.filePath.toLowerCase().includes(query) ||
+          m.md5Hash?.toLowerCase().includes(query) ||
+          m.sha256Hash?.toLowerCase().includes(query)
+      );
+    }
+    return result.filter(m => !excludedPaths.has(m.filePath));
   };
 
   const currentMatches = filteredMatches();
+
+  // Extract hash and type from a file's hash_match flag
+  const getHashFromFlag = (file: MediaFile): { hash: string; hashType: string } => {
+    const hashFlag = file.flags.find(f => f.type === 'hash_match');
+    if (hashFlag) {
+      // Parse reason like "Hash match: abc123... (MD5)"
+      const reason = hashFlag.reason;
+      const typeMatch = reason.match(/\((MD5|SHA1|SHA256)\)/i);
+      const hashType = typeMatch ? typeMatch[1].toUpperCase() : 'MD5';
+      // Use the actual hash from the file object
+      if (hashType === 'SHA256' && file.sha256Hash) {
+        return { hash: file.sha256Hash, hashType: 'SHA256' };
+      }
+      if (file.md5Hash) {
+        return { hash: file.md5Hash, hashType: 'MD5' };
+      }
+    }
+    // Fallback: use whatever hash is available
+    if (file.sha256Hash) return { hash: file.sha256Hash, hashType: 'SHA256' };
+    if (file.md5Hash) return { hash: file.md5Hash, hashType: 'MD5' };
+    return { hash: '', hashType: 'MD5' };
+  };
+
+  const handleExcludeHash = async (file: MediaFile) => {
+    const { hash, hashType } = getHashFromFlag(file);
+    if (!hash) return;
+    try {
+      await invoke('exclude_hash', {
+        hash,
+        hashType,
+        fileName: file.fileName || null,
+        reason: excludeReason || null,
+      });
+      setExcludedPaths(prev => new Set(prev).add(file.filePath));
+      setExcludingFile(null);
+      setExcludeReason('');
+    } catch (error) {
+      console.error('Failed to exclude hash:', error);
+      alert(`Failed to exclude hash: ${error}`);
+    }
+  };
 
   // Handle opening file in Explorer
   const handleOpenInExplorer = async (filePath: string) => {
@@ -234,13 +280,59 @@ export const HashResults: React.FC<HashResultsProps> = ({
                           </div>
                         </div>
                       </div>
-                      <button
-                        className="expand-btn"
-                        onClick={() => toggleFileExpansion(file.filePath)}
-                      >
-                        {expandedFile === file.filePath ? '▼ Less' : '▶ More'}
-                      </button>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-start' }}>
+                        <button
+                          className="exclude-btn"
+                          onClick={() => {
+                            setExcludingFile(excludingFile === file.filePath ? null : file.filePath);
+                            setExcludeReason('');
+                          }}
+                          title="Exclude this hash match (mark as false positive)"
+                        >
+                          ✕ Exclude
+                        </button>
+                        <button
+                          className="expand-btn"
+                          onClick={() => toggleFileExpansion(file.filePath)}
+                        >
+                          {expandedFile === file.filePath ? '▼ Less' : '▶ More'}
+                        </button>
+                      </div>
                     </div>
+
+                    {/* Inline Exclude Confirmation */}
+                    {excludingFile === file.filePath && (
+                      <div className="exclude-confirm-bar">
+                        <div className="exclude-confirm-info">
+                          <span className="exclude-confirm-label">Mark as false positive:</span>
+                          <span className="exclude-confirm-hash" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.75rem', color: '#f85149' }}>
+                            {getHashFromFlag(file).hash.substring(0, 16)}...
+                          </span>
+                          <span className="exclude-confirm-type" style={{ fontSize: '0.7rem', color: '#8b949e', marginLeft: '0.25rem' }}>
+                            ({getHashFromFlag(file).hashType})
+                          </span>
+                        </div>
+                        <div className="exclude-confirm-actions">
+                          <input
+                            type="text"
+                            placeholder="Reason (optional)..."
+                            value={excludeReason}
+                            onChange={e => setExcludeReason(e.target.value)}
+                            className="exclude-reason-input"
+                            onKeyDown={e => {
+                              if (e.key === 'Enter') handleExcludeHash(file);
+                              if (e.key === 'Escape') { setExcludingFile(null); setExcludeReason(''); }
+                            }}
+                          />
+                          <button className="exclude-confirm-yes" onClick={() => handleExcludeHash(file)}>
+                            ✓ Exclude
+                          </button>
+                          <button className="exclude-confirm-no" onClick={() => { setExcludingFile(null); setExcludeReason(''); }}>
+                            Cancel
+                          </button>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Thumbnail Preview */}
                     {file.thumbnailPath && (

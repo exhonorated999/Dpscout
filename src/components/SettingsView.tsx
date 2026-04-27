@@ -1014,6 +1014,15 @@ const KeywordListEditor: React.FC<{
 };
 
 // Hash Lists Panel - Full Implementation
+interface ExcludedHash {
+  id: number;
+  hash: string;
+  hash_type: string;
+  file_name: string | null;
+  excluded_at: string;
+  reason: string | null;
+}
+
 const HashListsPanel: React.FC<{
   lists: HashList[];
   onChange: (lists: HashList[]) => void;
@@ -1032,6 +1041,24 @@ const HashListsPanel: React.FC<{
   } | null>(null);
   const [dbStats, setDbStats] = useState<any>(null);
   const [isLoadingStats, setIsLoadingStats] = useState(false);
+  const [excludedHashes, setExcludedHashes] = useState<ExcludedHash[]>([]);
+  const [showExclusions, setShowExclusions] = useState(false);
+  const [confirmClearExclusions, setConfirmClearExclusions] = useState(false);
+
+  // Load excluded hashes
+  const loadExcludedHashes = async () => {
+    try {
+      const exclusions = await invoke<ExcludedHash[]>('get_hash_exclusions');
+      setExcludedHashes(exclusions);
+    } catch (error) {
+      console.error('Failed to load excluded hashes:', error);
+    }
+  };
+
+  // Load exclusions on mount
+  React.useEffect(() => {
+    loadExcludedHashes();
+  }, []);
 
   // Update local state when props change
   React.useEffect(() => {
@@ -1434,6 +1461,232 @@ const HashListsPanel: React.FC<{
           </div>
         </div>
       )}
+
+      {/* Excluded Hashes Management */}
+      <div className="excluded-hashes-section">
+        <div
+          className="excluded-hashes-header"
+          onClick={() => setShowExclusions(!showExclusions)}
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '0.75rem 1rem',
+            background: 'var(--color-bg-tertiary)',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-sm)',
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.9rem' }}>🚫</span>
+            <span style={{ fontSize: '0.85rem', fontWeight: 600, color: 'var(--color-text-primary)' }}>
+              Excluded Hashes (False Positives)
+            </span>
+            {excludedHashes.length > 0 && (
+              <span style={{
+                fontSize: '0.7rem',
+                fontWeight: 700,
+                background: 'rgba(248, 81, 73, 0.2)',
+                color: '#f85149',
+                padding: '1px 8px',
+                borderRadius: '10px',
+                border: '1px solid rgba(248, 81, 73, 0.4)',
+              }}>
+                {excludedHashes.length}
+              </span>
+            )}
+          </div>
+          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+            {showExclusions ? '▼ Hide' : '▶ Show'}
+          </span>
+        </div>
+
+        {showExclusions && (
+          <div style={{
+            marginTop: '0.5rem',
+            border: '1px solid var(--color-border)',
+            borderRadius: 'var(--radius-sm)',
+            overflow: 'hidden',
+          }}>
+            {excludedHashes.length === 0 ? (
+              <div style={{
+                padding: '1.5rem',
+                textAlign: 'center',
+                color: 'var(--color-text-secondary)',
+                fontSize: '0.8rem',
+              }}>
+                No excluded hashes. Use the ✕ Exclude button on hash match results to mark false positives.
+              </div>
+            ) : (
+              <>
+                <div style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  padding: '0.5rem 1rem',
+                  background: 'rgba(248, 81, 73, 0.05)',
+                  borderBottom: '1px solid var(--color-border)',
+                }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
+                    {excludedHashes.length} excluded hash{excludedHashes.length !== 1 ? 'es' : ''}
+                  </span>
+                  {confirmClearExclusions ? (
+                    <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                      <span style={{ fontSize: '0.75rem', color: '#f85149' }}>Remove all?</span>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await invoke('clear_hash_exclusions');
+                            setExcludedHashes([]);
+                            setConfirmClearExclusions(false);
+                          } catch (error) {
+                            alert(`Failed to clear exclusions: ${error}`);
+                          }
+                        }}
+                        style={{
+                          padding: '2px 10px',
+                          fontSize: '0.7rem',
+                          background: 'rgba(248, 81, 73, 0.2)',
+                          border: '1px solid #f85149',
+                          borderRadius: 'var(--radius-sm)',
+                          color: '#f85149',
+                          cursor: 'pointer',
+                          fontWeight: 600,
+                        }}
+                      >
+                        Yes, Clear All
+                      </button>
+                      <button
+                        onClick={() => setConfirmClearExclusions(false)}
+                        style={{
+                          padding: '2px 10px',
+                          fontSize: '0.7rem',
+                          background: 'var(--color-bg-tertiary)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-sm)',
+                          color: 'var(--color-text-secondary)',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setConfirmClearExclusions(true)}
+                      style={{
+                        padding: '2px 10px',
+                        fontSize: '0.7rem',
+                        background: 'rgba(248, 81, 73, 0.1)',
+                        border: '1px solid rgba(248, 81, 73, 0.3)',
+                        borderRadius: 'var(--radius-sm)',
+                        color: '#f85149',
+                        cursor: 'pointer',
+                        fontWeight: 600,
+                      }}
+                    >
+                      🗑️ Clear All
+                    </button>
+                  )}
+                </div>
+                <div style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                  {excludedHashes.map(ex => (
+                    <div
+                      key={ex.id}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        padding: '0.5rem 1rem',
+                        borderBottom: '1px solid var(--color-border)',
+                        fontSize: '0.75rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', flex: 1, minWidth: 0 }}>
+                        <span style={{
+                          fontFamily: "'JetBrains Mono', monospace",
+                          color: '#f85149',
+                          fontSize: '0.7rem',
+                          flexShrink: 0,
+                        }}>
+                          {ex.hash.substring(0, 16)}...
+                        </span>
+                        <span style={{
+                          fontSize: '0.65rem',
+                          padding: '1px 6px',
+                          background: 'var(--color-bg-tertiary)',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-sm)',
+                          color: 'var(--color-text-secondary)',
+                          flexShrink: 0,
+                        }}>
+                          {ex.hash_type}
+                        </span>
+                        {ex.file_name && (
+                          <span style={{
+                            color: 'var(--color-text-secondary)',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                            fontSize: '0.7rem',
+                          }}>
+                            {ex.file_name}
+                          </span>
+                        )}
+                        {ex.reason && (
+                          <span style={{
+                            color: '#FFA726',
+                            fontSize: '0.65rem',
+                            fontStyle: 'italic',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}>
+                            "{ex.reason}"
+                          </span>
+                        )}
+                        <span style={{
+                          color: 'var(--color-text-muted, #8b9dc3)',
+                          fontSize: '0.65rem',
+                          flexShrink: 0,
+                        }}>
+                          {new Date(ex.excluded_at).toLocaleDateString()}
+                        </span>
+                      </div>
+                      <button
+                        onClick={async () => {
+                          try {
+                            await invoke('remove_hash_exclusion', { id: ex.id });
+                            setExcludedHashes(prev => prev.filter(e => e.id !== ex.id));
+                          } catch (error) {
+                            alert(`Failed to remove exclusion: ${error}`);
+                          }
+                        }}
+                        style={{
+                          padding: '2px 8px',
+                          fontSize: '0.65rem',
+                          background: 'transparent',
+                          border: '1px solid var(--color-border)',
+                          borderRadius: 'var(--radius-sm)',
+                          color: 'var(--color-text-secondary)',
+                          cursor: 'pointer',
+                          flexShrink: 0,
+                          marginLeft: '0.5rem',
+                        }}
+                        title="Remove exclusion"
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       <div className="list-grid">
         <div className="list-sidebar">

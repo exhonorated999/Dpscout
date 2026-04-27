@@ -15,6 +15,16 @@ pub struct HashMatch {
     pub file_size: Option<i64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExcludedHash {
+    pub id: i64,
+    pub hash: String,
+    pub hash_type: String,
+    pub file_name: Option<String>,
+    pub excluded_at: String,
+    pub reason: Option<String>,
+}
+
 pub struct HashDatabase {
     conn: Arc<Mutex<Connection>>,
     // ── Tiered lookup (bloom → HashSet → SQLite) ──
@@ -22,6 +32,8 @@ pub struct HashDatabase {
     bloom: Arc<RwLock<Option<Bloom<String>>>>,
     // Tier 2: HashSet of normalized hash strings — exact confirmation, ~1.1 GB for 14M
     hash_set: Arc<RwLock<Option<HashSet<String>>>>,
+    // Tier 2.5: Excluded hashes — user-curated false positives to skip
+    excluded_set: Arc<RwLock<Option<HashSet<String>>>>,
     // Tier 3: SQLite — full metadata lookup on confirmed match (rare path)
     // (uses self.conn)
 
@@ -53,6 +65,7 @@ impl HashDatabase {
             conn: Arc::new(Mutex::new(conn)),
             bloom: Arc::new(RwLock::new(None)),
             hash_set: Arc::new(RwLock::new(None)),
+            excluded_set: Arc::new(RwLock::new(None)),
             hash_types: Arc::new(RwLock::new(HashSet::new())),
             known_sizes: Arc::new(RwLock::new(None)),
             hash_count: Arc::new(RwLock::new(0)),
@@ -104,6 +117,20 @@ impl HashDatabase {
             [],
         ).ok(); // Silently ignore if column already exists
         
+        // Exclusion list — user-curated false positives
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS excluded_hashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL,
+                hash_type TEXT NOT NULL,
+                file_name TEXT,
+                excluded_at TEXT NOT NULL,
+                reason TEXT,
+                UNIQUE(hash, hash_type)
+            )",
+            [],
+        ).map_err(|e| format!("Failed to create excluded_hashes table: {}", e))?;
+        
         Ok(())
     }
     
@@ -132,6 +159,12 @@ impl HashDatabase {
             "CREATE INDEX IF NOT EXISTS idx_list_id ON hashes(list_id)",
             [],
         ).map_err(|e| format!("Failed to create list index: {}", e))?;
+        
+        // Index for exclusion lookups
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_excluded_hash ON excluded_hashes(hash COLLATE NOCASE, hash_type)",
+            [],
+        ).ok(); // Silently ignore if already exists
         
         Ok(())
     }
@@ -290,7 +323,8 @@ impl HashDatabase {
         ).map_err(|e| format!("Prepare failed: {}", e))?;
         
         for (ht, hash, cat, desc, sz) in batch {
-            stmt.execute(params![hash, ht, list_id, cat.as_deref(), desc.as_deref(), sz]).ok();
+            let hash_lower = hash.to_lowercase();
+            stmt.execute(params![hash_lower, ht, list_id, cat.as_deref(), desc.as_deref(), sz]).ok();
             *imported_count += 1;
         }
         Ok(())
@@ -398,6 +432,30 @@ impl HashDatabase {
             *c = count;
         }
         
+        // Load exclusion list into memory
+        {
+            let conn = self.conn.lock().unwrap();
+            let mut excluded = HashSet::new();
+            if let Ok(mut stmt) = conn.prepare("SELECT hash FROM excluded_hashes") {
+                if let Ok(rows) = stmt.query_map([], |row| {
+                    let hash: String = row.get(0)?;
+                    Ok(hash.to_lowercase())
+                }) {
+                    for row in rows {
+                        if let Ok(h) = row {
+                            excluded.insert(h);
+                        }
+                    }
+                }
+            }
+            let excl_count = excluded.len();
+            let mut es = self.excluded_set.write().unwrap();
+            *es = if excl_count > 0 { Some(excluded) } else { None };
+            if excl_count > 0 {
+                eprintln!("[Hash DB] Loaded {} excluded hashes", excl_count);
+            }
+        }
+        
         let elapsed = start.elapsed();
         eprintln!("[Hash DB] Loaded {} hashes in {:.2}s (types: {:?})", count, elapsed.as_secs_f64(), types);
         eprintln!("[Hash DB] Bloom: {} KB, HashSet: ~{} MB, total: ~{} MB", 
@@ -414,11 +472,13 @@ impl HashDatabase {
     /// 2. HashSet (nanoseconds): exact confirmation, no false positives
     /// 3. SQLite (microseconds): fetch metadata only on confirmed match
     pub fn check_hash_fast(&self, hash: &str, hash_type: &str) -> Option<HashMatch> {
+        let hash_lower = hash.to_lowercase();
+        
         // Tier 1: Bloom filter — fast negative
         {
             let bloom = self.bloom.read().unwrap();
             if let Some(ref bf) = *bloom {
-                if !bf.check(&hash.to_string()) {
+                if !bf.check(&hash_lower) {
                     return None; // Definitely not in DB
                 }
             } else {
@@ -430,7 +490,7 @@ impl HashDatabase {
         {
             let hs = self.hash_set.read().unwrap();
             if let Some(ref set) = *hs {
-                if !set.contains(hash) {
+                if !set.contains(&hash_lower) {
                     return None; // Bloom false positive
                 }
             } else {
@@ -438,18 +498,28 @@ impl HashDatabase {
             }
         }
         
+        // Tier 2.5: Exclusion list — skip known false positives
+        {
+            let excl = self.excluded_set.read().unwrap();
+            if let Some(ref set) = *excl {
+                if set.contains(&hash_lower) {
+                    return None; // User-excluded hash
+                }
+            }
+        }
+        
         // Tier 3: Confirmed match — fetch full metadata from SQLite
-        // This path is VERY rare (only actual CSAM matches)
+        // This path is VERY rare (only actual matches)
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
             "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
-             WHERE h.hash = ?1 COLLATE NOCASE 
+             WHERE h.hash = ?1 COLLATE NOCASE AND h.hash_type = ?2
              LIMIT 1"
         ).ok()?;
         
-        stmt.query_row(params![hash], |row| {
+        stmt.query_row(params![hash_lower, hash_type], |row| {
             Ok(HashMatch {
                 hash: row.get(0)?,
                 hash_type: row.get(1)?,
@@ -585,6 +655,118 @@ impl HashDatabase {
         }
         
         Ok(matches)
+    }
+    
+    // ── Hash Exclusion Management ──
+    
+    /// Add a hash to the exclusion list (false positive removal)
+    pub fn exclude_hash(&self, hash: &str, hash_type: &str, file_name: Option<&str>, reason: Option<&str>) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let hash_lower = hash.to_lowercase();
+        let now = chrono::Utc::now().to_rfc3339();
+        
+        conn.execute(
+            "INSERT OR REPLACE INTO excluded_hashes (hash, hash_type, file_name, excluded_at, reason) 
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![hash_lower, hash_type, file_name, now, reason],
+        ).map_err(|e| format!("Failed to exclude hash: {}", e))?;
+        
+        // Update in-memory exclusion set
+        {
+            let mut es = self.excluded_set.write().unwrap();
+            if es.is_none() {
+                *es = Some(HashSet::new());
+            }
+            if let Some(ref mut set) = *es {
+                set.insert(hash_lower.clone());
+            }
+        }
+        
+        eprintln!("[Hash DB] Excluded hash: {} ({})", &hash_lower[..hash_lower.len().min(16)], hash_type);
+        Ok(())
+    }
+    
+    /// Remove a hash from the exclusion list
+    pub fn remove_exclusion(&self, id: i64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        
+        // Get the hash before deleting so we can update in-memory set
+        let hash: Option<String> = conn.query_row(
+            "SELECT hash FROM excluded_hashes WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        ).ok();
+        
+        conn.execute(
+            "DELETE FROM excluded_hashes WHERE id = ?1",
+            params![id],
+        ).map_err(|e| format!("Failed to remove exclusion: {}", e))?;
+        
+        // Update in-memory set
+        if let Some(h) = hash {
+            let mut es = self.excluded_set.write().unwrap();
+            if let Some(ref mut set) = *es {
+                set.remove(&h.to_lowercase());
+            }
+        }
+        
+        Ok(())
+    }
+    
+    /// Get all excluded hashes
+    pub fn get_exclusions(&self) -> Result<Vec<ExcludedHash>, String> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(
+            "SELECT id, hash, hash_type, file_name, excluded_at, reason FROM excluded_hashes ORDER BY excluded_at DESC"
+        ).map_err(|e| format!("Failed to query exclusions: {}", e))?;
+        
+        let results = stmt.query_map([], |row| {
+            Ok(ExcludedHash {
+                id: row.get(0)?,
+                hash: row.get(1)?,
+                hash_type: row.get(2)?,
+                file_name: row.get(3)?,
+                excluded_at: row.get(4)?,
+                reason: row.get(5)?,
+            })
+        }).map_err(|e| format!("Query failed: {}", e))?;
+        
+        let mut exclusions = Vec::new();
+        for r in results {
+            if let Ok(e) = r {
+                exclusions.push(e);
+            }
+        }
+        Ok(exclusions)
+    }
+    
+    /// Clear all exclusions
+    pub fn clear_exclusions(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM excluded_hashes", [])
+            .map_err(|e| format!("Failed to clear exclusions: {}", e))?;
+        
+        let mut es = self.excluded_set.write().unwrap();
+        *es = None;
+        
+        eprintln!("[Hash DB] Cleared all hash exclusions");
+        Ok(())
+    }
+    
+    /// Get exclusion count
+    pub fn get_exclusion_count(&self) -> usize {
+        let es = self.excluded_set.read().unwrap();
+        es.as_ref().map(|s| s.len()).unwrap_or(0)
+    }
+    
+    /// Update the hash_count on a list record
+    pub fn update_list_hash_count(&self, list_id: i64, count: u64) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE hash_lists SET hash_count = ?1 WHERE id = ?2",
+            params![count, list_id],
+        ).map_err(|e| format!("Failed to update hash count: {}", e))?;
+        Ok(())
     }
     
     /// Get statistics about the database

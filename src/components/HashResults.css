@@ -194,6 +194,105 @@
   color: var(--color-text-primary);
 }
 
+/* Exclude Hash Button */
+.exclude-btn {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background-color: rgba(248, 81, 73, 0.1);
+  border: 1px solid rgba(248, 81, 73, 0.4);
+  border-radius: var(--radius-sm);
+  color: #f85149;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  letter-spacing: 0.3px;
+}
+
+.exclude-btn:hover {
+  background-color: rgba(248, 81, 73, 0.25);
+  border-color: #f85149;
+  box-shadow: 0 0 8px rgba(248, 81, 73, 0.3);
+}
+
+/* Inline Exclude Confirmation Bar */
+.exclude-confirm-bar {
+  margin-bottom: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: rgba(248, 81, 73, 0.08);
+  border: 1px solid rgba(248, 81, 73, 0.3);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.exclude-confirm-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  flex-wrap: wrap;
+}
+
+.exclude-confirm-label {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+  font-weight: 600;
+}
+
+.exclude-confirm-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+  align-items: center;
+}
+
+.exclude-reason-input {
+  flex: 1;
+  padding: 4px 8px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-primary);
+  font-size: 0.75rem;
+  outline: none;
+}
+
+.exclude-reason-input:focus {
+  border-color: rgba(248, 81, 73, 0.5);
+}
+
+.exclude-confirm-yes {
+  padding: 4px 12px;
+  background: rgba(248, 81, 73, 0.2);
+  border: 1px solid #f85149;
+  border-radius: var(--radius-sm);
+  color: #f85149;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.exclude-confirm-yes:hover {
+  background: rgba(248, 81, 73, 0.4);
+}
+
+.exclude-confirm-no {
+  padding: 4px 12px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 0.7rem;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.exclude-confirm-no:hover {
+  border-color: var(--color-text-secondary);
+  color: var(--color-text-primary);
+}
+
 /* Thumbnail Preview */
 .thumbnail-preview {
   margin-bottom: var(--spacing-md);

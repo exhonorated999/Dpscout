@@ -185,102 +185,117 @@ async fn import_txt_hash_list(
     eprintln!("[Hash Import] List name: {}", list_name);
     eprintln!("[Hash Import] Hash type: {}", hash_type);
     
-    // Read the text file
+    let expected_len = match hash_type.as_str() {
+        "MD5" => 32,
+        "SHA1" => 40,
+        "SHA256" => 64,
+        _ => return Err(format!("Invalid hash type: {}", hash_type)),
+    };
+    
+    let file = File::open(&txt_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    
     let _ = app.emit("hash-import-progress", HashImportProgress {
-        stage: "parsing".to_string(),
-        message: "Reading text file...".to_string(),
+        stage: "importing".to_string(),
+        message: format!("Streaming import of {:.1} MB file...", file_size as f64 / 1_048_576.0),
         total: None,
         progress: None,
     });
     
-    let file = File::open(&txt_path)
-        .map_err(|e| format!("Failed to open file: {}", e))?;
-    let reader = BufReader::new(file);
-    
-    let mut hashes = Vec::new();
-    for (line_num, line) in reader.lines().enumerate() {
-        let line = line.map_err(|e| format!("Failed to read line {}: {}", line_num + 1, e))?;
-        let line = line.trim();
-        
-        // Skip empty lines and comments
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
-            continue;
-        }
-        
-        // Remove any whitespace and convert to lowercase
-        let hash = line.split_whitespace().next().unwrap_or(line).to_lowercase();
-        
-        // Validate hash format
-        let expected_len = match hash_type.as_str() {
-            "MD5" => 32,
-            "SHA1" => 40,
-            "SHA256" => 64,
-            _ => return Err(format!("Invalid hash type: {}", hash_type)),
-        };
-        
-        if hash.len() == expected_len && hash.chars().all(|c| c.is_ascii_hexdigit()) {
-            hashes.push(hash);
-        } else {
-            eprintln!("[Hash Import] Skipping invalid hash on line {}: {}", line_num + 1, line);
-        }
-    }
-    
-    if hashes.is_empty() {
-        return Err("No valid hashes found in file".to_string());
-    }
-    
-    eprintln!("[Hash Import] Found {} valid hashes", hashes.len());
-    
-    // Load into database with progress updates
-    let total_hashes = hashes.len();
-    let _ = app.emit("hash-import-progress", HashImportProgress {
-        stage: "importing".to_string(),
-        message: format!("Importing {} hashes...", total_hashes),
-        total: Some(total_hashes),
-        progress: Some(0),
-    });
-    
     let hash_db = hash_db::HashDatabase::new()?;
-    
-    // Import the hash list
     let list_id = hash_db.import_hash_list(
         &list_name,
         &format!("Text file: {}", std::path::Path::new(&txt_path).file_name().unwrap_or_default().to_string_lossy()),
         &hash_type,
     )?;
     
-    // Import all hashes in batches with progress updates
-    let batch_size = 5000;
+    // Stream: read lines, accumulate 50K batch, flush, repeat — peak RAM ~5MB
+    let reader = BufReader::with_capacity(256 * 1024, file);
+    let mut batch: Vec<(String, String, Option<String>, Option<String>)> = Vec::with_capacity(50_000);
+    let mut imported_count = 0u64;
+    let mut skipped = 0u64;
+    let batch_flush_size = 50_000;
     
-    for (batch_idx, chunk) in hashes.chunks(batch_size).enumerate() {
-        let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|hash| {
-            (hash.clone(), hash_type.clone(), None, None)
-        }).collect();
+    for line_result in reader.lines() {
+        let line = match line_result {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+        let line = line.trim();
         
-        hash_db.add_hashes_batch(list_id, &batch_data).ok();
+        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+            continue;
+        }
         
-        let processed = ((batch_idx + 1) * batch_size).min(hashes.len());
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "importing".to_string(),
-            message: format!("Imported {} of {} hashes...", processed, total_hashes),
-            total: Some(total_hashes),
-            progress: Some(processed),
-        });
+        let hash = line.split_whitespace().next().unwrap_or(line).to_lowercase();
+        
+        if hash.len() == expected_len && hash.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
+            batch.push((hash, hash_type.clone(), None, None));
+        } else {
+            skipped += 1;
+            if skipped <= 3 {
+                eprintln!("[Hash Import] Skipping invalid hash: {}", &line[..line.len().min(80)]);
+            }
+            continue;
+        }
+        
+        if batch.len() >= batch_flush_size {
+            hash_db.add_hashes_batch(list_id, &batch).ok();
+            imported_count += batch.len() as u64;
+            batch.clear();
+            
+            let _ = app.emit("hash-import-progress", HashImportProgress {
+                stage: "importing".to_string(),
+                message: format!("Imported {} hashes...", imported_count),
+                total: None,
+                progress: Some(imported_count as usize),
+            });
+            eprintln!("[Hash Import] {} hashes imported...", imported_count);
+        }
     }
+    
+    // Flush remaining
+    if !batch.is_empty() {
+        hash_db.add_hashes_batch(list_id, &batch).ok();
+        imported_count += batch.len() as u64;
+        batch.clear();
+    }
+    
+    if imported_count == 0 {
+        return Err("No valid hashes found in file".to_string());
+    }
+    
+    // Update hash count on the list record
+    hash_db.update_list_hash_count(list_id, imported_count).ok();
+    
+    if skipped > 0 {
+        eprintln!("[Hash Import] Skipped {} invalid lines", skipped);
+    }
+    eprintln!("✓ Text hash list imported: {} hashes", imported_count);
+    
+    // Reload memory cache
+    let _ = app.emit("hash-import-progress", HashImportProgress {
+        stage: "loading".to_string(),
+        message: format!("Loading {} hashes into memory...", imported_count),
+        total: Some(imported_count as usize),
+        progress: Some(imported_count as usize),
+    });
+    let _ = hash_db.load_hashes_into_memory();
     
     let _ = app.emit("hash-import-progress", HashImportProgress {
         stage: "complete".to_string(),
-        message: "Import complete!".to_string(),
-        total: Some(total_hashes),
-        progress: Some(total_hashes),
+        message: format!("Imported {} hashes!", imported_count),
+        total: Some(imported_count as usize),
+        progress: Some(imported_count as usize),
     });
     
-    // Create HashList object for return
+    // Return lightweight HashList (no individual hashes — would be 19M entries)
     let now = chrono::Utc::now().to_rfc3339();
     let hash_list = settings::HashList {
         id: uuid::Uuid::new_v4().to_string(),
         name: list_name.clone(),
-        description: format!("Imported from text file: {} hashes", total_hashes),
+        description: format!("Imported from text file: {} hashes", imported_count),
         source: format!("Text file: {}", std::path::Path::new(&txt_path).file_name().unwrap_or_default().to_string_lossy()),
         hash_type: match hash_type.as_str() {
             "MD5" => settings::HashType::MD5,
@@ -288,18 +303,14 @@ async fn import_txt_hash_list(
             "SHA256" => settings::HashType::SHA256,
             _ => settings::HashType::SHA256,
         },
-        hashes: hashes.iter().map(|h| settings::HashEntry {
-            hash: h.clone(),
-            category: None,
-            description: None,
-        }).collect(),
-        hash_count: total_hashes,
+        hashes: Vec::new(), // Don't return 19M entries — DB is source of truth
+        hash_count: imported_count as usize,
         enabled: true,
         created_at: now.clone(),
         modified_at: now,
     };
     
-    eprintln!("✓ Text hash list imported successfully: {} hashes", total_hashes);
+    eprintln!("✓ Text hash list imported successfully: {} hashes", imported_count);
     Ok(hash_list)
 }
 
@@ -577,6 +588,32 @@ async fn delete_hash_list(app: tauri::AppHandle, list_name: String) -> Result<()
         eprintln!("✓ Hash list '{}' deleted from database", name);
         Ok(())
     }).await.map_err(|e| format!("Task failed: {}", e))?
+}
+
+// ── Hash Exclusion Commands ──
+
+#[tauri::command]
+fn exclude_hash(hash: String, hash_type: String, file_name: Option<String>, reason: Option<String>) -> Result<(), String> {
+    let hash_db = hash_db::HashDatabase::new()?;
+    hash_db.exclude_hash(&hash, &hash_type, file_name.as_deref(), reason.as_deref())
+}
+
+#[tauri::command]
+fn remove_hash_exclusion(id: i64) -> Result<(), String> {
+    let hash_db = hash_db::HashDatabase::new()?;
+    hash_db.remove_exclusion(id)
+}
+
+#[tauri::command]
+fn get_hash_exclusions() -> Result<Vec<hash_db::ExcludedHash>, String> {
+    let hash_db = hash_db::HashDatabase::new()?;
+    hash_db.get_exclusions()
+}
+
+#[tauri::command]
+fn clear_hash_exclusions() -> Result<(), String> {
+    let hash_db = hash_db::HashDatabase::new()?;
+    hash_db.clear_exclusions()
 }
 
 #[tauri::command]
@@ -2309,6 +2346,10 @@ pub fn run() {
             get_db_hash_lists,
             clear_hash_database,
             delete_hash_list,
+            exclude_hash,
+            remove_hash_exclusion,
+            get_hash_exclusions,
+            clear_hash_exclusions,
             check_is_registered,
             register_new_user,
             login_user,
