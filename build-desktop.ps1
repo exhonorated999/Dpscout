@@ -1,9 +1,9 @@
-# Build Datapilot Scout — Desktop Edition
+# Build Datapilot Scout - Desktop Edition
 # Builds NSIS installer + .sig for auto-updater
 
 Write-Host ""
 Write-Host "=====================================================" -ForegroundColor Cyan
-Write-Host "   Datapilot Scout — Desktop Build" -ForegroundColor Cyan
+Write-Host "   Datapilot Scout - Desktop Build" -ForegroundColor Cyan
 Write-Host "=====================================================" -ForegroundColor Cyan
 Write-Host ""
 
@@ -36,7 +36,7 @@ Write-Host "[2/4] Installer: $($installer.Name)" -ForegroundColor Green
 # Check if .sig was auto-generated
 $sigFile = "$($installer.FullName).sig"
 if (Test-Path $sigFile) {
-    Write-Host "[3/4] Signature auto-generated ✓" -ForegroundColor Green
+    Write-Host "[3/4] Signature auto-generated" -ForegroundColor Green
 } else {
     Write-Host "[3/4] Signing installer manually..." -ForegroundColor Yellow
     npx tauri signer sign -k $env:TAURI_SIGNING_PRIVATE_KEY -p $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD $installer.FullName
@@ -44,7 +44,7 @@ if (Test-Path $sigFile) {
         Write-Host "Signing failed!" -ForegroundColor Red
         exit 1
     }
-    Write-Host "  Signed ✓" -ForegroundColor Green
+    Write-Host "  Signed" -ForegroundColor Green
 }
 
 $sig = Get-Content $sigFile -Raw

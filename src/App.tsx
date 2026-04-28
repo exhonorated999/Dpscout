@@ -1000,11 +1000,18 @@ function App() {
             hashScanPaths = ['C:\\'];
           }
           
+          const selectedHashListNames = hashConfig?.selectedHashLists
+            ?.filter((list: any) => list.enabled)
+            .map((list: any) => list.name) || [];
+          
+          console.log("Hash scan using lists:", selectedHashListNames.length > 0 ? selectedHashListNames : "all available lists");
+          
           const hashScanOptions = {
             scanPaths: hashScanPaths,
             maxFileSize: 500 * 1024 * 1024, // 500MB max per file
             minFileSize: 50000, // 50KB — filters system icons that pollute VIC DB
             scanMode: selectedDeviceType === 'usb' ? 'usb' : 'windows',
+            selectedHashListNames: selectedHashListNames.length > 0 ? selectedHashListNames : null,
           };
           
           const matches = await invoke<any[]>("scan_for_hash_matches", { options: hashScanOptions });

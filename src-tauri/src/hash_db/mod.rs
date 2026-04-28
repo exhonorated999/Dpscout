@@ -10,6 +10,7 @@ pub struct HashMatch {
     pub hash: String,
     pub hash_type: String,
     pub source: String,
+    pub list_name: String, // user-chosen name from hash_lists.name
     pub category: Option<String>,
     pub description: Option<String>,
     pub file_size: Option<i64>,
@@ -512,7 +513,7 @@ impl HashDatabase {
         // This path is VERY rare (only actual matches)
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn.prepare(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size, l.name 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE h.hash = ?1 COLLATE NOCASE AND h.hash_type = ?2
@@ -524,6 +525,7 @@ impl HashDatabase {
                 hash: row.get(0)?,
                 hash_type: row.get(1)?,
                 source: row.get(2)?,
+                list_name: row.get(6)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
                 file_size: row.get(5)?,
@@ -547,7 +549,7 @@ impl HashDatabase {
         let hash_lower = hash.to_lowercase();
         
         let mut stmt = conn.prepare(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size, l.name 
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE h.hash = ?1 COLLATE NOCASE AND h.hash_type = ?2 
@@ -559,6 +561,7 @@ impl HashDatabase {
                 hash: row.get(0)?,
                 hash_type: row.get(1)?,
                 source: row.get(2)?,
+                list_name: row.get(6)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
                 file_size: row.get(5)?,
@@ -587,7 +590,7 @@ impl HashDatabase {
         let placeholders_str = placeholders.join(", ");
         
         let query = format!(
-            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size
+            "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size, l.name
              FROM hashes h 
              JOIN hash_lists l ON h.list_id = l.id 
              WHERE h.hash = ? COLLATE NOCASE AND h.hash_type = ? 
@@ -611,6 +614,7 @@ impl HashDatabase {
                 hash: row.get(0)?,
                 hash_type: row.get(1)?,
                 source: row.get(2)?,
+                list_name: row.get(6)?,
                 category: row.get(3)?,
                 description: row.get(4)?,
                 file_size: row.get(5)?,
@@ -631,7 +635,7 @@ impl HashDatabase {
         
         for (hash, hash_type) in hashes {
             let mut stmt = conn.prepare_cached(
-                "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size 
+                "SELECT h.hash, h.hash_type, l.source, h.category, h.description, h.file_size, l.name 
                  FROM hashes h 
                  JOIN hash_lists l ON h.list_id = l.id 
                  WHERE h.hash = ?1 AND h.hash_type = ?2 
@@ -643,6 +647,7 @@ impl HashDatabase {
                     hash: row.get(0)?,
                     hash_type: row.get(1)?,
                     source: row.get(2)?,
+                    list_name: row.get(6)?,
                     category: row.get(3)?,
                     description: row.get(4)?,
                     file_size: row.get(5)?,

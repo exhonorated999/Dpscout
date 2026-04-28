@@ -74,6 +74,8 @@ pub struct HashScanOptions {
     pub min_file_size: u64, // in bytes — skip files smaller than this (default 50KB)
     #[serde(rename = "scanMode", default = "default_scan_mode")]
     pub scan_mode: String, // "usb" or "windows"
+    #[serde(rename = "selectedHashListNames", default)]
+    pub selected_hash_list_names: Option<Vec<String>>, // If set, only match against these lists
 }
 
 fn default_scan_mode() -> String { "windows".to_string() }
@@ -249,6 +251,12 @@ where
     let need_sha256 = db_hash_types.contains("SHA256") || db_hash_types.is_empty();
     eprintln!("[Hash Scan] Hash types: MD5={}, SHA1={}, SHA256={}", need_md5, need_sha1, need_sha256);
     
+    // Hash list filter
+    let allowed_lists = options.selected_hash_list_names.clone();
+    if let Some(ref lists) = allowed_lists {
+        eprintln!("[Hash Scan] Filtering to selected lists: {:?}", lists);
+    }
+    
     // File size pre-filter from DB
     let known_sizes = hash_db.get_known_sizes();
     if let Some(ref sizes) = known_sizes {
@@ -284,6 +292,7 @@ where
         let pivot_tx = pivot_tx.clone();
         let files_hashed = Arc::clone(&files_hashed);
         let match_count_w = Arc::clone(&match_count);
+        let allowed_lists_w = allowed_lists.clone();
         
         let handle = std::thread::spawn(move || {
             let mut local_matches = 0u64;
@@ -309,6 +318,7 @@ where
                     need_sha256,
                     false,
                     worker_id,
+                    &allowed_lists_w,
                 ) {
                     eprintln!("[Worker {}] ✓ HIT: {} (tier {})", 
                         worker_id, candidate.path.display(), candidate.tier);
@@ -870,6 +880,7 @@ fn check_file_hash(
     need_sha256: bool,
     _debug: bool,
     _worker_id: usize,
+    allowed_lists: &Option<Vec<String>>,
 ) -> Option<HashMatch> {
     let (md5, sha1, sha256) = match compute_file_hashes_mmap(path, need_md5, need_sha1, need_sha256) {
         Ok(hashes) => hashes,
@@ -920,10 +931,31 @@ fn check_file_hash(
         }
     };
     
+    // List filter: if user selected specific hash lists, only accept matches from those
+    // Check both DB source AND list_name since frontend passes name but DB match has source
+    // (e.g. frontend name="C Hash List" vs DB source="Text file: CH hashes (1).txt")
+    let is_list_allowed = |source: &str, list_name: &str| -> bool {
+        match allowed_lists {
+            Some(ref names) if !names.is_empty() => {
+                let src_lower = source.to_lowercase();
+                let ln_lower = list_name.to_lowercase();
+                names.iter().any(|n| {
+                    let n_lower = n.to_lowercase();
+                    // Exact match on list name (most reliable)
+                    n_lower == ln_lower
+                    // Or substring match on source or name
+                    || src_lower.contains(&n_lower) || n_lower.contains(&src_lower)
+                    || ln_lower.contains(&n_lower) || n_lower.contains(&ln_lower)
+                })
+            }
+            _ => true, // No filter — all lists allowed
+        }
+    };
+    
     // Check SHA256 first (most unique)
     if let Some(ref h) = sha256 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA256") {
-            if validate_match(&match_data, "SHA256") {
+            if validate_match(&match_data, "SHA256") && is_list_allowed(&match_data.source, &match_data.list_name) {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
@@ -933,7 +965,7 @@ fn check_file_hash(
                     sha256_hash: h.clone(),
                     matched_hash: h.clone(),
                     hash_type: "SHA256".to_string(),
-                    list_name: match_data.source.clone(),
+                    list_name: match_data.list_name.clone(),
                     list_source: match_data.source.clone(),
                     description: match_data.description.clone(),
                     severity: "Critical".to_string(),
@@ -945,7 +977,7 @@ fn check_file_hash(
     // Check SHA1
     if let Some(ref h) = sha1 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "SHA1") {
-            if validate_match(&match_data, "SHA1") {
+            if validate_match(&match_data, "SHA1") && is_list_allowed(&match_data.source, &match_data.list_name) {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
@@ -955,7 +987,7 @@ fn check_file_hash(
                     sha256_hash: sha256.clone().unwrap_or_default(),
                     matched_hash: h.clone(),
                     hash_type: "SHA1".to_string(),
-                    list_name: match_data.source.clone(),
+                    list_name: match_data.list_name.clone(),
                     list_source: match_data.source.clone(),
                     description: match_data.description.clone(),
                     severity: "Critical".to_string(),
@@ -967,7 +999,7 @@ fn check_file_hash(
     // Check MD5
     if let Some(ref h) = md5 {
         if let Some(match_data) = hash_db.check_hash_fast(h, "MD5") {
-            if validate_match(&match_data, "MD5") {
+            if validate_match(&match_data, "MD5") && is_list_allowed(&match_data.source, &match_data.list_name) {
                 return Some(HashMatch {
                     file_path: path.to_string_lossy().to_string(),
                     file_name: file_name(),
@@ -977,7 +1009,7 @@ fn check_file_hash(
                     sha256_hash: sha256.unwrap_or_default(),
                     matched_hash: h.clone(),
                     hash_type: "MD5".to_string(),
-                    list_name: match_data.source.clone(),
+                    list_name: match_data.list_name.clone(),
                     list_source: match_data.source.clone(),
                     description: match_data.description.clone(),
                     severity: "Critical".to_string(),
@@ -1071,4 +1103,93 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// Tests — ensure hash list filtering never silently breaks
+// ════════════════════════════════════════════════════════════════════════
+#[cfg(test)]
+mod tests {
+    /// Mirror of the is_list_allowed closure in check_file_hash.
+    /// Keep in sync — if the real logic changes, update this too.
+    fn is_list_allowed(source: &str, list_name: &str, allowed: &Option<Vec<String>>) -> bool {
+        match allowed {
+            Some(ref names) if !names.is_empty() => {
+                let src_lower = source.to_lowercase();
+                let ln_lower = list_name.to_lowercase();
+                names.iter().any(|n| {
+                    let n_lower = n.to_lowercase();
+                    n_lower == ln_lower
+                    || src_lower.contains(&n_lower) || n_lower.contains(&src_lower)
+                    || ln_lower.contains(&n_lower) || n_lower.contains(&ln_lower)
+                })
+            }
+            _ => true,
+        }
+    }
+
+    #[test]
+    fn filter_none_allows_everything() {
+        assert!(is_list_allowed("Text file: CH hashes (1).txt", "C Hash List", &None));
+        assert!(is_list_allowed("Project VIC", "VIC_US_2026_4_FS", &None));
+    }
+
+    #[test]
+    fn filter_empty_allows_everything() {
+        let empty: Option<Vec<String>> = Some(vec![]);
+        assert!(is_list_allowed("anything", "anything", &empty));
+    }
+
+    #[test]
+    fn filter_matches_by_exact_list_name() {
+        let allowed = Some(vec!["C Hash List".to_string()]);
+        assert!(is_list_allowed("Text file: CH hashes (1).txt", "C Hash List", &allowed));
+    }
+
+    #[test]
+    fn filter_matches_case_insensitive() {
+        let allowed = Some(vec!["c hash list".to_string()]);
+        assert!(is_list_allowed("Text file: CH hashes (1).txt", "C Hash List", &allowed));
+    }
+
+    #[test]
+    fn filter_rejects_unselected_list() {
+        let allowed = Some(vec!["VIC .txt Hash".to_string()]);
+        assert!(!is_list_allowed("Text file: CH hashes (1).txt", "C Hash List", &allowed));
+    }
+
+    #[test]
+    fn filter_project_vic_json() {
+        let allowed = Some(vec!["VIC_US_2026_4_FS".to_string()]);
+        assert!(is_list_allowed("Project VIC", "VIC_US_2026_4_FS", &allowed));
+    }
+
+    #[test]
+    fn filter_vic_txt() {
+        let allowed = Some(vec!["VIC .txt Hash".to_string()]);
+        assert!(is_list_allowed("Text file: VIC_US_2026_4_FS.json_SHA1.txt", "VIC .txt Hash", &allowed));
+    }
+
+    #[test]
+    fn filter_multiple_lists_selected() {
+        let allowed = Some(vec!["C Hash List".to_string(), "VIC .txt Hash".to_string()]);
+        assert!(is_list_allowed("Text file: CH hashes (1).txt", "C Hash List", &allowed));
+        assert!(is_list_allowed("Text file: VIC_US_2026_4_FS.json_SHA1.txt", "VIC .txt Hash", &allowed));
+        assert!(!is_list_allowed("Project VIC", "VIC_US_2026_4_FS", &allowed));
+    }
+
+    #[test]
+    fn filter_name_source_mismatch_regression() {
+        // THE bug: user-chosen name has NOTHING in common with auto-generated DB source.
+        // Old code only checked source <-> name substring → always false → 0 hits.
+        // This test prevents that regression.
+        let allowed = Some(vec!["My Custom List".to_string()]);
+        assert!(is_list_allowed("Text file: random_hashes.txt", "My Custom List", &allowed));
+    }
+
+    #[test]
+    fn filter_renamed_reimported_list() {
+        let allowed = Some(vec!["CH Hashes v2".to_string()]);
+        assert!(is_list_allowed("Text file: ch_hashes_cleaned.txt", "CH Hashes v2", &allowed));
+    }
 }

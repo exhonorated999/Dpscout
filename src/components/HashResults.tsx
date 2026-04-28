@@ -44,6 +44,7 @@ export const HashResults: React.FC<HashResultsProps> = ({
   const [excludedPaths, setExcludedPaths] = useState<Set<string>>(new Set());
   const [excludingFile, setExcludingFile] = useState<string | null>(null);
   const [excludeReason, setExcludeReason] = useState('');
+  const [removingFalsePositives, setRemovingFalsePositives] = useState(false);
 
   // Filter matches based on search query, then hide excluded paths
   const filteredMatches = (): MediaFile[] => {
@@ -55,7 +56,8 @@ export const HashResults: React.FC<HashResultsProps> = ({
           m.fileName.toLowerCase().includes(query) ||
           m.filePath.toLowerCase().includes(query) ||
           m.md5Hash?.toLowerCase().includes(query) ||
-          m.sha256Hash?.toLowerCase().includes(query)
+          m.sha256Hash?.toLowerCase().includes(query) ||
+          (m as any).matchedHash?.toLowerCase().includes(query)
       );
     }
     return result.filter(m => !excludedPaths.has(m.filePath));
@@ -63,23 +65,34 @@ export const HashResults: React.FC<HashResultsProps> = ({
 
   const currentMatches = filteredMatches();
 
-  // Extract hash and type from a file's hash_match flag
+  // Extract the matched hash and its type from a match object.
+  // HashResults receives HashMatch[] (which have matchedHash/hashType directly)
+  // OR MediaFile[] with flags. Handle both.
   const getHashFromFlag = (file: MediaFile): { hash: string; hashType: string } => {
-    const hashFlag = file.flags.find(f => f.type === 'hash_match');
-    if (hashFlag) {
-      // Parse reason like "Hash match: abc123... (MD5)"
-      const reason = hashFlag.reason;
-      const typeMatch = reason.match(/\((MD5|SHA1|SHA256)\)/i);
-      const hashType = typeMatch ? typeMatch[1].toUpperCase() : 'MD5';
-      // Use the actual hash from the file object
-      if (hashType === 'SHA256' && file.sha256Hash) {
-        return { hash: file.sha256Hash, hashType: 'SHA256' };
-      }
-      if (file.md5Hash) {
-        return { hash: file.md5Hash, hashType: 'MD5' };
+    // Direct HashMatch fields (from scan_for_hash_matches result)
+    const anyFile = file as any;
+    if (anyFile.matchedHash && anyFile.hashType) {
+      return { hash: anyFile.matchedHash, hashType: anyFile.hashType };
+    }
+    // MediaFile with flags (from merged media+hash flow)
+    if (file.flags) {
+      const hashFlag = file.flags.find(f => f.type === 'hash_match');
+      if (hashFlag) {
+        const reason = hashFlag.reason;
+        const typeMatch = reason.match(/\((MD5|SHA1|SHA256)\)/i);
+        const hashType = typeMatch ? typeMatch[1].toUpperCase() : 'MD5';
+        if (hashType === 'SHA1' && anyFile.matchedHash) {
+          return { hash: anyFile.matchedHash, hashType: 'SHA1' };
+        }
+        if (hashType === 'SHA256' && file.sha256Hash) {
+          return { hash: file.sha256Hash, hashType: 'SHA256' };
+        }
+        if (file.md5Hash) {
+          return { hash: file.md5Hash, hashType: 'MD5' };
+        }
       }
     }
-    // Fallback: use whatever hash is available
+    // Fallback
     if (file.sha256Hash) return { hash: file.sha256Hash, hashType: 'SHA256' };
     if (file.md5Hash) return { hash: file.md5Hash, hashType: 'MD5' };
     return { hash: '', hashType: 'MD5' };
@@ -101,6 +114,61 @@ export const HashResults: React.FC<HashResultsProps> = ({
     } catch (error) {
       console.error('Failed to exclude hash:', error);
       alert(`Failed to exclude hash: ${error}`);
+    }
+  };
+
+  // Group matches by list name for summary
+  const getMatchesByList = () => {
+    const groups: Record<string, { count: number; hashes: string[] }> = {};
+    for (const m of matches) {
+      const anyM = m as any;
+      const listName = anyM.listName || 'Unknown';
+      if (!groups[listName]) {
+        groups[listName] = { count: 0, hashes: [] };
+      }
+      groups[listName].count++;
+      if (anyM.matchedHash) {
+        groups[listName].hashes.push(anyM.matchedHash);
+      }
+    }
+    return groups;
+  };
+
+  // Remove false positive hashes from a .txt hash file
+  const handleRemoveFalsePositives = async (listName: string) => {
+    const groups = getMatchesByList();
+    const group = groups[listName];
+    if (!group || group.hashes.length === 0) {
+      alert('No hashes to remove.');
+      return;
+    }
+
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      title: `Select the .txt hash file to remove ${group.hashes.length} false positives from`,
+      filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],
+      multiple: false,
+    });
+
+    if (!selected) return;
+
+    const confirm = window.confirm(
+      `Remove ${group.hashes.length} false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`
+    );
+    if (!confirm) return;
+
+    setRemovingFalsePositives(true);
+    try {
+      const removed = await invoke<number>('remove_hashes_from_file', {
+        filePath: selected,
+        hashesToRemove: group.hashes,
+      });
+      alert(`✓ Removed ${removed} false positive hashes from file.\nBackup saved as .bak`);
+    } catch (error) {
+      console.error('Failed to remove hashes:', error);
+      alert(`Failed to remove hashes: ${error}`);
+    } finally {
+      setRemovingFalsePositives(false);
     }
   };
 
@@ -157,11 +225,17 @@ export const HashResults: React.FC<HashResultsProps> = ({
 
   // Get hash match flags
   const getHashMatchFlags = (file: MediaFile) => {
+    if (!file.flags) return [];
     return file.flags.filter(f => f.type === 'hash_match');
   };
 
   // Get hash display value
   const getHashDisplay = (file: MediaFile) => {
+    const anyFile = file as any;
+    // Direct HashMatch: show the matched hash prominently
+    if (anyFile.matchedHash && anyFile.hashType) {
+      return { type: anyFile.hashType, value: anyFile.matchedHash };
+    }
     if (file.md5Hash && file.sha256Hash) {
       return { type: 'MD5 & SHA256', value: `${file.md5Hash.substring(0, 16)}... / ${file.sha256Hash.substring(0, 16)}...` };
     } else if (file.md5Hash) {
@@ -253,6 +327,68 @@ export const HashResults: React.FC<HashResultsProps> = ({
                 <p>These files match known illegal content databases. Handle with care and follow proper chain of custody procedures.</p>
               </div>
             </div>
+
+            {/* Match summary by hash list — shows which lists produced hits */}
+            {(() => {
+              const groups = getMatchesByList();
+              const listNames = Object.keys(groups);
+              if (listNames.length <= 1) return null;
+              return (
+                <div style={{
+                  marginBottom: '1rem',
+                  padding: '0.75rem 1rem',
+                  background: 'rgba(30, 35, 50, 0.8)',
+                  border: '1px solid var(--color-border)',
+                  borderRadius: 'var(--radius-sm)',
+                }}>
+                  <div style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--color-text-primary)', marginBottom: '0.5rem' }}>
+                    📋 Matches by Hash List
+                  </div>
+                  {listNames.map(name => (
+                    <div key={name} style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      padding: '0.4rem 0',
+                      borderBottom: '1px solid rgba(255,255,255,0.05)',
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                        <span style={{
+                          fontSize: '0.7rem',
+                          fontWeight: 700,
+                          background: 'rgba(88, 166, 255, 0.15)',
+                          color: '#58a6ff',
+                          padding: '1px 8px',
+                          borderRadius: '10px',
+                        }}>
+                          {groups[name].count}
+                        </span>
+                        <span style={{ fontSize: '0.8rem', color: 'var(--color-text-secondary)' }}>{name}</span>
+                      </div>
+                      {groups[name].hashes.length > 0 && (
+                        <button
+                          onClick={() => handleRemoveFalsePositives(name)}
+                          disabled={removingFalsePositives}
+                          style={{
+                            fontSize: '0.7rem',
+                            padding: '3px 10px',
+                            background: 'rgba(248, 81, 73, 0.15)',
+                            color: '#f85149',
+                            border: '1px solid rgba(248, 81, 73, 0.4)',
+                            borderRadius: '4px',
+                            cursor: removingFalsePositives ? 'wait' : 'pointer',
+                            opacity: removingFalsePositives ? 0.5 : 1,
+                          }}
+                          title={`Remove these ${groups[name].hashes.length} hashes from a .txt hash file`}
+                        >
+                          {removingFalsePositives ? '⏳ Removing...' : `🗑️ Remove from .txt file`}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              );
+            })()}
 
             <div className="files-list">
               {currentMatches.map((file, idx) => {

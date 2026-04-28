@@ -1270,7 +1270,7 @@ const HashListsPanel: React.FC<{
           
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashes.length}\nType: ${hashType}\n\nLook for it in the left sidebar!`);
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nType: ${hashType}\n\nLook for it in the left sidebar!`);
         } finally {
           unlisten();
         }

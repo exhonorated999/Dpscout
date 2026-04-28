@@ -1481,6 +1481,143 @@ const CSAMHashView: React.FC<{
   // Combine flagged media files and hash matches
   const flaggedMedia = media.filter(m => m.flags && m.flags.some(f => f.flagType === 'HashMatch'));
   const totalMatches = hashMatches.length > 0 ? hashMatches.length : flaggedMedia.length;
+  const [removingFalsePositives, setRemovingFalsePositives] = useState(false);
+  const [excludedIndices, setExcludedIndices] = useState<Set<number>>(new Set());
+  const [selectedFP, setSelectedFP] = useState<Set<number>>(new Set());
+
+  // Toggle a single row as false positive
+  const toggleFP = (idx: number) => {
+    setSelectedFP(prev => {
+      const next = new Set(prev);
+      if (next.has(idx)) next.delete(idx); else next.add(idx);
+      return next;
+    });
+  };
+
+  // Select/deselect all visible from a specific list
+  const toggleAllFromList = (source: string, select: boolean) => {
+    setSelectedFP(prev => {
+      const next = new Set(prev);
+      hashMatches.forEach((m, idx) => {
+        if (excludedIndices.has(idx)) return;
+        const s = m.listSource || m.listName || 'Unknown';
+        if (s === source) {
+          if (select) next.add(idx); else next.delete(idx);
+        }
+      });
+      return next;
+    });
+  };
+
+  // Group hash matches by list source
+  const matchesByList = useMemo(() => {
+    const groups: Record<string, { count: number; hashes: string[]; indices: number[] }> = {};
+    hashMatches.forEach((m, idx) => {
+      const source = m.listSource || m.listName || 'Unknown';
+      if (!groups[source]) {
+        groups[source] = { count: 0, hashes: [], indices: [] };
+      }
+      groups[source].count++;
+      if (m.matchedHash) {
+        groups[source].hashes.push(m.matchedHash);
+      }
+      groups[source].indices.push(idx);
+    });
+    return groups;
+  }, [hashMatches]);
+
+  // Remove false positive hashes from a .txt hash file — SELECTED items only
+  const handleRemoveSelected = async () => {
+    const selectedHashes = Array.from(selectedFP)
+      .filter(idx => !excludedIndices.has(idx))
+      .map(idx => hashMatches[idx]?.matchedHash)
+      .filter(Boolean);
+
+    if (selectedHashes.length === 0) {
+      alert('No false positives selected. Check the ✕ column on individual rows first.');
+      return;
+    }
+
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      title: `Select the .txt hash file to remove ${selectedHashes.length} false positives from`,
+      filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],
+      multiple: false,
+    });
+
+    if (!selected) return;
+
+    const confirm = window.confirm(
+      `Remove ${selectedHashes.length} selected false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`
+    );
+    if (!confirm) return;
+
+    setRemovingFalsePositives(true);
+    try {
+      const removed = await invoke<number>('remove_hashes_from_file', {
+        filePath: selected,
+        hashesToRemove: selectedHashes,
+      });
+      alert(`✓ Removed ${removed} false positive hashes from file.\nBackup saved as .bak`);
+      // Mark removed items as excluded in the UI
+      setExcludedIndices(prev => {
+        const next = new Set(prev);
+        selectedFP.forEach(i => next.add(i));
+        return next;
+      });
+      setSelectedFP(new Set());
+    } catch (error) {
+      console.error('Failed to remove hashes:', error);
+      alert(`Failed to remove hashes: ${error}`);
+    } finally {
+      setRemovingFalsePositives(false);
+    }
+  };
+
+  // Remove ALL from a specific list (bulk)
+  const handleRemoveAllFromList = async (listSource: string) => {
+    const group = matchesByList[listSource];
+    if (!group || group.hashes.length === 0) {
+      alert('No hashes to remove.');
+      return;
+    }
+
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const selected = await open({
+      title: `Select the .txt hash file to remove ALL ${group.hashes.length} from "${listSource}"`,
+      filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],
+      multiple: false,
+    });
+
+    if (!selected) return;
+
+    const confirm = window.confirm(
+      `Remove ALL ${group.hashes.length} hashes from "${listSource}" in:\n${selected}\n\n⚠️ This removes every match from this list. Use per-row checkboxes if you only want to remove specific ones.\n\nA backup (.bak) will be created.`
+    );
+    if (!confirm) return;
+
+    setRemovingFalsePositives(true);
+    try {
+      const removed = await invoke<number>('remove_hashes_from_file', {
+        filePath: selected,
+        hashesToRemove: group.hashes,
+      });
+      alert(`✓ Removed ${removed} hashes from file.\nBackup saved as .bak`);
+      setExcludedIndices(prev => {
+        const next = new Set(prev);
+        group.indices.forEach(i => next.add(i));
+        return next;
+      });
+    } catch (error) {
+      console.error('Failed to remove hashes:', error);
+      alert(`Failed to remove hashes: ${error}`);
+    } finally {
+      setRemovingFalsePositives(false);
+    }
+  };
+
+  // Filter out excluded matches
+  const visibleMatches = hashMatches.filter((_, idx) => !excludedIndices.has(idx));
 
   return (
     <div className="content-view">
@@ -1528,20 +1665,143 @@ const CSAMHashView: React.FC<{
       {totalMatches === 0 ? (
         <div className="no-data">No CSAM hash matches detected</div>
       ) : (
+        <>
+        {/* Match summary by hash list + selection controls */}
+        {Object.keys(matchesByList).length > 0 && (
+          <div style={{
+            marginBottom: '1rem',
+            padding: '0.75rem 1rem',
+            background: 'rgba(20, 25, 40, 0.9)',
+            border: '1px solid rgba(100, 130, 200, 0.25)',
+            borderRadius: '6px',
+          }}>
+            <div style={{ fontSize: '0.8rem', fontWeight: 600, color: '#c9d1d9', marginBottom: '0.5rem' }}>
+              📋 Matches by Hash List — check individual rows below to mark false positives
+            </div>
+            {Object.entries(matchesByList).map(([source, group]) => {
+              const selectedFromList = group.indices.filter(i => selectedFP.has(i) && !excludedIndices.has(i)).length;
+              const visibleFromList = group.indices.filter(i => !excludedIndices.has(i)).length;
+              const allSelected = visibleFromList > 0 && selectedFromList === visibleFromList;
+              return (
+                <div key={source} style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '0.4rem 0',
+                  borderBottom: '1px solid rgba(255,255,255,0.05)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      onChange={() => toggleAllFromList(source, !allSelected)}
+                      title={allSelected ? `Deselect all from ${source}` : `Select all ${visibleFromList} from ${source} as false positives`}
+                      style={{ cursor: 'pointer', accentColor: '#f85149' }}
+                    />
+                    <span style={{
+                      fontSize: '0.7rem',
+                      fontWeight: 700,
+                      background: 'rgba(88, 166, 255, 0.15)',
+                      color: '#58a6ff',
+                      padding: '2px 8px',
+                      borderRadius: '10px',
+                      minWidth: '28px',
+                      textAlign: 'center',
+                    }}>
+                      {visibleFromList}
+                    </span>
+                    <span style={{ fontSize: '0.8rem', color: '#8b949e' }}>{source}</span>
+                    {selectedFromList > 0 && (
+                      <span style={{ fontSize: '0.7rem', color: '#f85149' }}>
+                        ({selectedFromList} marked as false positive)
+                      </span>
+                    )}
+                  </div>
+                  {group.hashes.length > 0 && (
+                    <button
+                      onClick={() => handleRemoveAllFromList(source)}
+                      disabled={removingFalsePositives}
+                      style={{
+                        fontSize: '0.65rem',
+                        padding: '3px 8px',
+                        background: 'transparent',
+                        color: '#8b949e',
+                        border: '1px solid rgba(139, 148, 158, 0.3)',
+                        borderRadius: '4px',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap',
+                      }}
+                      title={`Remove ALL ${visibleFromList} from this list (use checkboxes for selective removal)`}
+                    >
+                      Remove all {visibleFromList}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+
+            {/* Action bar: remove selected false positives */}
+            {selectedFP.size > 0 && (
+              <div style={{
+                marginTop: '0.75rem',
+                padding: '0.5rem 0.75rem',
+                background: 'rgba(248, 81, 73, 0.1)',
+                border: '1px solid rgba(248, 81, 73, 0.3)',
+                borderRadius: '4px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}>
+                <span style={{ fontSize: '0.8rem', color: '#f85149', fontWeight: 600 }}>
+                  {selectedFP.size} false positive{selectedFP.size !== 1 ? 's' : ''} selected
+                </span>
+                <button
+                  onClick={handleRemoveSelected}
+                  disabled={removingFalsePositives}
+                  style={{
+                    fontSize: '0.75rem',
+                    padding: '5px 14px',
+                    background: 'rgba(248, 81, 73, 0.2)',
+                    color: '#f85149',
+                    border: '1px solid rgba(248, 81, 73, 0.5)',
+                    borderRadius: '4px',
+                    cursor: removingFalsePositives ? 'wait' : 'pointer',
+                    fontWeight: 600,
+                  }}
+                >
+                  {removingFalsePositives ? '⏳ Removing...' : `🗑️ Remove ${selectedFP.size} from .txt file`}
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="data-table">
           <div className="table-header">
+            <div className="table-col" style={{ maxWidth: '40px', textAlign: 'center' }}>✕</div>
             <div className="table-col">FILE PATH</div>
             <div className="table-col">HASH VALUE</div>
             <div className="table-col">SOURCE</div>
             <div className="table-col">FLAG</div>
           </div>
           <div className="table-body">
-            {/* Display Android hash matches if available */}
-            {hashMatches.length > 0 && hashMatches.map((match, idx) => {
+            {/* Display hash matches */}
+            {visibleMatches.length > 0 && visibleMatches.map((match, idx) => {
+              const realIdx = hashMatches.indexOf(match);
               const itemId = `hash-match-${match.filePath}-${idx}`;
               const flagged = isFlagged(itemId);
+              const isFP = selectedFP.has(realIdx);
               return (
-                <div key={idx} className="table-row critical">
+                <div key={idx} className={`table-row ${isFP ? '' : 'critical'}`} style={isFP ? { opacity: 0.5, background: 'rgba(248, 81, 73, 0.05)' } : {}}>
+                  <div className="table-col" style={{ maxWidth: '40px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={isFP}
+                      onChange={() => toggleFP(realIdx)}
+                      title="Mark as false positive"
+                      style={{ cursor: 'pointer', accentColor: '#f85149' }}
+                    />
+                  </div>
                   <div className="table-col">
                     <ClickableFilePath path={match.filePath} />
                     <div className="file-info">{match.fileName} ({(match.fileSize / 1024 / 1024).toFixed(2)} MB)</div>
@@ -1566,7 +1826,7 @@ const CSAMHashView: React.FC<{
             })}
             
             {/* Display flagged media files (for Windows/USB scans) */}
-            {hashMatches.length === 0 && flaggedMedia.map((file, idx) => {
+            {visibleMatches.length === 0 && flaggedMedia.map((file, idx) => {
               const itemId = `media-${file.filePath}-${idx}`;
               const flagged = isFlagged(itemId);
               return (
@@ -1597,6 +1857,7 @@ const CSAMHashView: React.FC<{
             })}
           </div>
         </div>
+        </>
       )}
     </div>
   );

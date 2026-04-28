@@ -617,6 +617,70 @@ fn clear_hash_exclusions() -> Result<(), String> {
 }
 
 #[tauri::command]
+fn remove_hashes_from_file(file_path: String, hashes_to_remove: Vec<String>) -> Result<u64, String> {
+    use std::io::{BufRead, BufWriter, Write};
+    use std::collections::HashSet;
+
+    let remove_set: HashSet<String> = hashes_to_remove
+        .iter()
+        .map(|h| h.to_lowercase().trim().to_string())
+        .collect();
+
+    let input = std::fs::File::open(&file_path)
+        .map_err(|e| format!("Failed to open {}: {}", file_path, e))?;
+    let reader = std::io::BufReader::new(input);
+
+    // Write to temp file, then rename
+    let tmp_path = format!("{}.tmp", file_path);
+    let tmp_file = std::fs::File::create(&tmp_path)
+        .map_err(|e| format!("Failed to create temp file: {}", e))?;
+    let mut writer = BufWriter::new(tmp_file);
+
+    let mut removed_count: u64 = 0;
+    let mut kept_count: u64 = 0;
+
+    for line in reader.lines() {
+        let line = line.map_err(|e| format!("Read error: {}", e))?;
+        let trimmed = line.trim();
+        // Keep comment lines and empty lines
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            writeln!(writer, "{}", line).map_err(|e| format!("Write error: {}", e))?;
+            continue;
+        }
+        // Check if this hash should be removed
+        if remove_set.contains(&trimmed.to_lowercase()) {
+            removed_count += 1;
+        } else {
+            writeln!(writer, "{}", line).map_err(|e| format!("Write error: {}", e))?;
+            kept_count += 1;
+        }
+    }
+
+    writer.flush().map_err(|e| format!("Flush error: {}", e))?;
+    drop(writer);
+
+    // Backup original, rename temp to original
+    let backup_path = format!("{}.bak", file_path);
+    if std::path::Path::new(&backup_path).exists() {
+        std::fs::remove_file(&backup_path).ok();
+    }
+    std::fs::rename(&file_path, &backup_path)
+        .map_err(|e| format!("Failed to backup original: {}", e))?;
+    std::fs::rename(&tmp_path, &file_path)
+        .map_err(|e| format!("Failed to rename temp file: {}", e))?;
+
+    eprintln!("✓ Removed {} false positive hashes from {} ({} kept)", removed_count, file_path, kept_count);
+
+    // Also reload the hash database memory after modifying the source file
+    let hash_db = hash_db::HashDatabase::new().ok();
+    if let Some(db) = hash_db {
+        db.load_hashes_into_memory().ok();
+    }
+
+    Ok(removed_count)
+}
+
+#[tauri::command]
 fn scan_media(options: MediaScanOptions) -> Result<Vec<MediaFile>, String> {
     // Load settings to get keyword lists
     let settings = load_settings().unwrap_or_default();
@@ -2350,6 +2414,7 @@ pub fn run() {
             remove_hash_exclusion,
             get_hash_exclusions,
             clear_hash_exclusions,
+            remove_hashes_from_file,
             check_is_registered,
             register_new_user,
             login_user,
