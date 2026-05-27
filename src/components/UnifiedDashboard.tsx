@@ -2660,7 +2660,6 @@ const CommandHistoryTab: React.FC<{
       <div className="table-header">
         <div className="table-col">COMMAND TYPE</div>
         <div className="table-col">COMMAND</div>
-        <div className="table-col">TIMESTAMP</div>
         <div className="table-col">SOURCE FILE</div>
         <div className="table-col">FLAG</div>
       </div>
@@ -2674,7 +2673,6 @@ const CommandHistoryTab: React.FC<{
                 <span className="artifact-type-badge">{cmd.commandType}</span>
               </div>
               <div className="table-col command-text">{cmd.command}</div>
-              <div className="table-col">{new Date(cmd.timestamp).toLocaleString()}</div>
               <div className="table-col">
                 <ClickableFilePath path={cmd.sourcePath} />
               </div>

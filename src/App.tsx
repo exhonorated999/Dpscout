@@ -71,6 +71,13 @@ function App() {
   const [selectedDeviceType, setSelectedDeviceType] = useState<DeviceType>('windows');
   const [selectedDrives, setSelectedDrives] = useState<string[]>([]);
   const [scannedModules, setScannedModules] = useState<ScanModules | null>(null);
+
+  // Priority order for selected lists (highest priority first, by list name)
+  // Captured when the scan starts, used by results screens to group hits in user order.
+  const [hashListPriority, setHashListPriority] = useState<string[]>([]);
+  const [keywordListPriority, setKeywordListPriority] = useState<string[]>([]);
+  // Map of keyword (lowercase) -> source list name. Built when scan starts.
+  const [keywordToListMap, setKeywordToListMap] = useState<Record<string, string>>({});
   
   // Progressive scan session hook
   const { resetSession } = useScanSession();
@@ -208,8 +215,29 @@ function App() {
   }
 
   // Android device scanning
+  function captureListPriority(keywordConfig?: KeywordScanConfig, hashConfig?: any) {
+    // Hash list priority (enabled lists, in user order)
+    const hashLists: Array<{ name: string; enabled: boolean }> = hashConfig?.selectedHashLists || [];
+    setHashListPriority(hashLists.filter(l => l.enabled).map(l => l.name));
+
+    // Keyword list priority + keyword -> list map
+    const kwLists: Array<{ name: string; keywords: string[]; enabled: boolean }> =
+      (keywordConfig as any)?.selectedLists || [];
+    setKeywordListPriority(kwLists.filter(l => l.enabled).map(l => l.name));
+    const kwMap: Record<string, string> = {};
+    for (const list of kwLists) {
+      if (!list.enabled) continue;
+      for (const kw of list.keywords || []) {
+        const k = (kw || '').toLowerCase();
+        if (k && !(k in kwMap)) kwMap[k] = list.name; // first list wins (priority order)
+      }
+    }
+    setKeywordToListMap(kwMap);
+  }
+
   async function startAndroidScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
     try {
+      captureListPriority(keywordConfig, hashConfig);
       // Get selected Android device from keywordConfig
       const selectedDevice = keywordConfig?.selectedDevice;
       console.log("Starting Android scan, device:", selectedDevice, "modules:", modules, "deviceType:", selectedDeviceType);
@@ -500,6 +528,7 @@ function App() {
   // iOS device scanning - Progressive scan with live updates
   async function startIosScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
     try {
+      captureListPriority(keywordConfig, hashConfig);
       const selectedDevice = keywordConfig?.selectedDevice;
       console.log("Starting iOS MTP live scan, device:", selectedDevice, "modules:", modules);
 
@@ -647,6 +676,9 @@ function App() {
   }
 
   async function startScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
+    // Capture priority order (enabled lists only, in user-chosen order) for results grouping.
+    captureListPriority(keywordConfig, hashConfig);
+
     // Handle Android scanning
     if (selectedDeviceType === 'android') {
       await startAndroidScan(modules, keywordConfig, hashConfig);
@@ -1441,6 +1473,8 @@ function App() {
           isScanning={isScanning}
           onStartScan={startKeywordScan}
           onBack={() => setState("results")}
+          listPriority={keywordListPriority}
+          keywordToListMap={keywordToListMap}
         />
       </>
     );
@@ -1460,6 +1494,7 @@ function App() {
           isScanning={isScanningMedia}
           onStartScan={startMediaScan}
           onBack={() => setState("results")}
+          listPriority={hashListPriority}
         />
       </>
     );

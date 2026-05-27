@@ -9,6 +9,8 @@ interface HashResultsProps {
   isScanning: boolean;
   onStartScan: () => void;
   onBack: () => void;
+  /** Hash list names in user-chosen priority order (highest first). Used to group hits in the order the investigator selected. */
+  listPriority?: string[];
 }
 
 interface FileMetadata {
@@ -34,6 +36,7 @@ export const HashResults: React.FC<HashResultsProps> = ({
   isScanning,
   onStartScan,
   onBack,
+  listPriority = [],
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [expandedFile, setExpandedFile] = useState<string | null>(null);
@@ -46,7 +49,8 @@ export const HashResults: React.FC<HashResultsProps> = ({
   const [excludeReason, setExcludeReason] = useState('');
   const [removingFalsePositives, setRemovingFalsePositives] = useState(false);
 
-  // Filter matches based on search query, then hide excluded paths
+  // Filter matches based on search query, then hide excluded paths.
+  // Final ordering respects the list priority chosen on the configure screen.
   const filteredMatches = (): MediaFile[] => {
     let result = matches;
     if (searchQuery) {
@@ -60,7 +64,21 @@ export const HashResults: React.FC<HashResultsProps> = ({
           (m as any).matchedHash?.toLowerCase().includes(query)
       );
     }
-    return result.filter(m => !excludedPaths.has(m.filePath));
+    result = result.filter(m => !excludedPaths.has(m.filePath));
+
+    // Sort by list priority: files whose match belongs to priority-1 list come first.
+    if (listPriority.length > 0) {
+      const priorityIndex = (name: string) => {
+        const idx = listPriority.indexOf(name);
+        return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+      };
+      result = [...result].sort((a, b) => {
+        const aName = (a as any).listName || 'Unknown';
+        const bName = (b as any).listName || 'Unknown';
+        return priorityIndex(aName) - priorityIndex(bName);
+      });
+    }
+    return result;
   };
 
   const currentMatches = filteredMatches();
@@ -328,11 +346,19 @@ export const HashResults: React.FC<HashResultsProps> = ({
               </div>
             </div>
 
-            {/* Match summary by hash list — shows which lists produced hits */}
+            {/* Match summary by hash list — shows which lists produced hits, ordered by user-chosen priority */}
             {(() => {
               const groups = getMatchesByList();
-              const listNames = Object.keys(groups);
+              let listNames = Object.keys(groups);
               if (listNames.length <= 1) return null;
+              // Sort list names by user-chosen priority (unknown lists go to the bottom)
+              if (listPriority.length > 0) {
+                const idxOf = (name: string) => {
+                  const i = listPriority.indexOf(name);
+                  return i === -1 ? Number.MAX_SAFE_INTEGER : i;
+                };
+                listNames = [...listNames].sort((a, b) => idxOf(a) - idxOf(b));
+              }
               return (
                 <div style={{
                   marginBottom: '1rem',

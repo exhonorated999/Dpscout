@@ -9,6 +9,10 @@ interface KeywordResultsProps {
   isScanning: boolean;
   onStartScan: () => void;
   onBack: () => void;
+  /** Keyword list names in priority order (highest first). */
+  listPriority?: string[];
+  /** Map of lowercased keyword -> source list name (for grouping in the sidebar). */
+  keywordToListMap?: Record<string, string>;
 }
 
 interface FileMetadata {
@@ -30,6 +34,8 @@ export const KeywordResults: React.FC<KeywordResultsProps> = ({
   isScanning,
   onStartScan,
   onBack,
+  listPriority = [],
+  keywordToListMap = {},
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedKeyword, setSelectedKeyword] = useState<string>('');
@@ -50,6 +56,34 @@ export const KeywordResults: React.FC<KeywordResultsProps> = ({
     return Array.from(keywordMap.entries())
       .map(([keyword, hitCount]) => ({ keyword, hitCount }))
       .sort((a, b) => b.hitCount - a.hitCount);
+  })();
+
+  // Group the keyword sidebar by source list, in user-chosen priority order.
+  // Falls back to a single "All Keywords" group when no list metadata is available.
+  const groupedKeywordSummary: Array<{ listName: string; items: KeywordHitSummary[] }> = (() => {
+    const hasMap = Object.keys(keywordToListMap).length > 0;
+    if (!hasMap) return [{ listName: 'All Keywords', items: keywordHitSummary }];
+
+    const groups = new Map<string, KeywordHitSummary[]>();
+    for (const item of keywordHitSummary) {
+      const listName = keywordToListMap[item.keyword.toLowerCase()] || 'Unattributed';
+      if (!groups.has(listName)) groups.set(listName, []);
+      groups.get(listName)!.push(item);
+    }
+
+    const ordered: Array<{ listName: string; items: KeywordHitSummary[] }> = [];
+    // Priority lists first, in order
+    for (const name of listPriority) {
+      if (groups.has(name)) {
+        ordered.push({ listName: name, items: groups.get(name)! });
+        groups.delete(name);
+      }
+    }
+    // Then anything else (e.g. 'Unattributed') alphabetically
+    for (const [name, items] of [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+      ordered.push({ listName: name, items });
+    }
+    return ordered;
   })();
 
   // Filter matches based on selected keyword
@@ -242,22 +276,33 @@ export const KeywordResults: React.FC<KeywordResultsProps> = ({
           </div>
           
           <div className="keyword-list">
-            {keywordHitSummary.map((item, idx) => (
-              <button
-                key={idx}
-                className={`keyword-item ${selectedKeyword === item.keyword ? 'active' : ''}`}
-                onClick={() => {
-                  setSelectedKeyword(item.keyword);
-                  setExpandedFile(null);
-                  setFileMetadata(null);
-                }}
-              >
-                <div className="keyword-name">{item.keyword}</div>
-                <div className="keyword-hits">
-                  <span className="hits-badge">{item.hitCount}</span>
-                  <span className="hits-label">hit{item.hitCount !== 1 ? 's' : ''}</span>
-                </div>
-              </button>
+            {groupedKeywordSummary.map((group, gIdx) => (
+              <div key={group.listName + gIdx} className="keyword-group">
+                {(groupedKeywordSummary.length > 1 || group.listName !== 'All Keywords') && (
+                  <div className="keyword-group-header" title={`Priority ${gIdx + 1}`}>
+                    <span className="kw-group-priority">#{gIdx + 1}</span>
+                    <span className="kw-group-name">{group.listName}</span>
+                    <span className="kw-group-count">{group.items.length}</span>
+                  </div>
+                )}
+                {group.items.map((item, idx) => (
+                  <button
+                    key={group.listName + '-' + idx}
+                    className={`keyword-item ${selectedKeyword === item.keyword ? 'active' : ''}`}
+                    onClick={() => {
+                      setSelectedKeyword(item.keyword);
+                      setExpandedFile(null);
+                      setFileMetadata(null);
+                    }}
+                  >
+                    <div className="keyword-name">{item.keyword}</div>
+                    <div className="keyword-hits">
+                      <span className="hits-badge">{item.hitCount}</span>
+                      <span className="hits-label">hit{item.hitCount !== 1 ? 's' : ''}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
             ))}
           </div>
         </div>

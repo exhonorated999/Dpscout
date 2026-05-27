@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import { DriveInfo, formatBytes } from '../types/drive';
@@ -221,6 +221,28 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
         i === index ? { ...list, enabled: !list.enabled } : list
       )
     );
+  };
+
+  // ── Drag-to-reorder helpers (priority of selected lists) ──────────────
+  // Use refs for active-drag tracking so onDragOver handlers see fresh values
+  // (React state updates lag behind drag events and cause not-allowed cursor).
+  const draggedKeyRef = useRef<string | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+
+  const moveItem = <T,>(arr: T[], from: number, to: number): T[] => {
+    if (from === to || from < 0 || to < 0 || from >= arr.length || to >= arr.length) return arr;
+    const next = [...arr];
+    const [picked] = next.splice(from, 1);
+    next.splice(to, 0, picked);
+    return next;
+  };
+
+  const reorderKeywordLists = (fromIdx: number, toIdx: number) => {
+    setAvailableKeywordLists(prev => moveItem(prev, fromIdx, toIdx));
+  };
+
+  const reorderHashLists = (fromIdx: number, toIdx: number) => {
+    setAvailableHashLists(prev => moveItem(prev, fromIdx, toIdx));
   };
 
   const loadHashLists = async () => {
@@ -477,20 +499,83 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
             {availableKeywordLists.length > 0 && (
               <div className="keyword-lists-selector">
                 <h4>Select Keyword Lists to Use:</h4>
+                <p className="reorder-hint">Drag <span className="drag-icon-inline">⋮⋮</span> to set scan priority — higher-ranked lists are evaluated and grouped first in results.</p>
                 <div className="keyword-lists-grid">
-                  {availableKeywordLists.map((list, index) => (
-                    <label key={index} className="keyword-list-item">
-                      <input
-                        type="checkbox"
-                        checked={list.enabled}
-                        onChange={() => toggleKeywordList(index)}
-                      />
-                      <div className="keyword-list-info">
-                        <span className="keyword-list-name">{list.name}</span>
-                        <span className="keyword-list-count">{list.keywords.length} keywords</span>
-                      </div>
-                    </label>
-                  ))}
+                  {(() => {
+                    // Show enabled (ordered, priority-numbered) first, then unselected
+                    const enabledLists = availableKeywordLists
+                      .map((list, idx) => ({ list, idx }))
+                      .filter(({ list }) => list.enabled);
+                    const disabledLists = availableKeywordLists
+                      .map((list, idx) => ({ list, idx }))
+                      .filter(({ list }) => !list.enabled);
+                    return [...enabledLists, ...disabledLists].map(({ list, idx }, displayPos) => {
+                      const priority = list.enabled
+                        ? enabledLists.findIndex(e => e.idx === idx) + 1
+                        : 0;
+                      const dragKey = `kw-${idx}`;
+                      const isDragOver = dragOverKey === dragKey && draggedKeyRef.current && draggedKeyRef.current !== dragKey && draggedKeyRef.current.startsWith('kw-');
+                      return (
+                        <div
+                          key={list.name + idx}
+                          className={`keyword-list-item ${list.enabled ? 'is-prioritized' : ''} ${isDragOver ? 'drag-over' : ''}`}
+                          draggable={list.enabled}
+                          onDragStart={(e) => {
+                            if (!list.enabled) { e.preventDefault(); return; }
+                            draggedKeyRef.current = dragKey;
+                            e.dataTransfer.effectAllowed = 'move';
+                            try { e.dataTransfer.setData('text/plain', dragKey); } catch {}
+                          }}
+                          onDragEnd={() => { draggedKeyRef.current = null; setDragOverKey(null); }}
+                          onDragOver={(e) => {
+                            const dk = draggedKeyRef.current;
+                            if (!dk || !dk.startsWith('kw-')) return;
+                            e.preventDefault();
+                            e.dataTransfer.dropEffect = 'move';
+                            if (list.enabled && dragOverKey !== dragKey) setDragOverKey(dragKey);
+                          }}
+                          onDragLeave={() => { if (dragOverKey === dragKey) setDragOverKey(null); }}
+                          onDrop={(e) => {
+                            const dk = draggedKeyRef.current;
+                            if (!dk || !dk.startsWith('kw-')) return;
+                            e.preventDefault();
+                            const fromIdx = parseInt(dk.replace('kw-', ''), 10);
+                            // Only reorder when dropping on an enabled tile (priority slots)
+                            if (list.enabled && !Number.isNaN(fromIdx) && fromIdx !== idx) {
+                              reorderKeywordLists(fromIdx, idx);
+                            }
+                            draggedKeyRef.current = null;
+                            setDragOverKey(null);
+                          }}
+                        >
+                          {list.enabled && (
+                            <span
+                              className="drag-handle"
+                              title="Drag to reorder priority"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >⋮⋮</span>
+                          )}
+                          {list.enabled && (
+                            <span className="priority-badge" title={`Priority ${priority}`}>{priority}</span>
+                          )}
+                          <input
+                            type="checkbox"
+                            checked={list.enabled}
+                            onChange={() => toggleKeywordList(idx)}
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                          <div
+                            className="keyword-list-info"
+                            onClick={() => toggleKeywordList(idx)}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <span className="keyword-list-name">{list.name}</span>
+                            <span className="keyword-list-count">{list.keywords.length} keywords</span>
+                          </div>
+                        </div>
+                      );
+                    });
+                  })()}
                 </div>
                 <div className="selected-keywords-summary">
                   Total: {availableKeywordLists.filter(l => l.enabled).reduce((sum, l) => sum + l.keywords.length, 0)} keywords selected 
@@ -699,19 +784,80 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               {availableHashLists.length > 0 && (
                 <div className="hash-lists-selector keyword-lists-selector">
                   <h4>Select Hash Lists to Use:</h4>
+                  <p className="reorder-hint">Drag <span className="drag-icon-inline">⋮⋮</span> to set scan priority — hits attribute to the highest-priority list first.</p>
                   <div className="keyword-lists-grid">
-                    {availableHashLists.map((list, index) => (
-                      <label key={list.id} className="keyword-list-item">
-                        <input
-                          type="checkbox"
-                          checked={list.enabled}
-                          onChange={() => toggleHashList(index)}
-                        />
-                        <div className="keyword-list-info">
-                          <span className="keyword-list-name">{list.name}</span>
-                        </div>
-                      </label>
-                    ))}
+                    {(() => {
+                      const enabledLists = availableHashLists
+                        .map((list, idx) => ({ list, idx }))
+                        .filter(({ list }) => list.enabled);
+                      const disabledLists = availableHashLists
+                        .map((list, idx) => ({ list, idx }))
+                        .filter(({ list }) => !list.enabled);
+                      return [...enabledLists, ...disabledLists].map(({ list, idx }) => {
+                        const priority = list.enabled
+                          ? enabledLists.findIndex(e => e.idx === idx) + 1
+                          : 0;
+                        const dragKey = `hash-${idx}`;
+                        const isDragOver = dragOverKey === dragKey && draggedKeyRef.current && draggedKeyRef.current !== dragKey && draggedKeyRef.current.startsWith('hash-');
+                        return (
+                          <div
+                            key={list.id}
+                            className={`keyword-list-item ${list.enabled ? 'is-prioritized' : ''} ${isDragOver ? 'drag-over' : ''}`}
+                            draggable={list.enabled}
+                            onDragStart={(e) => {
+                              if (!list.enabled) { e.preventDefault(); return; }
+                              draggedKeyRef.current = dragKey;
+                              e.dataTransfer.effectAllowed = 'move';
+                              try { e.dataTransfer.setData('text/plain', dragKey); } catch {}
+                            }}
+                            onDragEnd={() => { draggedKeyRef.current = null; setDragOverKey(null); }}
+                            onDragOver={(e) => {
+                              const dk = draggedKeyRef.current;
+                              if (!dk || !dk.startsWith('hash-')) return;
+                              e.preventDefault();
+                              e.dataTransfer.dropEffect = 'move';
+                              if (list.enabled && dragOverKey !== dragKey) setDragOverKey(dragKey);
+                            }}
+                            onDragLeave={() => { if (dragOverKey === dragKey) setDragOverKey(null); }}
+                            onDrop={(e) => {
+                              const dk = draggedKeyRef.current;
+                              if (!dk || !dk.startsWith('hash-')) return;
+                              e.preventDefault();
+                              const fromIdx = parseInt(dk.replace('hash-', ''), 10);
+                              if (list.enabled && !Number.isNaN(fromIdx) && fromIdx !== idx) {
+                                reorderHashLists(fromIdx, idx);
+                              }
+                              draggedKeyRef.current = null;
+                              setDragOverKey(null);
+                            }}
+                          >
+                            {list.enabled && (
+                              <span
+                                className="drag-handle"
+                                title="Drag to reorder priority"
+                                onMouseDown={(e) => e.stopPropagation()}
+                              >⋮⋮</span>
+                            )}
+                            {list.enabled && (
+                              <span className="priority-badge" title={`Priority ${priority}`}>{priority}</span>
+                            )}
+                            <input
+                              type="checkbox"
+                              checked={list.enabled}
+                              onChange={() => toggleHashList(idx)}
+                              onClick={(e) => e.stopPropagation()}
+                            />
+                            <div
+                              className="keyword-list-info"
+                              onClick={() => toggleHashList(idx)}
+                              style={{ cursor: 'pointer' }}
+                            >
+                              <span className="keyword-list-name">{list.name}</span>
+                            </div>
+                          </div>
+                        );
+                      });
+                    })()}
                   </div>
                   <div className="selected-keywords-summary">
                     {availableHashLists.filter(l => l.enabled).length} of {availableHashLists.length} hash list(s) selected

@@ -67,6 +67,58 @@
   padding: var(--spacing-sm);
 }
 
+.keyword-group {
+  margin-bottom: var(--spacing-md);
+}
+
+.keyword-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin: var(--spacing-sm) 0 6px;
+  background: rgba(255, 0, 51, 0.08);
+  border-left: 3px solid var(--color-accent-red);
+  border-radius: 4px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--color-text-secondary);
+}
+
+.keyword-group-header .kw-group-priority {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--color-accent-red);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 800;
+  font-family: var(--font-mono, monospace);
+}
+
+.keyword-group-header .kw-group-name {
+  flex: 1;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.keyword-group-header .kw-group-count {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 1px 6px;
+  border-radius: 8px;
+}
+
 .keyword-item {
   width: 100%;
   padding: var(--spacing-md);

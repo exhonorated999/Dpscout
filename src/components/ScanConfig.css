@@ -441,10 +441,69 @@
   border-radius: var(--radius-sm);
   cursor: pointer;
   transition: all 0.2s ease;
+  position: relative;
 }
 
 .keyword-list-item:hover {
   border-color: var(--color-accent-red);
+}
+
+.keyword-list-item.is-prioritized {
+  border-color: rgba(255, 0, 51, 0.45);
+  background-color: rgba(255, 0, 51, 0.06);
+}
+
+.keyword-list-item.drag-over {
+  border-color: var(--color-accent-red);
+  border-style: dashed;
+  background-color: rgba(255, 0, 51, 0.12);
+  transform: translateY(-1px);
+}
+
+.keyword-list-item .drag-handle {
+  font-size: 1rem;
+  line-height: 1;
+  color: var(--color-text-muted);
+  cursor: grab;
+  padding: 0 2px;
+  user-select: none;
+  letter-spacing: -2px;
+  flex-shrink: 0;
+}
+
+.keyword-list-item .drag-handle:active {
+  cursor: grabbing;
+  color: var(--color-accent-red);
+}
+
+.keyword-list-item .priority-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: 11px;
+  background: var(--color-accent-red);
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.75rem;
+  font-family: var(--font-mono, monospace);
+  flex-shrink: 0;
+  box-shadow: 0 0 6px rgba(255, 0, 51, 0.45);
+}
+
+.reorder-hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  margin: 4px 0 var(--spacing-sm);
+  line-height: 1.4;
+}
+
+.reorder-hint .drag-icon-inline {
+  letter-spacing: -2px;
+  color: var(--color-text-secondary);
+  font-weight: 700;
 }
 
 .keyword-list-item input[type="checkbox"] {

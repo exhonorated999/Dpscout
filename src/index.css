@@ -232,6 +232,27 @@ a:hover {
   flex: 1;
 }
 
+/* Event Log Anomalies has 6 columns, but the default .table-header/.table-row
+   grid is hardcoded to 4 columns. Override here so all 6 fit on one line and
+   the SCORE/SEVERITY/FLAG columns are tight, leaving room for DESCRIPTION.
+   Columns: EVENT ID | SEVERITY | SCORE | DESCRIPTION | LOG/TIME | FLAG */
+.event-logs-table .table-header,
+.event-logs-table .table-row {
+  grid-template-columns: 80px 90px 60px minmax(0, 1fr) 170px 60px;
+}
+
+/* Make sure the description column actually wraps long text instead of
+   overflowing past its grid cell. */
+.event-logs-table .table-col:nth-child(4) {
+  justify-content: flex-start;
+  min-width: 0;
+  overflow: hidden;
+}
+.event-logs-table .table-col:nth-child(4) .event-description-text {
+  white-space: normal;
+  word-break: break-word;
+}
+
 .event-id-badge {
   display: inline-block;
   padding: 4px 10px;
