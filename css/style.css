@@ -1683,3 +1683,60 @@ ul { list-style: none; }
     flex-direction: column;
   }
 }
+
+/* ===================================================================
+   v0.8.8 additions — BETA badge + real-screenshot capability panel
+   =================================================================== */
+
+/* BETA pill (reused inside feature-card titles and capability tags) */
+.beta-pill {
+  display: inline-block;
+  padding: 2px 8px;
+  margin-left: 8px;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 4px;
+  vertical-align: middle;
+  text-transform: uppercase;
+  box-shadow: 0 0 12px rgba(0, 196, 255, 0.45);
+}
+
+/* Real-screenshot version of the right-side capability panel */
+.capability__shot {
+  width: 100%;
+  max-width: 560px;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  box-shadow:
+    0 0 0 1px rgba(0, 196, 255, 0.18) inset,
+    0 24px 60px rgba(0, 0, 0, 0.55),
+    0 0 60px rgba(0, 126, 163, 0.18);
+  background: var(--bg-secondary);
+}
+
+.capability__shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Two-shot layout (stacked) for the warrant block */
+.capability__shot--stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  max-width: 560px;
+  width: 100%;
+}
+
+.capability__shot--stack .capability__shot {
+  max-width: 100%;
+}
