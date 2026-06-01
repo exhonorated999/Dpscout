@@ -4,10 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Datapilot Scout — Digital Triage for Law Enforcement</title>
-  <meta name="description" content="Datapilot Scout is a digital triage tool for law enforcement. Scan targeted locations on Windows, Android, USB, and iOS (BETA) for contraband, hash matches, and leads — plus Warrant Return Parsing (BETA) for Meta, Snapchat, and Google.">
-  <meta name="keywords" content="digital forensics, law enforcement, CSAM detection, hash scanning, mobile forensics, USB forensics, iOS triage, warrant return parser, Project VIC, investigation tool">
+  <meta name="description" content="Datapilot Scout is a digital triage tool for law enforcement. Scan targeted locations on Windows, Android, USB, and iOS (BETA) for contraband, hash matches, and leads — plus Warrant Return Triage (BETA) for Meta, Snapchat, and Google.">
+  <meta name="keywords" content="digital forensics, law enforcement, CSAM detection, hash scanning, mobile forensics, USB forensics, iOS triage, warrant return triage, Project VIC, investigation tool">
   <meta property="og:title" content="Datapilot Scout — Digital Triage for Law Enforcement">
-  <meta property="og:description" content="True triage for law enforcement. Now with Warrant Return Parsing and iOS Live Triage (BETA) in v0.8.8.">
+  <meta property="og:description" content="True triage for law enforcement. Now with Warrant Return Triage and iOS Live Triage (BETA) in v0.8.8.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://dpscout.com">
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 38 22'><circle cx='5' cy='5' r='5' fill='%233A7EFF'/><circle cx='19' cy='5' r='5' fill='%233A7EFF'/><circle cx='33' cy='5' r='5' fill='%233A7EFF'/><circle cx='5' cy='17' r='5' fill='%233A7EFF'/><circle cx='19' cy='17' r='5' fill='%233A7EFF'/></svg>">
@@ -68,7 +68,7 @@
           Purpose-built triage software for law enforcement agencies.
           Quickly identify contraband and investigative leads by scanning
           targeted locations — not entire drives. Now with
-          <strong>Warrant Return Parsing</strong> and
+          <strong>Warrant Return Triage</strong> and
           <strong>iOS Live Triage</strong> in v0.8.8 BETA.
         </p>
 
@@ -225,13 +225,13 @@
     </div>
 
     <div class="features__grid">
-      <!-- NEW · Warrant Return Parser (BETA) -->
+      <!-- NEW · Warrant Return Triage (BETA) -->
       <div class="feature-card reveal reveal-delay-1">
         <div class="feature-card__icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="13" x2="15" y2="13"/><line x1="9" y1="17" x2="15" y2="17"/><line x1="9" y1="9" x2="11" y2="9"/></svg>
         </div>
-        <h3 class="feature-card__title">Warrant Return Parser <span class="beta-pill">New · Beta</span></h3>
-        <p class="feature-card__desc">Drop in a provider return ZIP and Scout parses Meta, Snapchat, and Google packages into searchable timelines, location maps, and account summaries — minutes, not days. Kik and Discord are next.</p>
+        <h3 class="feature-card__title">Warrant Return Triage <span class="beta-pill">New · Beta</span></h3>
+        <p class="feature-card__desc">Drop in a provider return ZIP — Scout parses Meta, Snapchat, and Google packages into searchable timelines, location maps, and account summaries. Hash and keyword lists run across the return, and flagged evidence exports to standalone reports anyone on the team can review — no Scout install required.</p>
       </div>
 
       <!-- NEW · iOS Live Triage (BETA) -->
@@ -339,29 +339,35 @@
       <h2 class="section__title">Built for Real Investigations</h2>
     </div>
 
-    <!-- Capability — Warrant Return Parser (BETA, new in v0.8.8) -->
+    <!-- Capability — Warrant Return Triage (BETA, new in v0.8.8) -->
     <div class="capability reveal">
       <div class="capability__content">
         <span class="capability__tag">New in v0.8.8 <span class="beta-pill">Beta</span></span>
-        <h3 class="capability__title">Warrant Return Parser</h3>
+        <h3 class="capability__title">Warrant Return Triage</h3>
         <p class="capability__desc">
           Provider returns are now searchable in minutes, not days. Drop in the
           ZIP from Meta, Snapchat, or Google and Scout parses the whole package
           into a navigable triage view — account summary, contacts, messages,
-          devices, login IPs, and a location map you can actually read.
+          devices, login IPs, and a location map you can actually read. Then run
+          your hash lists and keyword sets across the return to surface the
+          messages, contacts, and media that matter to the case.
         </p>
         <ul class="capability__list">
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Meta — messages, friends, locations, devices, posts
+            Meta, Snapchat, Google — messages, locations, devices, login IPs
           </li>
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Snapchat — account, login IPs, location clusters, media
+            Hash matching across the return — Project VIC + custom agency lists
           </li>
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-            Google — account activity, location history, services
+            Keyword scanning across messages, contacts, file names, metadata
+          </li>
+          <li class="capability__list-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+            Flagged evidence exports to standalone PDF/HTML reports — anyone on the team can review, no Scout install required
           </li>
           <li class="capability__list-item">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
