@@ -24,9 +24,11 @@ import { SystemInfo } from "./types/system";
 import { IntrusionScanResults, IntrusionScanOptions, defaultIntrusionScanOptions } from "./types/intrusion";
 import { useScanSession } from "./hooks/useScanSession";
 import { RegistrationScreen } from "./components/RegistrationScreen";
+import { WarrantLanding, WarrantProvider } from "./components/warrant/WarrantLanding";
+import { WarrantTriageView } from "./components/warrant/WarrantTriageView";
 import "./App.css";
 
-type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview";
+type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview" | "warrant" | "warrant_triage";
 
 interface User {
   username: string;
@@ -57,6 +59,9 @@ function App() {
   const [hashMatches, setHashMatches] = useState<any[]>([]);
   const [smsMessages, setSmsMessages] = useState<any>(null); // SMS extraction result
   const [intrusionResults, setIntrusionResults] = useState<IntrusionScanResults | null>(null);
+  // Active warrant triage case (set after import or "Open" from case list)
+  const [warrantCaseId, setWarrantCaseId] = useState<string | null>(null);
+  const [warrantImporting, setWarrantImporting] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStopped, setScanStopped] = useState(false);
   const scanCancelledRef = useRef(false);
@@ -175,6 +180,7 @@ function App() {
       const settingsWithDefaults: AppSettings = {
         officer_name: loaded.officer_name || undefined,
         agency_name: loaded.agency_name || undefined,
+        badge_number: loaded.badge_number || undefined,
         keywordLists: loaded.keywordLists || [],
         hashLists: loaded.hashLists || [],
         customApps: loaded.customApps || [],
@@ -530,9 +536,19 @@ function App() {
     try {
       captureListPriority(keywordConfig, hashConfig);
       const selectedDevice = keywordConfig?.selectedDevice;
-      console.log("Starting iOS MTP live scan, device:", selectedDevice, "modules:", modules);
+      const backend: 'afc' | 'mtp' = (keywordConfig as any)?.iosBackend === 'mtp' ? 'mtp' : 'afc';
+      console.log(`Starting iOS ${backend.toUpperCase()} scan, device: ${selectedDevice}, modules:`, modules);
 
-      // Override modules: iOS MTP only supports media scan + hash matching
+      // Build hash list NAMES (enabled only) for matching.
+      // The backend (check_hash_filtered) filters by hash_lists.name, not id —
+      // and our id field can be either a settings-json string or "db-<int>",
+      // neither of which is the canonical list name.
+      const enabledHashListIds: string[] = (hashConfig?.selectedHashLists || [])
+        .filter((l: any) => l.enabled)
+        .map((l: any) => l.name);
+      console.log(`[iOS] sending ${enabledHashListIds.length} hash list(s) for matching:`, enabledHashListIds);
+
+      // iOS supports: media scan + hash matching only (for now).
       const iosModules: ScanModules = {
         mediaScan: true,
         hashMatching: true,
@@ -571,7 +587,7 @@ function App() {
         console.warn("Could not get detailed device info:", error);
         setSystemInfo({
           ios_device_info: {},
-          computer_name: "iOS Device (MTP)",
+          computer_name: `iOS Device (${backend.toUpperCase()})`,
           os_version: "iOS",
         } as any);
       } finally {
@@ -579,6 +595,131 @@ function App() {
       }
       await forceUIUpdate();
 
+      // ─── AFC LIVE PATH (default) ──────────────────────────────────────────
+      if (backend === 'afc') {
+        setCurrentScanModule("Connecting via AFC (live triage)…");
+        const mediaAccum: MediaFile[] = [];
+        const matchAccum: any[] = [];
+
+        // Classify extension → MediaType for the dashboard tally cards.
+        const IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','bmp','webp','heic','heif','tiff','tif','dng','raw','cr2','nef','arw','svg','ico']);
+        const VIDEO_EXTS = new Set(['mp4','mov','m4v','avi','mkv','wmv','webm','3gp','3g2','flv','mpg','mpeg','mts','m2ts','hevc']);
+        const classify = (ext: string): 'image' | 'video' | 'unknown' => {
+          if (IMAGE_EXTS.has(ext)) return 'image';
+          if (VIDEO_EXTS.has(ext)) return 'video';
+          return 'unknown';
+        };
+
+        // Subscribe to streaming events from the Rust sidecar bridge.
+        const unlisteners: Array<() => void> = [];
+
+        const offFile = await listen<any>("ios:file_hash", (evt) => {
+          const p = evt.payload || {};
+          const name: string = p.name || (p.path ? String(p.path).split('/').pop() : '') || 'unknown';
+          const ext = (name.includes('.') ? name.split('.').pop() : '')?.toLowerCase() || '';
+          const mediaType = classify(ext);
+          const sizeNum = typeof p.size === 'number' ? p.size : Number(p.size) || 0;
+          mediaAccum.push({
+            id: `afc-${mediaAccum.length}-${p.path || name}`,
+            filePath: p.path || '',
+            fileName: name,
+            fileSize: sizeNum,
+            extension: ext,
+            mediaType,
+            thumbnailPath: '',
+            dateModified: p.mtime ? String(p.mtime) : undefined,
+            sha256Hash: p.sha256,
+            md5Hash: p.md5,
+            flags: [],
+            metadata: undefined,
+            isIosAfcFile: true,
+            iosUdid: selectedDevice || undefined,
+          });
+          // Throttle: bulk-flush every 25 items so React doesn't thrash.
+          if (mediaAccum.length % 25 === 0) {
+            setMediaFiles([...mediaAccum]);
+          }
+        });
+        unlisteners.push(offFile);
+
+        const offMatch = await listen<any>("ios:hash_match", (evt) => {
+          matchAccum.push(evt.payload);
+          setHashMatches([...matchAccum]);
+        });
+        unlisteners.push(offMatch);
+
+        // Track current priority phase so progress updates can label it.
+        let currentPhase = "starting";
+        const phaseLabel: Record<string, string> = {
+          starting: "starting",
+          images: "images (fast hash pass)",
+          videos: "videos (large files — slower)",
+          other: "other files",
+        };
+
+        const offProgress = await listen<any>("ios:walk_progress", (evt) => {
+          const p = evt.payload || {};
+          setCurrentScanModule(
+            `AFC [${phaseLabel[currentPhase] || currentPhase}]: ${p.filesDone} files • ${(p.bytesDone / 1024 / 1024).toFixed(1)} MB • ${(p.elapsedSec || 0).toFixed(1)}s`
+          );
+        });
+        unlisteners.push(offProgress);
+
+        const offWarn = await listen<any>("ios:walk_warn", (evt) => {
+          console.warn("[iOS AFC] walk warn:", evt.payload);
+        });
+        unlisteners.push(offWarn);
+
+        // Priority-phase indicator: images → videos → other. Tells the
+        // operator the fast (image) hash pass is the one actively
+        // running, so the empty Hash Matches panel is meaningful.
+        const offPhase = await listen<any>("ios:walk_phase", (evt) => {
+          const p = evt.payload || {};
+          if (p.state === "started") {
+            currentPhase = p.phase || "starting";
+            setCurrentScanModule(`AFC: hashing ${phaseLabel[currentPhase] || currentPhase}…`);
+          } else if (p.state === "complete") {
+            console.log(`[iOS AFC] phase ${p.phase} done: ${p.filesDone} files, ${(p.bytesDone / 1024 / 1024).toFixed(1)} MB`);
+          }
+        });
+        unlisteners.push(offPhase);
+
+        // Complete + stopped both finalize.
+        const finalize = (label: string) => {
+          setMediaFiles([...mediaAccum]);
+          setHashMatches([...matchAccum]);
+          setIsScanning(false);
+          setCurrentScanModule("");
+          console.log(`iOS AFC ${label}: ${mediaAccum.length} files, ${matchAccum.length} matches`);
+          unlisteners.forEach(u => u());
+        };
+        const offComplete = await listen<any>("ios:walk_complete", () => finalize("complete"));
+        unlisteners.push(offComplete);
+        const offStopped = await listen<any>("ios:walk_stopped", () => finalize("stopped"));
+        unlisteners.push(offStopped);
+
+        try {
+          await invoke("start_ios_live_triage_afc", {
+            udid: selectedDevice || null,
+            options: {
+              roots: ["/DCIM", "/Downloads", "/Recordings"],
+              algos: ["sha256"],
+              minBytes: 0,
+              hashLists: enabledHashListIds,
+            },
+          });
+          console.log("AFC live triage started — events streaming.");
+        } catch (e) {
+          console.error("AFC live triage failed to start:", e);
+          alert(`AFC live triage failed: ${e}\n\nFalling back is available — re-run with the "MTP (legacy)" transport selected.`);
+          unlisteners.forEach(u => u());
+          setIsScanning(false);
+          setState("start");
+        }
+        return; // Event-driven from here on.
+      }
+
+      // ─── MTP LEGACY PATH ──────────────────────────────────────────────────
       // STEP 2: Copy media files from iPhone via MTP
       setCurrentScanModule("Copying Media Files from iPhone (via MTP)...");
       console.log("Starting MTP media copy...");
@@ -1208,6 +1349,103 @@ function App() {
     setState("settings");
   }
 
+  function openWarrant() {
+    setState("warrant");
+  }
+
+  function closeWarrant() {
+    setState("start");
+  }
+
+  function closeWarrantTriage() {
+    setWarrantCaseId(null);
+    setState("warrant");
+  }
+
+  async function handleWarrantExport(caseId: string) {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        title:
+          "Pick a parent folder (e.g. the detective's USB root) — Scout will create a uniquely-named report folder inside it.",
+        directory: true,
+        multiple: false,
+      });
+      if (!selected || typeof selected !== "string") return null;
+
+      const result = await invoke<{ reportDir: string }>("warrant_export_report", {
+        caseId,
+        destDir: selected,
+      });
+      const openIt = window.confirm(
+        `Report exported to:\n${result.reportDir}\n\nOpen the folder now?`
+      );
+      if (openIt) {
+        try {
+          await invoke("open_in_explorer", { path: result.reportDir });
+        } catch (e) {
+          console.warn("[warrant] open_in_explorer failed:", e);
+        }
+      }
+      return result;
+    } catch (err: any) {
+      alert(`Export failed:\n${String(err)}`);
+      console.error("[warrant] export failed:", err);
+      throw err;
+    }
+  }
+
+  async function handleWarrantProviderSelected(provider: WarrantProvider) {
+    try {
+      const { open, ask } = await import("@tauri-apps/plugin-dialog");
+
+      // Ask whether they want a .zip archive or an already-extracted folder.
+      // ask() returns true for the primary button (Yes), false for the secondary (No).
+      const useFolder = await ask(
+        "Is the warrant data already extracted into a folder?\n\n" +
+          "• Yes → pick the extracted folder\n" +
+          "• No  → pick the .zip archive",
+        { title: "Import warrant data", kind: "info", okLabel: "Folder", cancelLabel: "Zip file" }
+      );
+
+      let selected: string | null = null;
+      if (useFolder) {
+        const folder = await open({
+          title: `Select ${provider} warrant folder`,
+          directory: true,
+          multiple: false,
+        });
+        if (folder && typeof folder === "string") selected = folder;
+      } else {
+        // Provider-specific file filters (loose — any .zip is allowed; backend validates structure)
+        const filters =
+          provider === "meta"
+            ? [{ name: "Meta Warrant Archive", extensions: ["zip"] }]
+            : [{ name: "Archive", extensions: ["zip"] }];
+        const file = await open({
+          title: `Select ${provider} warrant return file`,
+          filters,
+          multiple: false,
+        });
+        if (file && typeof file === "string") selected = file;
+      }
+      if (!selected) return;
+
+      setWarrantImporting(true);
+      const result = await invoke<{ caseId: string; summary: any }>("warrant_import", {
+        provider,
+        archivePath: selected,
+      });
+      setWarrantCaseId(result.caseId);
+      setState("warrant_triage");
+    } catch (err: any) {
+      alert(`Warrant import failed:\n${String(err)}`);
+      console.error("[warrant] import failed:", err);
+    } finally {
+      setWarrantImporting(false);
+    }
+  }
+
   async function closeSettings() {
     // Re-check license status when leaving settings (user may have activated a key)
     try {
@@ -1646,6 +1884,60 @@ function App() {
     );
   }
 
+  if (state === "warrant_triage" && warrantCaseId) {
+    return (
+      <>
+        <HexagonBackground />
+        <WarrantTriageView
+          caseId={warrantCaseId}
+          onBack={closeWarrantTriage}
+          onExport={handleWarrantExport}
+        />
+      </>
+    );
+  }
+
+  if (state === "warrant") {
+    return (
+      <>
+        <HexagonBackground />
+        <WarrantLanding
+          onBack={closeWarrant}
+          onSelectProvider={handleWarrantProviderSelected}
+        />
+        {warrantImporting && (
+          <div
+            style={{
+              position: "fixed",
+              inset: 0,
+              background: "rgba(7,11,23,0.85)",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 9999,
+              backdropFilter: "blur(4px)",
+            }}
+          >
+            <div
+              style={{
+                background: "#0a0e1c",
+                padding: "32px 44px",
+                borderRadius: "10px",
+                border: "1px solid rgba(74,122,255,0.4)",
+                color: "#5dcfff",
+                fontSize: "16px",
+                fontWeight: 500,
+                boxShadow: "0 8px 32px rgba(74,122,255,0.2)",
+              }}
+            >
+              Parsing warrant return…
+            </div>
+          </div>
+        )}
+      </>
+    );
+  }
+
   if (state === "start") {
     return (
       <>
@@ -1693,6 +1985,7 @@ function App() {
             <StartScreen 
               onBeginScan={showScanConfig} 
               onOpenSettings={openSettings}
+              onOpenWarrant={openWarrant}
             />
             {licenseDaysRemaining > 0 && licenseDaysRemaining <= 60 && (
               <div style={{
@@ -1757,6 +2050,7 @@ function App() {
       <StartScreen 
         onBeginScan={showScanConfig} 
         onOpenSettings={openSettings}
+        onOpenWarrant={openWarrant}
       />
     </>
   );

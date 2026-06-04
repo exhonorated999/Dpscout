@@ -41,9 +41,9 @@ pub fn get_trial_status() -> Result<TrialStatus, String> {
         });
     }
 
-    // For demo builds, check if user has activated a paid license.
-    // Uses local cache (instant) — no network call on every StartScreen load.
-    // Cache is refreshed whenever the user visits Settings or activates a key.
+    // For demo builds, check the local license cache first (instant — no network call).
+    // Cache is refreshed whenever the user visits Settings, activates a key, or App.tsx
+    // calls get_license_status() on startup.
     if let Ok(Some(license)) = crate::licensing::load_cached_license() {
         if license.registered {
             if let Some(ref plan) = license.plan {
@@ -58,11 +58,40 @@ pub fn get_trial_status() -> Result<TrialStatus, String> {
                         days_remaining: license.days_remaining,
                     });
                 }
+
+                // Trial plan: prefer the cached `expires_at` so the badge stays in
+                // sync with the bottom-right license window (and the server's view).
+                // We recompute days_remaining locally from expires_at so the count
+                // ticks down between cache refreshes instead of staying static.
+                if let Some(ref expires_at) = license.expires_at {
+                    if let Ok(exp) = DateTime::parse_from_rfc3339(expires_at) {
+                        let exp_utc = exp.with_timezone(&Utc);
+                        let now = Utc::now();
+                        let days_remaining = (exp_utc - now).num_days();
+                        let is_expired = now > exp_utc;
+                        return Ok(TrialStatus {
+                            is_trial: true,
+                            is_expired,
+                            registered_at: None,
+                            expires_at: Some(exp_utc.to_rfc3339()),
+                            days_remaining: days_remaining.max(0),
+                        });
+                    }
+                }
+
+                // Cached trial but no parseable expires_at — fall back to cached count.
+                return Ok(TrialStatus {
+                    is_trial: true,
+                    is_expired: license.is_expired,
+                    registered_at: None,
+                    expires_at: license.expires_at,
+                    days_remaining: license.days_remaining.max(0),
+                });
             }
         }
     }
 
-    // No paid license — fall through to trial countdown logic
+    // No cached license — fall through to local users table (USB/portable auth path)
     let db_path = super::init_security_db()?;
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;

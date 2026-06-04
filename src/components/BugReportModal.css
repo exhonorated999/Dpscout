@@ -228,6 +228,38 @@
 
 /* ── Error / Success ────────────────────────────────────────── */
 
+.bugreport-draft-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  margin-bottom: 4px;
+  background: rgba(93, 207, 255, 0.08);
+  border: 1px solid rgba(93, 207, 255, 0.3);
+  border-radius: 8px;
+  color: #c8e9ff;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.bugreport-draft-notice > span {
+  flex: 1;
+}
+
+.bugreport-draft-dismiss {
+  background: transparent;
+  border: none;
+  color: #88c5ec;
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.bugreport-draft-dismiss:hover {
+  color: #ffffff;
+}
+
 .bugreport-error {
   background: rgba(255, 100, 100, 0.1);
   border: 1px solid rgba(255, 100, 100, 0.3);

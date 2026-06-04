@@ -1,6 +1,7 @@
 export interface AppSettings {
   officer_name?: string;
   agency_name?: string;
+  badge_number?: string;
   keywordLists: KeywordList[];
   hashLists: HashList[];
   customApps: CustomAppDefinition[];
@@ -62,6 +63,7 @@ export interface ScanOptions {
 export const defaultSettings: AppSettings = {
   officer_name: undefined,
   agency_name: undefined,
+  badge_number: undefined,
   keywordLists: [],
   hashLists: [],
   customApps: [],

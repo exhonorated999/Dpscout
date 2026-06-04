@@ -11,6 +11,7 @@ const IS_PORTABLE = import.meta.env.VITE_PORTABLE === 'true';
 interface StartScreenProps {
   onBeginScan: (deviceType: DeviceType) => void;
   onOpenSettings: () => void;
+  onOpenWarrant: () => void;
 }
 
 interface TrialStatus {
@@ -91,13 +92,26 @@ const AppleIcon = () => (
   </svg>
 );
 
-export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSettings }) => {
+export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSettings, onOpenWarrant }) => {
   const [selectedDevice, setSelectedDevice] = useState<DeviceType>('windows');
   const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
   const [showBugReport, setShowBugReport] = useState(false);
 
   useEffect(() => {
     loadTrialStatus();
+
+    // Re-check trial status when the window regains focus (covers users who
+    // leave Scout open overnight or come back from another app the next day).
+    const handleFocus = () => { loadTrialStatus(); };
+    window.addEventListener('focus', handleFocus);
+
+    // Re-check every 10 minutes as a safety net for users who never alt-tab.
+    const intervalId = window.setInterval(loadTrialStatus, 10 * 60 * 1000);
+
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      window.clearInterval(intervalId);
+    };
   }, []);
 
   const loadTrialStatus = async () => {
@@ -135,8 +149,8 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
         </svg>
       </button>
 
-      <button className="settings-button-float" onClick={onOpenSettings} title="Settings">
-        ⚙️
+      <button className="settings-button-float" onClick={onOpenSettings} title="Settings" aria-label="Settings">
+        <span className="settings-icon" aria-hidden="true">⚙️</span>
       </button>
 
       {showBugReport && (
@@ -220,9 +234,39 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
             </label>
             )}
 
-            {/* iOS Device option temporarily disabled — will be re-enabled in a future update */}
+            {!IS_PORTABLE && (
+            <label className={`device-option ${selectedDevice === 'ios' ? 'selected' : ''}`}>
+              <input
+                type="radio"
+                name="deviceType"
+                value="ios"
+                checked={selectedDevice === 'ios'}
+                onChange={(e) => setSelectedDevice(e.target.value as DeviceType)}
+              />
+              <div className="device-card">
+                <div className="device-icon">
+                  <AppleIcon />
+                </div>
+                <span className="beta-badge">BETA</span>
+                <span className="device-name">iOS Device</span>
+                <span className="device-description">iPhone or iPad — live triage via Apple Mobile Device service</span>
+              </div>
+            </label>
+            )}
           </div>
         </div>
+
+        <button
+          type="button"
+          className="warrant-triage-button"
+          onClick={onOpenWarrant}
+          title="Triage a search-warrant return (Meta, Snapchat, KIK, Discord, Google)"
+        >
+          <span className="warrant-icon" aria-hidden="true">📋</span>
+          <span className="warrant-label">Warrant Triage</span>
+          <span className="warrant-sublabel">Parse a provider warrant return</span>
+          <span className="beta-badge beta-badge-inline">BETA</span>
+        </button>
 
         <Button 
           variant="primary" 

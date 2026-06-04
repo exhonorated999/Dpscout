@@ -8,6 +8,8 @@ pub struct AppSettings {
     pub officer_name: Option<String>,
     #[serde(rename = "agency_name", alias = "agencyName")]
     pub agency_name: Option<String>,
+    #[serde(rename = "badge_number", alias = "badgeNumber", default)]
+    pub badge_number: Option<String>,
     #[serde(rename = "keywordLists", alias = "keyword_lists")]
     pub keyword_lists: Vec<KeywordList>,
     #[serde(rename = "hashLists", alias = "hash_lists")]
@@ -112,6 +114,7 @@ impl Default for AppSettings {
         AppSettings {
             officer_name: None,
             agency_name: None,
+            badge_number: None,
             keyword_lists: Vec::new(),
             hash_lists: Vec::new(),
             custom_apps: Vec::new(),

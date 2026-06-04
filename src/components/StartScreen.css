@@ -21,13 +21,35 @@
   border: 2px solid var(--color-border);
   font-size: 1.5rem;
   cursor: pointer;
-  transition: all 0.3s ease;
+  /* Center the icon precisely regardless of glyph metrics. Previously the
+     emoji baseline meant the gear sat slightly off-centre, and rotating the
+     whole button caused the gear to "orbit" around an off-centre anchor. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  transition: background-color 0.3s ease, border-color 0.3s ease;
   z-index: 100;
+}
+
+.settings-button-float > .settings-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  line-height: 1;
+  transform-origin: 50% 50%;
+  transition: transform 0.3s ease;
 }
 
 .settings-button-float:hover {
   background-color: var(--color-bg-tertiary);
   border-color: var(--color-accent-amber);
+}
+
+.settings-button-float:hover > .settings-icon {
   transform: rotate(90deg);
 }
 
@@ -190,6 +212,64 @@
   margin-top: 8px;
 }
 
+/* Warrant Triage — sibling CTA matching the device-card glow aesthetic */
+.warrant-triage-button {
+  animation: fadeInUp 0.8s ease-out 0.45s both;
+  width: 100%;
+  max-width: 500px;
+  margin-top: 8px;
+  margin-bottom: 12px;
+  padding: 14px 24px;
+  background: #0A0E1A;
+  border: 2px solid #3057cc;
+  border-radius: 8px;
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  font-family: inherit;
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  box-shadow: 0 0 20px rgba(65, 105, 225, 0.25);
+  transition: background 0.3s ease, border-color 0.3s ease, box-shadow 0.3s ease, transform 0.3s ease;
+  position: relative;
+}
+
+.warrant-triage-button:hover {
+  background: linear-gradient(135deg, rgba(65, 105, 225, 0.2) 0%, rgba(108, 138, 237, 0.15) 100%);
+  border-color: #6c8aed;
+  box-shadow: 0 0 30px rgba(108, 138, 237, 0.5);
+  transform: translateY(-2px);
+  color: #ffffff;
+}
+
+.warrant-triage-button:active {
+  transform: translateY(0);
+}
+
+.warrant-triage-button .warrant-icon {
+  font-size: 1.2rem;
+  line-height: 1;
+  filter: drop-shadow(0 0 8px rgba(108, 138, 237, 0.6));
+}
+
+.warrant-triage-button .warrant-label {
+  color: #ffffff;
+  text-transform: uppercase;
+}
+
+.warrant-triage-button .warrant-sublabel {
+  color: rgba(255, 255, 255, 0.7);
+  font-weight: 400;
+  font-size: 0.8rem;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  margin-left: 4px;
+}
+
 .scan-icon {
   display: inline-block;
   margin-right: 8px;
@@ -287,13 +367,20 @@
 }
 
 .device-options {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  /* Flexbox with equal flex-basis so every device tile is identical in width
+     whether 2 tiles are shown (portable build) or 4 (desktop). Previously
+     `repeat(auto-fit, minmax(180px, 1fr))` could drop the 4th tile onto its
+     own row and stretch it to full container width — that's why Windows and
+     iOS appeared larger than USB/Android at certain widths. */
+  display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   max-width: 100%;
 }
 
 .device-option {
+  flex: 1 1 calc(25% - 12px);
+  min-width: 160px;
   cursor: pointer;
   position: relative;
 }
@@ -394,7 +481,11 @@
   }
   
   .device-options {
-    grid-template-columns: repeat(2, 1fr);
+    /* No-op on flex layout — flex-wrap handles narrow widths via min-width.
+       Kept here intentionally as a hook in case we need to switch back. */
+  }
+  .device-option {
+    flex-basis: calc(50% - 12px);
   }
 }
 
@@ -501,8 +592,10 @@
   }
   
   .device-options {
-    grid-template-columns: 1fr;
     gap: 10px;
+  }
+  .device-option {
+    flex-basis: 100%;
   }
   
   .device-card {
@@ -554,4 +647,32 @@
   .trial-badge-contact {
     font-size: 0.65rem;
   }
+}
+
+
+/* ─── BETA badge (iOS card + Warrant Triage button) ──────────────── */
+.beta-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  padding: 2px 7px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: #ffffff;
+  background: linear-gradient(135deg, #ff8a3d 0%, #ff6b1a 100%);
+  border: 1px solid rgba(255, 138, 61, 0.6);
+  border-radius: 4px;
+  text-transform: uppercase;
+  box-shadow: 0 0 12px rgba(255, 107, 26, 0.55);
+  pointer-events: none;
+  line-height: 1.1;
+}
+
+/* Inline variant used in the Warrant Triage button (still absolute-positioned
+   relative to the button via the parent's position:relative). */
+.beta-badge-inline {
+  top: 6px;
+  right: 8px;
 }

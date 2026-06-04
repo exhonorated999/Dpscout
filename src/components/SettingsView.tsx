@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import { AppSettings, KeywordList, HashList, CustomAppDefinition, ScanOptions } from '../types/settings';
@@ -12,11 +12,144 @@ interface SettingsViewProps {
   onClose: () => void;
 }
 
+// ============================================================================
+// Custom Dialog System
+// ----------------------------------------------------------------------------
+// We DO NOT use native window.confirm() / window.alert() in this view.
+// In Tauri WebView2, those native modals can race against subsequent async
+// alert() calls, causing the "Cancel" path to still fire success messages
+// (see Settings bugs #1 and #2). This in-app modal is fully synchronous from
+// the user's perspective: nothing runs until the promise resolves.
+// ============================================================================
+
+type DialogKind = 'confirm' | 'alert';
+interface DialogState {
+  kind: DialogKind;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  resolve: (value: boolean) => void;
+}
+
+function useDialog() {
+  const [dialog, setDialog] = useState<DialogState | null>(null);
+
+  const showConfirm = useCallback(
+    (message: string, opts?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) =>
+      new Promise<boolean>((resolve) => {
+        setDialog({
+          kind: 'confirm',
+          title: opts?.title || 'Confirm',
+          message,
+          confirmLabel: opts?.confirmLabel || 'OK',
+          cancelLabel: opts?.cancelLabel || 'Cancel',
+          danger: opts?.danger,
+          resolve,
+        });
+      }),
+    []
+  );
+
+  const showAlert = useCallback(
+    (message: string, opts?: { title?: string; confirmLabel?: string }) =>
+      new Promise<void>((resolve) => {
+        setDialog({
+          kind: 'alert',
+          title: opts?.title || 'Notice',
+          message,
+          confirmLabel: opts?.confirmLabel || 'OK',
+          resolve: () => resolve(),
+        });
+      }),
+    []
+  );
+
+  const handleResponse = (value: boolean) => {
+    if (!dialog) return;
+    const r = dialog.resolve;
+    setDialog(null);
+    r(value);
+  };
+
+  return { dialog, showConfirm, showAlert, handleResponse };
+}
+
+const DialogModal: React.FC<{
+  dialog: DialogState | null;
+  onResponse: (value: boolean) => void;
+}> = ({ dialog, onResponse }) => {
+  if (!dialog) return null;
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        inset: 0,
+        background: 'rgba(0,0,0,0.65)',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        zIndex: 10000,
+      }}
+      onClick={() => dialog.kind === 'confirm' && onResponse(false)}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: '#1a1d29',
+          border: '1px solid rgba(93, 207, 255, 0.25)',
+          borderRadius: 10,
+          padding: '1.5rem 1.75rem',
+          minWidth: 380,
+          maxWidth: 520,
+          boxShadow: '0 12px 40px rgba(0,0,0,0.55), 0 0 24px rgba(74,122,255,0.25)',
+        }}
+      >
+        <h3 style={{ margin: 0, color: '#5DCFFF', fontSize: '1.1rem' }}>{dialog.title}</h3>
+        <p style={{ marginTop: '0.85rem', marginBottom: '1.5rem', color: '#e6ecf5', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
+          {dialog.message}
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
+          {dialog.kind === 'confirm' && (
+            <Button variant="secondary" size="sm" onClick={() => onResponse(false)}>
+              {dialog.cancelLabel}
+            </Button>
+          )}
+          <Button
+            variant={dialog.kind === 'confirm' && dialog.danger ? 'danger' : 'primary'}
+            size="sm"
+            onClick={() => onResponse(true)}
+          >
+            {dialog.confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// Tab metadata: order, label, and subtitle shown under the page header.
+// Profile is intentionally NOT first — Keyword Lists is the default landing tab.
+type TabId = 'keywords' | 'hashes' | 'apps' | 'options' | 'profile' | 'reports' | 'license' | 'documentation';
+
+const TAB_CONFIG: Array<{ id: TabId; label: string; subtitle: string }> = [
+  { id: 'keywords',      label: '🔍 Keyword Lists',     subtitle: 'Import and manage keyword lists used during scans. Each list can be toggled on or off per scan.' },
+  { id: 'hashes',        label: '🔐 Hash Lists',        subtitle: 'Import MD5, SHA1, or SHA256 hash sets (Project VIC, NCMEC, custom). Hash lists are stored locally and used for hash matching.' },
+  { id: 'apps',          label: '📱 Custom Apps',       subtitle: 'Define agency-specific or case-specific application patterns to extend the questionable-apps detection database.' },
+  { id: 'options',       label: '⚙️ Scan Options',      subtitle: 'Configure default scan modules and scan depth. These defaults apply when starting a new scan.' },
+  { id: 'profile',       label: '👤 Profile',           subtitle: 'Officer name, badge number, and agency name — included in the header of every generated PDF report.' },
+  { id: 'reports',       label: '📄 Encrypted Reports', subtitle: 'View, open, and delete encrypted reports stored on this machine. Password required to view a report.' },
+  { id: 'license',       label: '🔑 License',           subtitle: 'License status, expiration, and update checks for this installation.' },
+  { id: 'documentation', label: '📚 Scan Documentation', subtitle: 'Reference documentation for each scan module and what it collects.' },
+];
+
 export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, onClose }) => {
   // Ensure settings have default values with ALL required fields
   const initialSettings: AppSettings = {
     officer_name: settings?.officer_name || undefined,
     agency_name: settings?.agency_name || undefined,
+    badge_number: settings?.badge_number || undefined,
     keywordLists: settings?.keywordLists || [],
     hashLists: settings?.hashLists || [],
     customApps: settings?.customApps || [],
@@ -32,20 +165,36 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
   };
 
   const [currentSettings, setCurrentSettings] = useState<AppSettings>(initialSettings);
-  const [activeTab, setActiveTab] = useState<'profile' | 'keywords' | 'hashes' | 'apps' | 'options' | 'reports' | 'documentation' | 'license'>('keywords');
+  const [activeTab, setActiveTab] = useState<TabId>('keywords');
 
-  const handleSave = () => {
-    onSave(currentSettings);
+  // Dirty-tracking: snapshot of the last-saved state. Save button is disabled
+  // while currentSettings equals this snapshot. We use JSON.stringify because
+  // AppSettings is a plain data tree — no functions, no Dates.
+  const savedSnapshotRef = useRef<string>(JSON.stringify(initialSettings));
+  const isDirty = JSON.stringify(currentSettings) !== savedSnapshotRef.current;
+
+  const { dialog, showConfirm, showAlert, handleResponse } = useDialog();
+
+  // Wrap onSave so we can refresh the saved snapshot whenever a write succeeds.
+  const commitSave = (next: AppSettings) => {
+    onSave(next);
+    savedSnapshotRef.current = JSON.stringify(next);
   };
 
-  console.log('SettingsView rendering', { settings, currentSettings, activeTab });
+  const handleSave = () => {
+    commitSave(currentSettings);
+  };
+
+  const activeTabConfig = TAB_CONFIG.find(t => t.id === activeTab) || TAB_CONFIG[0];
+
+  console.log('SettingsView rendering', { settings, currentSettings, activeTab, isDirty });
 
   return (
     <div className="settings-view">
       <div className="settings-header">
         <div className="header-content">
           <h1>⚙️ SETTINGS</h1>
-          <p>Configure detection lists and scan options (Active Tab: {activeTab})</p>
+          <p>{activeTabConfig.subtitle}</p>
         </div>
         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
           <Button variant="secondary" size="lg" onClick={onClose} style={{ fontSize: '1.1rem', padding: '0.75rem 1.5rem' }}>
@@ -56,54 +205,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
 
       <div className="settings-content">
         <div className="settings-tabs">
-          <button
-            className={`settings-tab ${activeTab === 'profile' ? 'active' : ''}`}
-            onClick={() => setActiveTab('profile')}
-          >
-            👤 Profile
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'keywords' ? 'active' : ''}`}
-            onClick={() => setActiveTab('keywords')}
-          >
-            🔍 Keyword Lists
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'hashes' ? 'active' : ''}`}
-            onClick={() => setActiveTab('hashes')}
-          >
-            🔐 Hash Lists
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'apps' ? 'active' : ''}`}
-            onClick={() => setActiveTab('apps')}
-          >
-            📱 Custom Apps
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'options' ? 'active' : ''}`}
-            onClick={() => setActiveTab('options')}
-          >
-            ⚙️ Scan Options
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'reports' ? 'active' : ''}`}
-            onClick={() => setActiveTab('reports')}
-          >
-            📄 Encrypted Reports
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'license' ? 'active' : ''}`}
-            onClick={() => setActiveTab('license')}
-          >
-            🔑 License
-          </button>
-          <button
-            className={`settings-tab ${activeTab === 'documentation' ? 'active' : ''}`}
-            onClick={() => setActiveTab('documentation')}
-          >
-            📚 Scan Documentation
-          </button>
+          {TAB_CONFIG.map(t => (
+            <button
+              key={t.id}
+              className={`settings-tab ${activeTab === t.id ? 'active' : ''}`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
         </div>
 
         <div className="settings-panel">
@@ -111,11 +221,13 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
             <ProfilePanel
               officerName={currentSettings.officer_name}
               agencyName={currentSettings.agency_name}
-              onChange={(officerName, agencyName) => {
-                setCurrentSettings({ 
-                  ...currentSettings, 
+              badgeNumber={currentSettings.badge_number}
+              onChange={(officerName, agencyName, badgeNumber) => {
+                setCurrentSettings({
+                  ...currentSettings,
                   officer_name: officerName,
-                  agency_name: agencyName
+                  agency_name: agencyName,
+                  badge_number: badgeNumber,
                 });
               }}
             />
@@ -127,8 +239,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
               onAutoSave={(lists) => {
                 const newSettings = { ...currentSettings, keywordLists: lists };
                 setCurrentSettings(newSettings);
-                onSave(newSettings);
+                commitSave(newSettings);
               }}
+              showConfirm={showConfirm}
+              showAlert={showAlert}
             />
           )}
           {activeTab === 'hashes' && (
@@ -138,7 +252,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
               onAutoSave={(lists) => {
                 const newSettings = { ...currentSettings, hashLists: lists };
                 setCurrentSettings(newSettings);
-                onSave(newSettings);
+                commitSave(newSettings);
               }}
             />
           )}
@@ -170,8 +284,18 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
 
       <div className="settings-footer">
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button variant="primary" onClick={handleSave} glow>💾 Save Settings</Button>
+        <Button
+          variant="primary"
+          onClick={handleSave}
+          glow={isDirty}
+          disabled={!isDirty}
+          title={isDirty ? 'Save your changes' : 'No changes to save'}
+        >
+          💾 Save Settings
+        </Button>
       </div>
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };
@@ -595,19 +719,34 @@ const LicensePanel: React.FC = () => {
 const ProfilePanel: React.FC<{
   officerName?: string;
   agencyName?: string;
-  onChange: (officerName?: string, agencyName?: string) => void;
-}> = ({ officerName, agencyName, onChange }) => {
+  badgeNumber?: string;
+  onChange: (officerName?: string, agencyName?: string, badgeNumber?: string) => void;
+}> = ({ officerName, agencyName, badgeNumber, onChange }) => {
   const [localOfficerName, setLocalOfficerName] = useState(officerName || '');
   const [localAgencyName, setLocalAgencyName] = useState(agencyName || '');
+  const [localBadgeNumber, setLocalBadgeNumber] = useState(badgeNumber || '');
+
+  const emit = (officer: string, agency: string, badge: string) => {
+    onChange(
+      officer || undefined,
+      agency || undefined,
+      badge || undefined,
+    );
+  };
 
   const handleOfficerChange = (value: string) => {
     setLocalOfficerName(value);
-    onChange(value || undefined, localAgencyName || undefined);
+    emit(value, localAgencyName, localBadgeNumber);
   };
 
   const handleAgencyChange = (value: string) => {
     setLocalAgencyName(value);
-    onChange(localOfficerName || undefined, value || undefined);
+    emit(localOfficerName, value, localBadgeNumber);
+  };
+
+  const handleBadgeChange = (value: string) => {
+    setLocalBadgeNumber(value);
+    emit(localOfficerName, localAgencyName, value);
   };
 
   return (
@@ -621,8 +760,8 @@ const ProfilePanel: React.FC<{
 
       <div style={{ maxWidth: '600px', marginTop: '2rem' }}>
         <div className="profile-field">
-          <label htmlFor="officer-name" style={{ 
-            display: 'block', 
+          <label htmlFor="officer-name" style={{
+            display: 'block',
             marginBottom: '0.5rem',
             color: '#e0e0e0',
             fontWeight: '600'
@@ -645,12 +784,46 @@ const ProfilePanel: React.FC<{
               fontSize: '1rem',
             }}
           />
-          <p style={{ 
-            color: '#a0a0a0', 
-            fontSize: '0.85rem', 
-            marginTop: '0.5rem' 
+          <p style={{
+            color: '#a0a0a0',
+            fontSize: '0.85rem',
+            marginTop: '0.5rem'
           }}>
             Your name as it should appear on official reports
+          </p>
+        </div>
+
+        <div className="profile-field" style={{ marginTop: '1.5rem' }}>
+          <label htmlFor="badge-number" style={{
+            display: 'block',
+            marginBottom: '0.5rem',
+            color: '#e0e0e0',
+            fontWeight: '600'
+          }}>
+            Badge Number
+          </label>
+          <input
+            id="badge-number"
+            type="text"
+            value={localBadgeNumber}
+            onChange={(e) => handleBadgeChange(e.target.value)}
+            placeholder="e.g., 12345"
+            style={{
+              width: '100%',
+              padding: '0.75rem',
+              background: 'rgba(255, 255, 255, 0.05)',
+              border: '1px solid rgba(255, 255, 255, 0.1)',
+              borderRadius: '6px',
+              color: '#e0e0e0',
+              fontSize: '1rem',
+            }}
+          />
+          <p style={{
+            color: '#a0a0a0',
+            fontSize: '0.85rem',
+            marginTop: '0.5rem'
+          }}>
+            Optional. Will appear next to your name on official reports.
           </p>
         </div>
 
@@ -716,7 +889,9 @@ const KeywordListsPanel: React.FC<{
   lists: KeywordList[];
   onChange: (lists: KeywordList[]) => void;
   onAutoSave?: (lists: KeywordList[]) => void;
-}> = ({ lists = [], onChange, onAutoSave }) => {
+  showConfirm: (msg: string, opts?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) => Promise<boolean>;
+  showAlert: (msg: string, opts?: { title?: string }) => Promise<void>;
+}> = ({ lists = [], onChange, onAutoSave, showConfirm, showAlert }) => {
   const [selectedList, setSelectedList] = useState<KeywordList | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [loadedLists, setLoadedLists] = useState<Array<{ name: string; keywords: string[]; enabled: boolean }>>([]);
@@ -758,19 +933,23 @@ const KeywordListsPanel: React.FC<{
           fileName
         });
 
-        alert(result);
+        await showAlert(result, { title: 'Import' });
         await loadKeywordLists(); // Reload lists
       }
     } catch (error) {
       console.error('Failed to import keyword list:', error);
-      alert(`Failed to import keyword list: ${error}`);
+      await showAlert(`Failed to import keyword list: ${error}`, { title: 'Import Failed' });
     } finally {
       setIsImporting(false);
     }
   };
 
   const handleDeleteList = async (listName: string) => {
-    if (!confirm(`Are you sure you want to delete the keyword list "${listName}"?`)) {
+    const ok = await showConfirm(
+      `Are you sure you want to delete the keyword list "${listName}"?`,
+      { title: 'Delete Keyword List', confirmLabel: 'Delete', cancelLabel: 'Cancel', danger: true }
+    );
+    if (!ok) {
       return;
     }
 
@@ -778,13 +957,13 @@ const KeywordListsPanel: React.FC<{
       const result = await invoke<string>('delete_keyword_list', {
         listName
       });
-      
-      alert(result);
+
+      await showAlert(result, { title: 'Deleted' });
       setSelectedList(null);
       await loadKeywordLists(); // Reload lists
     } catch (error) {
       console.error('Failed to delete keyword list:', error);
-      alert(`Failed to delete keyword list: ${error}`);
+      await showAlert(`Failed to delete keyword list: ${error}`, { title: 'Delete Failed' });
     }
   };
 
