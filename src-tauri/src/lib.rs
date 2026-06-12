@@ -9,6 +9,8 @@ mod platform;
 mod media_server;
 mod thumbnail_generator;
 mod licensing;
+mod warrant;
+pub mod diag_log;
 
 use scanner::QuestionableApp;
 use scanner::questionable_apps;
@@ -64,6 +66,19 @@ fn check_for_updates() -> Result<licensing::UpdateInfo, String> {
 #[tauri::command]
 fn submit_bug_report(data: licensing::BugReportData) -> Result<licensing::BugReportResponse, String> {
     licensing::submit_bug_report(data)
+}
+
+/// Stat an attachment file from the bug-report modal — returns byte size.
+/// Lets the frontend reject oversized files BEFORE we try to upload them,
+/// without needing the @tauri-apps/plugin-fs permission.
+#[tauri::command]
+fn bug_attachment_stat(path: String) -> Result<u64, String> {
+    let p = std::path::Path::new(&path);
+    let meta = std::fs::metadata(p).map_err(|e| format!("stat failed: {}", e))?;
+    if !meta.is_file() {
+        return Err("Not a regular file".to_string());
+    }
+    Ok(meta.len())
 }
 
 #[tauri::command]
@@ -816,6 +831,15 @@ fn cancel_scan() {
     scanner::hash_scan::cancel_scan();
 }
 
+/// Reset the global scan cancellation flag. Call this at the start of a fresh
+/// orchestrated scan run so the cancel flag from a previous run doesn't leak
+/// into the new one.
+#[tauri::command]
+fn reset_scan_cancellation() {
+    scanner::hash_scan::reset_scan_cancelled();
+    eprintln!("[Scan] 🔄 Cancellation flag reset for new scan run");
+}
+
 #[tauri::command]
 async fn scan_for_hash_matches(
     options: scanner::hash_scan::HashScanOptions,
@@ -895,7 +919,7 @@ async fn scan_browser_history(target_drives: Option<Vec<String>>) -> Result<Vec<
 
 /// Get the keyword_lists directory path
 /// Stored in %APPDATA%\Hindsight\keyword_lists\ so it survives installer updates
-fn get_keyword_lists_dir() -> Result<PathBuf, String> {
+pub fn get_keyword_lists_dir() -> Result<PathBuf, String> {
     let app_data = std::env::var("APPDATA")
         .map_err(|_| "Could not find APPDATA directory".to_string())?;
     let keyword_dir = std::path::PathBuf::from(&app_data)
@@ -2257,6 +2281,63 @@ fn unmount_forensic_target(_target: TargetSystem) -> Result<(), String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())
 }
 
+// ── Diagnostic build helpers (always compiled; no-ops outside `diag` feature) ──
+
+/// Return the absolute path of the diagnostic log file as a String.
+/// In non-diag builds this still returns the path that *would* be used so
+/// the UI can render a placeholder if it wants to.
+#[tauri::command]
+fn diag_is_active() -> bool {
+    cfg!(feature = "diag")
+}
+
+#[tauri::command]
+fn diag_log_path() -> String {
+    diag_log::log_path().to_string_lossy().to_string()
+}
+
+/// Open the diagnostic log file in the OS default text viewer (Notepad on Windows).
+#[tauri::command]
+fn diag_open_log() -> Result<(), String> {
+    let path = diag_log::log_path();
+    if !path.exists() {
+        return Err(format!(
+            "Log file not found at {}. Run an SMS triage first.",
+            path.display()
+        ));
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("notepad.exe")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open Notepad: {}", e))?;
+        Ok(())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("Failed to open log: {}", e))?;
+        Ok(())
+    }
+}
+
+/// Read the full diagnostic log so the frontend can copy it to the clipboard
+/// using the browser's `navigator.clipboard.writeText()`.
+#[tauri::command]
+fn diag_read_log() -> Result<String, String> {
+    let path = diag_log::log_path();
+    if !path.exists() {
+        return Err(format!(
+            "Log file not found at {}. Run an SMS triage first.",
+            path.display()
+        ));
+    }
+    Ok(diag_log::read_log())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2264,6 +2345,30 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // ── Auto-sink window when it loses focus ────────────────────────────
+        // Examiners run Scout alongside V.I.P.E.R. and Cellebrite. When they
+        // click into one of those apps, Scout should drop to the bottom of
+        // the z-order so it stops covering the Coach / case-detail drawers.
+        // When Scout regains focus (taskbar click / Alt-Tab), we restore
+        // normal z-order so it pops to the front like any other window.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(focused) = event {
+                // set_always_on_bottom(true) on blur → other windows float
+                // above Scout. set_always_on_bottom(false) on focus →
+                // normal stacking, so Scout can come back to the top.
+                if let Err(e) = window.set_always_on_bottom(!*focused) {
+                    eprintln!("[Window] Failed to set always_on_bottom={}: {}", !*focused, e);
+                }
+            }
+        })
+        .register_asynchronous_uri_scheme_protocol("scout-afc", move |_app, request, responder| {
+            // Run on a blocking thread because read_range() ultimately
+            // blocks waiting for the Python daemon to reply.
+            std::thread::spawn(move || {
+                let response = scanner::ios_afc_commands::handle_afc_request(&request);
+                responder.respond(response);
+            });
+        })
         .register_asynchronous_uri_scheme_protocol("media", move |_app, request, responder| {
             eprintln!("[Media Protocol] Request received: {:?}", request.uri());
             
@@ -2312,6 +2417,7 @@ pub fn run() {
             activate_license_key,
             check_for_updates,
             submit_bug_report,
+            bug_attachment_stat,
             is_agency_registered,
             scan_questionable_applications,
             get_settings,
@@ -2331,6 +2437,7 @@ pub fn run() {
             clear_thumbnails,
             scan_for_hash_matches,
             cancel_scan,
+            reset_scan_cancellation,
             scan_browser_history,
             load_keyword_lists,
             import_keyword_list,
@@ -2392,6 +2499,15 @@ pub fn run() {
             request_ios_device_trust,
             list_ios_device_apps,
             perform_ios_live_triage,
+            // New AFC live-triage (no file copies, byte-range streaming hash)
+            scanner::ios_afc_commands::ios_afc_smoke,
+            scanner::ios_afc_commands::start_ios_live_triage_afc,
+            scanner::ios_afc_commands::stop_ios_live_triage_afc,
+            scanner::ios_afc_commands::list_ios_afc_dir,
+            scanner::ios_afc_commands::pull_ios_afc_file,
+            scanner::ios_afc_commands::get_ios_afc_thumbnail,
+            scanner::ios_afc_commands::get_ios_afc_video_thumbnail,
+            scanner::ios_afc_commands::shutdown_ios_afc,
             open_in_explorer,
             get_file_metadata,
             get_file_access_events,
@@ -2450,7 +2566,43 @@ pub fn run() {
             thumbnail_generator::get_thumbnail_cache_stats,
             // Android SMS commands
             scanner::android_sms::extract_android_sms,
-            scanner::android_sms::get_sms_thread_messages
+            scanner::android_sms::get_sms_thread_messages,
+            // Diagnostic build helpers (no-ops outside diag feature)
+            diag_is_active,
+            diag_log_path,
+            diag_open_log,
+            diag_read_log,
+            // Warrant Triage commands
+            warrant::commands::warrant_import,
+            warrant::commands::warrant_list_cases,
+            warrant::commands::warrant_load_case,
+            warrant::commands::warrant_assign_bucket,
+            warrant::commands::warrant_set_note,
+            warrant::commands::warrant_set_flag,
+            warrant::commands::warrant_create_bucket,
+            warrant::commands::warrant_rename_bucket,
+            warrant::commands::warrant_delete_bucket,
+            warrant::commands::warrant_delete_case,
+            warrant::commands::warrant_open_media,
+            warrant::commands::warrant_get_thumbnail,
+            warrant::commands::warrant_export_report,
+            warrant::commands::warrant_list_keyword_lists,
+            warrant::commands::warrant_list_hash_lists,
+            warrant::commands::warrant_run_hash_scan,
+            warrant::commands::warrant_run_keyword_scan,
+            warrant::commands::warrant_get_scan_results,
+            warrant::commands::warrant_clear_scan,
+            // Investigations (multi-return wrappers)
+            warrant::commands::warrant_create_investigation,
+            warrant::commands::warrant_list_investigations,
+            warrant::commands::warrant_load_investigation,
+            warrant::commands::warrant_update_investigation,
+            warrant::commands::warrant_add_return_to_investigation,
+            warrant::commands::warrant_rename_return_in_investigation,
+            warrant::commands::warrant_remove_return_from_investigation,
+            warrant::commands::warrant_delete_investigation,
+            warrant::commands::warrant_find_investigation_for_return,
+            warrant::commands::warrant_export_investigation_report
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

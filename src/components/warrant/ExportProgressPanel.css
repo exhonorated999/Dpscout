@@ -1,0 +1,220 @@
+/* Floating, minimizable export-progress panel.
+   Pinned to the bottom-right of the viewport above all other UI. */
+
+.export-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 360px;
+  background: linear-gradient(180deg, rgba(15, 22, 42, 0.98) 0%, rgba(10, 16, 32, 0.98) 100%);
+  border: 1px solid rgba(93, 207, 255, 0.28);
+  border-radius: 12px;
+  box-shadow:
+    0 12px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(74, 122, 255, 0.08) inset;
+  padding: 14px 16px 12px;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 13px;
+  z-index: 9999;
+  animation: export-panel-pop 0.18s ease-out;
+}
+
+@keyframes export-panel-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.export-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.export-panel-title {
+  color: #5dcfff;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  font-size: 13px;
+}
+.export-panel-controls { display: flex; gap: 4px; }
+
+.export-panel-btn {
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: #cdd6f4;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 120ms;
+}
+.export-panel-btn:hover { background: rgba(93, 207, 255, 0.18); }
+
+.export-panel-bar {
+  height: 6px;
+  background: rgba(93, 207, 255, 0.14);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+.export-panel-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4a7aff 0%, #5dcfff 100%);
+  border-radius: 3px;
+  transition: width 280ms ease-out;
+  box-shadow: 0 0 8px rgba(93, 207, 255, 0.45);
+}
+
+.export-panel-stats {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 4px;
+  font-size: 12.5px;
+}
+.export-panel-stats > span:first-child {
+  color: #5dcfff;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.export-panel-stat-sep { color: #4a5468; }
+.export-panel-stage {
+  color: #a8b3cf;
+  font-style: italic;
+}
+
+.export-panel-time {
+  display: flex;
+  justify-content: space-between;
+  color: #8b9bbf;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  margin-top: 6px;
+}
+.export-panel-eta { color: #cdd6f4; }
+
+.export-panel-current {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  color: #a8b3cf;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-panel-success {
+  color: #a8b3cf;
+  font-size: 12.5px;
+  margin-bottom: 4px;
+}
+.export-panel-path {
+  background: rgba(0, 0, 0, 0.32);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-family: 'Cascadia Code', Consolas, 'SF Mono', monospace;
+  font-size: 11px;
+  color: #cdd6f4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 10px;
+}
+.export-panel-error-msg {
+  color: #ff8b8b;
+  font-size: 12.5px;
+  margin-bottom: 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.export-panel-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.export-panel-action-btn {
+  background: rgba(255, 255, 255, 0.06);
+  color: #cdd6f4;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+  transition: background 120ms;
+}
+.export-panel-action-btn:hover { background: rgba(255, 255, 255, 0.12); }
+.export-panel-action-btn.primary {
+  background: linear-gradient(180deg, #4a7aff 0%, #3461d6 100%);
+  border-color: #4a7aff;
+  color: #fff;
+  font-weight: 600;
+}
+.export-panel-action-btn.primary:hover {
+  background: linear-gradient(180deg, #5688ff 0%, #4070e0 100%);
+}
+
+/* ── Minimized chip ─────────────────────────────────────────────── */
+
+.export-chip {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px 8px 10px;
+  background: linear-gradient(180deg, rgba(15, 22, 42, 0.98) 0%, rgba(10, 16, 32, 0.98) 100%);
+  border: 1px solid rgba(93, 207, 255, 0.34);
+  border-radius: 20px;
+  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 12.5px;
+  cursor: pointer;
+  z-index: 9999;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5);
+  transition: transform 120ms, border-color 120ms;
+  animation: export-panel-pop 0.18s ease-out;
+}
+.export-chip:hover {
+  transform: translateY(-1px);
+  border-color: #5dcfff;
+}
+.export-chip-pct {
+  color: #5dcfff;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.export-chip-spinner {
+  width: 14px; height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(93, 207, 255, 0.22);
+  border-top-color: #5dcfff;
+  animation: inv-spin 0.7s linear infinite;
+}
+.export-chip-check {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(80, 220, 130, 0.18);
+  color: #6ee290;
+  font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700;
+}
+.export-chip-error {
+  width: 16px; height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 100, 100, 0.18);
+  color: #ff8b8b;
+  font-size: 11px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-weight: 700;
+}
