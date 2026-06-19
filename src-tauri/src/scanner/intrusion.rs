@@ -224,6 +224,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     eprintln!();
 
     if options.scan_event_logs {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before event logs");
+            return Ok(results);
+        }
         eprintln!("[1/9] Scanning Windows Event Logs...");
         match scan_event_logs(&base_path) {
             Ok(logs) => {
@@ -235,6 +239,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_persistence {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before persistence");
+            return Ok(results);
+        }
         eprintln!("[2/9] Scanning persistence mechanisms...");
         match scan_persistence_mechanisms(&base_path) {
             Ok(items) => {
@@ -246,6 +254,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_command_history {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before command history");
+            return Ok(results);
+        }
         eprintln!("[3/9] Scanning command history...");
         match scan_command_history(&base_path) {
             Ok(history) => {
@@ -257,6 +269,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_user_accounts {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before user accounts");
+            return Ok(results);
+        }
         eprintln!("[4/9] Scanning user account changes...");
         match scan_user_account_changes(&base_path) {
             Ok(accounts) => {
@@ -268,6 +284,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_remote_access {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before remote access");
+            return Ok(results);
+        }
         eprintln!("[5/9] Scanning remote access indicators...");
         match scan_remote_access_indicators(&base_path) {
             Ok(indicators) => {
@@ -279,6 +299,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_security_tampering {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before security tampering");
+            return Ok(results);
+        }
         eprintln!("[6/9] Scanning security tool tampering...");
         match scan_security_tampering(&base_path) {
             Ok(tampering) => {
@@ -290,6 +314,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_network {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before network");
+            return Ok(results);
+        }
         eprintln!("[7/9] Scanning network indicators...");
         match scan_network_indicators(&base_path) {
             Ok(network) => {
@@ -301,6 +329,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_malware {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before malware");
+            return Ok(results);
+        }
         eprintln!("[8/9] Scanning malware indicators...");
         match scan_malware_indicators(&base_path) {
             Ok(malware) => {
@@ -312,6 +344,10 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
     }
 
     if options.scan_browser_hijacking {
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Intrusion Scan] ⛔ Cancelled before browser hijacking");
+            return Ok(results);
+        }
         eprintln!("[9/9] Scanning browser hijacking...");
         match scan_browser_hijacking(&base_path) {
             Ok(hijacking) => {

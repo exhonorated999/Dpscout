@@ -33,6 +33,7 @@ pub enum Provider {
     Kik,
     Discord,
     Google,
+    Yahoo,
 }
 
 impl Provider {
@@ -43,6 +44,7 @@ impl Provider {
             Provider::Kik => "KIK",
             Provider::Discord => "Discord",
             Provider::Google => "Google",
+            Provider::Yahoo => "Yahoo",
         }
     }
 }
@@ -192,6 +194,7 @@ pub mod registry {
             Box::new(super::providers::kik::KikWarrantParser),
             Box::new(super::providers::discord::DiscordWarrantParser),
             Box::new(super::providers::google::GoogleWarrantParser),
+            Box::new(super::providers::yahoo::YahooWarrantParser),
         ]
     }
 
@@ -203,6 +206,7 @@ pub mod registry {
             Provider::Kik => Some(Box::new(super::providers::kik::KikWarrantParser)),
             Provider::Discord => Some(Box::new(super::providers::discord::DiscordWarrantParser)),
             Provider::Google => Some(Box::new(super::providers::google::GoogleWarrantParser)),
+            Provider::Yahoo => Some(Box::new(super::providers::yahoo::YahooWarrantParser)),
         }
     }
 

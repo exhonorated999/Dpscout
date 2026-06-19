@@ -959,10 +959,14 @@
   color: var(--color-text-muted);
 }
 
-.hash-value {
+.hash-value,
+.table-col.hash-value {
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--color-text-muted);
+  background: transparent;
+  padding: 0;
+  border-radius: 0;
 }
 
 .category-badge {

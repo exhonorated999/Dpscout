@@ -32,6 +32,7 @@ mod tests {
                 triage_start_time: None,
                 triage_end_time: None,
                 total_flags: Some(3),
+                generate_datapilot_file: None,
             },
             scope: ReportScope::Flagged,
             formats: vec!["pdf".to_string()],
@@ -42,6 +43,7 @@ mod tests {
                 csam: json!([]),
                 browsers: json!([]),
                 intrusion: json!(null),
+                hash_matches: json!([]),
                 system_info: json!({
                     "computer_name": "TEST-COMPUTER",
                     "os_version": "Windows 11 Pro (Build 22631)",
@@ -166,6 +168,7 @@ mod tests {
                 triage_start_time: None,
                 triage_end_time: None,
                 total_flags: None,
+                generate_datapilot_file: None,
             },
             scope: ReportScope::All,
             formats: vec!["pdf".to_string()],
@@ -176,6 +179,7 @@ mod tests {
                 csam: json!([]),
                 browsers: json!([]),
                 intrusion: json!(null),
+                hash_matches: json!([]),
                 system_info: json!(null),  // No device info
             },
         };

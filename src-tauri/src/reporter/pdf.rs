@@ -536,13 +536,19 @@ fn draw_flagged_media(ctx: &mut PdfContext, media: &[serde_json::Value], payload
         media.iter()
             .enumerate()
             .filter(|(idx, m)| {
-                // Check if explicitly flagged by user (clicked "Flag" button)
+                // (a) Explicitly tagged by user (clicked "Tag as Evidence" / "Flag")
                 let is_flagged = m.get("isFlagged").and_then(|v| v.as_bool()).unwrap_or(false);
-                // In flagged_item_ids list (user-selected items)
-                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| {
-                    id == &format!("media-{}", idx)
-                });
-                is_flagged || in_flagged_list
+                // (b) In flagged_item_ids list (user-selected items) — exact match
+                let target_id = format!("media-{}", idx);
+                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| id == &target_id);
+                // (c) Auto-flagged by the scanner (e.g. Project VIC hash hit on iOS AFC
+                //     items). The user never has to manually tag these — they MUST
+                //     show up in a "Flagged Only" report. Detect by non-empty flags[].
+                let has_auto_flags = m.get("flags")
+                    .and_then(|f| f.as_array())
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false);
+                is_flagged || in_flagged_list || has_auto_flags
             })
             .collect()
     };
@@ -604,7 +610,13 @@ fn draw_flagged_media(ctx: &mut PdfContext, media: &[serde_json::Value], payload
         // Flags
         if let Some(flags) = media_item.get("flags").and_then(|f| f.as_array()) {
             for flag in flags {
-                let flag_type = flag.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                // MediaFlag serializes with rename_all = "camelCase" → field is
+                // `flagType`. Older payloads used `type` — fall back for forward
+                // compatibility.
+                let flag_type = flag.get("flagType")
+                    .or_else(|| flag.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown");
                 let reason = flag.get("reason").and_then(|v| v.as_str()).unwrap_or("");
                 let severity = flag.get("severity").and_then(|v| v.as_str()).unwrap_or("unknown");
                 

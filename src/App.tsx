@@ -24,11 +24,13 @@ import { SystemInfo } from "./types/system";
 import { IntrusionScanResults, IntrusionScanOptions, defaultIntrusionScanOptions } from "./types/intrusion";
 import { useScanSession } from "./hooks/useScanSession";
 import { RegistrationScreen } from "./components/RegistrationScreen";
-import { WarrantLanding, WarrantProvider } from "./components/warrant/WarrantLanding";
 import { WarrantTriageView } from "./components/warrant/WarrantTriageView";
+import { WarrantInvestigationsList } from "./components/warrant/WarrantInvestigationsList";
+import { WarrantInvestigationDetail } from "./components/warrant/WarrantInvestigationDetail";
+import { ExportProgressPanel } from "./components/warrant/ExportProgressPanel";
 import "./App.css";
 
-type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview" | "warrant" | "warrant_triage";
+type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview" | "warrant" | "warrant_investigation" | "warrant_triage";
 
 interface User {
   username: string;
@@ -61,7 +63,11 @@ function App() {
   const [intrusionResults, setIntrusionResults] = useState<IntrusionScanResults | null>(null);
   // Active warrant triage case (set after import or "Open" from case list)
   const [warrantCaseId, setWarrantCaseId] = useState<string | null>(null);
-  const [warrantImporting, setWarrantImporting] = useState(false);
+  // Active investigation (parent of warrantCaseId, if any) — used for
+  // breadcrumb back-navigation from the per-return triage view.
+  const [warrantInvestigationId, setWarrantInvestigationId] = useState<string | null>(null);
+  const [warrantInvestigationParentForReturn, setWarrantInvestigationParentForReturn] =
+    useState<string | null>(null);
   const [isScanning, setIsScanning] = useState(false);
   const [scanStopped, setScanStopped] = useState(false);
   const scanCancelledRef = useRef(false);
@@ -260,7 +266,15 @@ function App() {
       // Go to results dashboard for live updates
       setState("results");
       setIsScanning(true);
+      setScanStopped(false);
       scanCancelledRef.current = false;
+      // Clear the Rust-side cancellation flag so a previous cancel doesn't
+      // immediately kill this new scan run.
+      try {
+        await invoke('reset_scan_cancellation');
+      } catch (err) {
+        console.warn('reset_scan_cancellation invoke failed (non-fatal):', err);
+      }
       // Clear ALL previous scan state to prevent stale data
       setApps([]);
       setMediaFiles([]);
@@ -861,6 +875,13 @@ function App() {
     setSystemInfo(null);
     scanCancelledRef.current = false;
     setScanStopped(false);
+    // Clear the Rust-side cancellation flag so a previous cancel doesn't
+    // immediately kill this new scan run.
+    try {
+      await invoke('reset_scan_cancellation');
+    } catch (err) {
+      console.warn('reset_scan_cancellation invoke failed (non-fatal):', err);
+    }
     setCurrentScanModule("System Information");
     
     const progressList: ScanProgressType[] = [];
@@ -1327,6 +1348,11 @@ function App() {
   }
 
   async function handleStopScan() {
+    // If already stopping, ignore double-clicks
+    if (scanCancelledRef.current) {
+      console.log('[Cancel Scan] Already in progress, ignoring duplicate click');
+      return;
+    }
     scanCancelledRef.current = true;
     setScanStopped(true);
     setCurrentScanModule('Stopping scan...');
@@ -1335,9 +1361,19 @@ function App() {
     } catch (err) {
       console.warn('cancel_scan invoke failed:', err);
     }
-    // Do NOT set isScanning=false here — let the scan function's finally block
-    // handle it after the Rust scan actually stops and event listeners are cleaned up.
-    // Setting it here causes "SCAN COMPLETE" to appear while matches are still streaming in.
+    // Safety net: if the Rust scan refuses to return within 5 seconds
+    // (e.g. a scan module that doesn't honor cancellation), force the UI
+    // back to a stopped state so the user isn't stuck on "Stopping scan...".
+    // The scan promise's finally block will still fire whenever Rust eventually
+    // returns; setIsScanning(false) is idempotent.
+    setTimeout(() => {
+      // Only force-stop if we're still in cancelled+scanning state
+      if (scanCancelledRef.current) {
+        console.warn('[Cancel Scan] Grace period expired, forcing UI to stopped state');
+        setIsScanning(false);
+        setCurrentScanModule('');
+      }
+    }, 5000);
   }
 
   function handleNewScan() {
@@ -1354,12 +1390,49 @@ function App() {
   }
 
   function closeWarrant() {
+    setWarrantInvestigationId(null);
     setState("start");
+  }
+
+  function openInvestigation(id: string) {
+    setWarrantInvestigationId(id);
+    setState("warrant_investigation");
+  }
+
+  function backToInvestigationList() {
+    setWarrantInvestigationId(null);
+    setState("warrant");
+  }
+
+  async function openReturnFromInvestigation(caseId: string) {
+    setWarrantCaseId(caseId);
+    // Track the parent investigation for the breadcrumb in the triage UI.
+    if (warrantInvestigationId) {
+      setWarrantInvestigationParentForReturn(warrantInvestigationId);
+    } else {
+      try {
+        const owner = await invoke<string | null>('warrant_find_investigation_for_return', {
+          caseId,
+        });
+        setWarrantInvestigationParentForReturn(owner);
+      } catch {
+        setWarrantInvestigationParentForReturn(null);
+      }
+    }
+    setState("warrant_triage");
   }
 
   function closeWarrantTriage() {
     setWarrantCaseId(null);
-    setState("warrant");
+    if (warrantInvestigationParentForReturn) {
+      // Go back to the parent investigation detail.
+      const parent = warrantInvestigationParentForReturn;
+      setWarrantInvestigationParentForReturn(null);
+      setWarrantInvestigationId(parent);
+      setState("warrant_investigation");
+    } else {
+      setState("warrant");
+    }
   }
 
   async function handleWarrantExport(caseId: string) {
@@ -1392,57 +1465,6 @@ function App() {
       alert(`Export failed:\n${String(err)}`);
       console.error("[warrant] export failed:", err);
       throw err;
-    }
-  }
-
-  async function handleWarrantProviderSelected(provider: WarrantProvider) {
-    try {
-      const { open, ask } = await import("@tauri-apps/plugin-dialog");
-
-      // Ask whether they want a .zip archive or an already-extracted folder.
-      // ask() returns true for the primary button (Yes), false for the secondary (No).
-      const useFolder = await ask(
-        "Is the warrant data already extracted into a folder?\n\n" +
-          "• Yes → pick the extracted folder\n" +
-          "• No  → pick the .zip archive",
-        { title: "Import warrant data", kind: "info", okLabel: "Folder", cancelLabel: "Zip file" }
-      );
-
-      let selected: string | null = null;
-      if (useFolder) {
-        const folder = await open({
-          title: `Select ${provider} warrant folder`,
-          directory: true,
-          multiple: false,
-        });
-        if (folder && typeof folder === "string") selected = folder;
-      } else {
-        // Provider-specific file filters (loose — any .zip is allowed; backend validates structure)
-        const filters =
-          provider === "meta"
-            ? [{ name: "Meta Warrant Archive", extensions: ["zip"] }]
-            : [{ name: "Archive", extensions: ["zip"] }];
-        const file = await open({
-          title: `Select ${provider} warrant return file`,
-          filters,
-          multiple: false,
-        });
-        if (file && typeof file === "string") selected = file;
-      }
-      if (!selected) return;
-
-      setWarrantImporting(true);
-      const result = await invoke<{ caseId: string; summary: any }>("warrant_import", {
-        provider,
-        archivePath: selected,
-      });
-      setWarrantCaseId(result.caseId);
-      setState("warrant_triage");
-    } catch (err: any) {
-      alert(`Warrant import failed:\n${String(err)}`);
-      console.error("[warrant] import failed:", err);
-    } finally {
-      setWarrantImporting(false);
     }
   }
 
@@ -1892,6 +1914,22 @@ function App() {
           caseId={warrantCaseId}
           onBack={closeWarrantTriage}
           onExport={handleWarrantExport}
+          parentInvestigationName={
+            warrantInvestigationParentForReturn ? "Investigation" : null
+          }
+        />
+      </>
+    );
+  }
+
+  if (state === "warrant_investigation" && warrantInvestigationId) {
+    return (
+      <>
+        <HexagonBackground />
+        <WarrantInvestigationDetail
+          investigationId={warrantInvestigationId}
+          onBack={backToInvestigationList}
+          onOpenReturn={openReturnFromInvestigation}
         />
       </>
     );
@@ -1901,39 +1939,10 @@ function App() {
     return (
       <>
         <HexagonBackground />
-        <WarrantLanding
+        <WarrantInvestigationsList
           onBack={closeWarrant}
-          onSelectProvider={handleWarrantProviderSelected}
+          onOpen={openInvestigation}
         />
-        {warrantImporting && (
-          <div
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(7,11,23,0.85)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              zIndex: 9999,
-              backdropFilter: "blur(4px)",
-            }}
-          >
-            <div
-              style={{
-                background: "#0a0e1c",
-                padding: "32px 44px",
-                borderRadius: "10px",
-                border: "1px solid rgba(74,122,255,0.4)",
-                color: "#5dcfff",
-                fontSize: "16px",
-                fontWeight: 500,
-                boxShadow: "0 8px 32px rgba(74,122,255,0.2)",
-              }}
-            >
-              Parsing warrant return…
-            </div>
-          </div>
-        )}
       </>
     );
   }
@@ -2056,4 +2065,19 @@ function App() {
   );
 }
 
-export default App;
+/**
+ * Top-level wrapper that keeps `ExportProgressPanel` mounted for the
+ * lifetime of the app.  This lets a warrant-investigation export keep
+ * showing live progress even if the user navigates away from the
+ * investigation detail screen.
+ */
+function AppWithGlobalOverlays() {
+  return (
+    <>
+      <App />
+      <ExportProgressPanel />
+    </>
+  );
+}
+
+export default AppWithGlobalOverlays;

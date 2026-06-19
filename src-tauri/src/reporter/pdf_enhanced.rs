@@ -362,9 +362,18 @@ pub fn generate_pdf(payload: &ReportPayload, reports_dir: &Path) -> Result<PathB
         let total_hashes = csam_array.len();
         let flagged_hashes: Vec<_> = csam_array.iter()
             .enumerate()
-            .filter(|(idx, _)| {
-                let idx_suffix = format!("-{}", idx);
-                payload.flagged_item_ids.iter().any(|id| id.contains("media-") && id.contains(&idx_suffix))
+            .filter(|(idx, m)| {
+                // Exact match on the per-item id (prior `.contains("-{idx}")`
+                // matched `media-1` against `media-10`, `media-11`, etc).
+                let target_id = format!("media-{}", idx);
+                let in_flagged_list = payload.flagged_item_ids.iter().any(|id| id == &target_id);
+                // Also include scanner auto-flags (Project VIC hash hits on iOS
+                // AFC) which the user never has to manually tag.
+                let has_auto_flags = m.get("flags")
+                    .and_then(|f| f.as_array())
+                    .map(|arr| !arr.is_empty())
+                    .unwrap_or(false);
+                in_flagged_list || has_auto_flags
             })
             .collect();
         

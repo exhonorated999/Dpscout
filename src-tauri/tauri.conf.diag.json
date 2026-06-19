@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Datapilot Scout DIAG",
+  "identifier": "com.datapilot.scout.diag",
+  "build": {
+    "beforeBuildCommand": "npm run build:diag"
+  },
+  "bundle": {
+    "targets": ["nsis"],
+    "createUpdaterArtifacts": false
+  }
+}

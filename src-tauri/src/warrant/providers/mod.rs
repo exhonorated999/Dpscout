@@ -11,3 +11,7 @@ pub mod snapchat;
 pub mod kik;
 pub mod discord;
 pub mod google;
+pub mod yahoo;
+
+// Shared utilities used by multiple providers.
+pub(crate) mod mbox_lib;

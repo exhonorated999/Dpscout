@@ -1045,16 +1045,31 @@ pub fn scan_p2p_artifacts() -> Result<Vec<QuestionableApp>, Box<dyn std::error::
 pub fn scan_questionable_apps() -> Result<Vec<QuestionableApp>, Box<dyn std::error::Error>> {
     let mut all_apps = Vec::new();
 
+    if crate::scanner::hash_scan::is_scan_cancelled() {
+        eprintln!("[Questionable Apps] ⛔ Cancelled before start");
+        return Ok(all_apps);
+    }
+
     // Scan registry
     match scan_installed_apps() {
         Ok(mut apps) => all_apps.append(&mut apps),
         Err(e) => eprintln!("Error scanning registry: {}", e),
     }
 
+    if crate::scanner::hash_scan::is_scan_cancelled() {
+        eprintln!("[Questionable Apps] ⛔ Cancelled after registry");
+        return Ok(all_apps);
+    }
+
     // Scan directories
     match scan_common_directories() {
         Ok(mut apps) => all_apps.append(&mut apps),
         Err(e) => eprintln!("Error scanning directories: {}", e),
+    }
+
+    if crate::scanner::hash_scan::is_scan_cancelled() {
+        eprintln!("[Questionable Apps] ⛔ Cancelled after directories");
+        return Ok(all_apps);
     }
 
     // Windows Store apps are now scanned in scan_installed_apps()

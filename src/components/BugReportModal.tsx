@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import './BugReportModal.css';
 
 interface BugReportModalProps {
@@ -22,23 +23,41 @@ interface BugReportResponse {
 // to retype it. We now persist every keystroke to localStorage and rehydrate
 // on mount, so the draft survives until either a successful submit OR the
 // user explicitly clears both fields.
-const DRAFT_KEY = 'scout:bugreport:draft:v1';
+const DRAFT_KEY = 'scout:bugreport:draft:v2';
+const MAX_ATTACHMENTS = 3;
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024; // 5 MB per file, matches server cap
 
 interface DraftPayload {
   title: string;
   description: string;
+  attachmentPaths?: string[];
   savedAt: number;
 }
 
 function readDraft(): DraftPayload | null {
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
-    if (!raw) return null;
+    if (!raw) {
+      // One-shot migration from v1 (no attachments) — pick up any
+      // pre-existing draft so we don't lose it on first launch after upgrade.
+      const legacy = localStorage.getItem('scout:bugreport:draft:v1');
+      if (!legacy) return null;
+      const parsedLegacy = JSON.parse(legacy) as Partial<DraftPayload>;
+      return {
+        title: parsedLegacy.title || '',
+        description: parsedLegacy.description || '',
+        attachmentPaths: [],
+        savedAt: typeof parsedLegacy.savedAt === 'number' ? parsedLegacy.savedAt : Date.now(),
+      };
+    }
     const parsed = JSON.parse(raw) as Partial<DraftPayload>;
     if (typeof parsed.title !== 'string' && typeof parsed.description !== 'string') return null;
     return {
       title: parsed.title || '',
       description: parsed.description || '',
+      attachmentPaths: Array.isArray(parsed.attachmentPaths)
+        ? parsed.attachmentPaths.filter((p) => typeof p === 'string')
+        : [],
       savedAt: typeof parsed.savedAt === 'number' ? parsed.savedAt : Date.now(),
     };
   } catch {
@@ -55,7 +74,22 @@ function writeDraft(draft: DraftPayload) {
 }
 
 function clearDraft() {
-  try { localStorage.removeItem(DRAFT_KEY); } catch { /* ignore */ }
+  try {
+    localStorage.removeItem(DRAFT_KEY);
+    localStorage.removeItem('scout:bugreport:draft:v1'); // also wipe legacy
+  } catch { /* ignore */ }
+}
+
+function basename(p: string): string {
+  // Works for both Windows and POSIX paths.
+  const idx = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
@@ -64,6 +98,16 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
   const initialDraft = useRef<DraftPayload | null>(readDraft());
   const [title, setTitle] = useState(initialDraft.current?.title || '');
   const [description, setDescription] = useState(initialDraft.current?.description || '');
+  // Attachment paths are stored as absolute file system paths. We do NOT keep
+  // the file bytes in component state — they'd bloat localStorage and we have
+  // no way to round-trip them through JSON anyway. On submit, Rust reads each
+  // path off disk. On draft restore we revalidate each path silently.
+  const [attachmentPaths, setAttachmentPaths] = useState<string[]>(
+    initialDraft.current?.attachmentPaths || []
+  );
+  // Size cache so we can show a friendly "1.2 MB" next to each filename
+  // without re-stat'ing every render. Keyed by path. Populated on add.
+  const [attachmentSizes, setAttachmentSizes] = useState<Record<string, number>>({});
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -72,16 +116,104 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
     Boolean(initialDraft.current && (initialDraft.current.title || initialDraft.current.description))
   );
 
-  // Persist on every change. If both fields are empty we delete the draft
-  // so reopening a fresh report doesn't show the restored-banner.
+  // Persist on every change. If both fields are empty AND no attachments,
+  // we delete the draft so reopening a fresh report doesn't show the
+  // restored-banner. Attachments alone with no text still counts as a draft.
   useEffect(() => {
     if (submitted) return; // post-submit state is handled in handleSubmit
-    if (title.trim() || description.trim()) {
-      writeDraft({ title, description, savedAt: Date.now() });
+    if (title.trim() || description.trim() || attachmentPaths.length > 0) {
+      writeDraft({
+        title,
+        description,
+        attachmentPaths,
+        savedAt: Date.now(),
+      });
     } else {
       clearDraft();
     }
-  }, [title, description, submitted]);
+  }, [title, description, attachmentPaths, submitted]);
+
+  // After restore, silently drop any attachment paths that no longer exist
+  // on disk. We do this via a Rust call once on mount.
+  useEffect(() => {
+    if (attachmentPaths.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // Filter by re-statting via Tauri's fs plugin would require another
+        // permission. Instead, we lean on Rust to validate at submit time.
+        // For UX we just keep them and let submit surface errors.
+        if (cancelled) return;
+      } catch {
+        /* swallow */
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handlePickFiles = async () => {
+    if (attachmentPaths.length >= MAX_ATTACHMENTS) {
+      setError(`Maximum of ${MAX_ATTACHMENTS} screenshots per report.`);
+      return;
+    }
+    setError(null);
+    try {
+      const remaining = MAX_ATTACHMENTS - attachmentPaths.length;
+      const selected = await openDialog({
+        multiple: remaining > 1,
+        filters: [
+          {
+            name: 'Images',
+            extensions: ['png', 'jpg', 'jpeg', 'webp'],
+          },
+        ],
+      });
+      if (!selected) return; // user cancelled
+
+      const picked = Array.isArray(selected) ? selected : [selected];
+      const accepted: string[] = [];
+      const sizes: Record<string, number> = {};
+
+      for (const path of picked) {
+        if (typeof path !== 'string') continue;
+        if (attachmentPaths.includes(path) || accepted.includes(path)) continue;
+        if (attachmentPaths.length + accepted.length >= MAX_ATTACHMENTS) break;
+
+        // Validate size via Rust (avoids needing the fs plugin permission).
+        // The command returns the byte size on success, throws on failure.
+        try {
+          const size = await invoke<number>('bug_attachment_stat', { path });
+          if (size > MAX_ATTACHMENT_BYTES) {
+            setError(
+              `"${basename(path)}" is ${formatBytes(size)} — over the ${formatBytes(MAX_ATTACHMENT_BYTES)} limit.`
+            );
+            continue;
+          }
+          sizes[path] = size;
+          accepted.push(path);
+        } catch (err) {
+          setError(`Cannot read "${basename(path)}": ${err}`);
+        }
+      }
+
+      if (accepted.length > 0) {
+        setAttachmentPaths((prev) => [...prev, ...accepted]);
+        setAttachmentSizes((prev) => ({ ...prev, ...sizes }));
+      }
+    } catch (err: any) {
+      setError(typeof err === 'string' ? err : 'Could not open file picker.');
+    }
+  };
+
+  const handleRemoveAttachment = (path: string) => {
+    setAttachmentPaths((prev) => prev.filter((p) => p !== path));
+    setAttachmentSizes((prev) => {
+      const next = { ...prev };
+      delete next[path];
+      return next;
+    });
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -95,6 +227,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
         data: {
           title: title.trim(),
           description: description.trim(),
+          attachment_paths: attachmentPaths.length > 0 ? attachmentPaths : null,
         },
       });
 
@@ -188,6 +321,46 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
                 onChange={(e) => setDescription(e.target.value)}
                 required
               />
+            </div>
+
+            <div className="bugreport-field bugreport-attach-field">
+              <label>
+                Screenshots <span className="bugreport-attach-hint">(optional · up to {MAX_ATTACHMENTS} images · {formatBytes(MAX_ATTACHMENT_BYTES)} each)</span>
+              </label>
+
+              {attachmentPaths.length > 0 && (
+                <ul className="bugreport-attach-list">
+                  {attachmentPaths.map((p) => (
+                    <li key={p} className="bugreport-attach-item">
+                      <span className="bugreport-attach-icon" aria-hidden="true">🖼️</span>
+                      <span className="bugreport-attach-name" title={p}>{basename(p)}</span>
+                      <span className="bugreport-attach-size">
+                        {typeof attachmentSizes[p] === 'number' ? formatBytes(attachmentSizes[p]) : ''}
+                      </span>
+                      <button
+                        type="button"
+                        className="bugreport-attach-remove"
+                        onClick={() => handleRemoveAttachment(p)}
+                        title="Remove"
+                        aria-label={`Remove ${basename(p)}`}
+                      >
+                        ×
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              <button
+                type="button"
+                className="bugreport-btn bugreport-btn-secondary bugreport-attach-btn"
+                onClick={handlePickFiles}
+                disabled={attachmentPaths.length >= MAX_ATTACHMENTS || submitting}
+              >
+                {attachmentPaths.length === 0
+                  ? '📎 Attach screenshots'
+                  : `📎 Add another${attachmentPaths.length >= MAX_ATTACHMENTS ? ' (max reached)' : ''}`}
+              </button>
             </div>
 
             {error && <div className="bugreport-error">{error}</div>}

@@ -15,6 +15,8 @@ pub mod ios_apps;
 pub mod ios_notes;
 pub mod ios_media;     // Kept: scan_ios_backup_media used for backup media scanning
 pub mod ios_mtp;       // Kept: still referenced from lib.rs commands (will be fully removed later)
+pub mod ios_afc_sidecar; // New AFC live-triage engine (Phase 1: Python sidecar)
+pub mod ios_afc_commands; // Tauri commands bridging the sidecar to the UI
 // pub mod ios_browsers;  // Disabled: functionality covered by ios_backup_parser
 pub mod intrusion;
 pub mod app_classifier;

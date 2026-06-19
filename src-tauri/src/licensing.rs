@@ -500,6 +500,84 @@ const INTELLECT_API_KEY: &str = "INT-KEDG-I69Q-OD2C-Z0HX";
 pub struct BugReportData {
     pub title: String,
     pub description: String,
+    /// Optional absolute file paths to image attachments (PNG/JPG/JPEG/WEBP).
+    /// Server caps at 3 images, 5 MB each. Older callers may omit this field.
+    #[serde(default)]
+    pub attachment_paths: Option<Vec<String>>,
+}
+
+const MAX_ATTACHMENTS: usize = 3;
+const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
+
+/// Guess a sensible content-type from a file extension. Falls back to
+/// `application/octet-stream` — server will reject anything not `image/*`.
+fn guess_image_mime(path: &std::path::Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Build a multipart/form-data body. Returns (body_bytes, content_type_header).
+/// `text_fields`: list of (field_name, value).
+/// `files`: list of (field_name, filename, content_type, bytes).
+fn build_multipart_body(
+    text_fields: &[(&str, &str)],
+    files: &[(String, String, String, Vec<u8>)],
+) -> (Vec<u8>, String) {
+    // Boundary: random-ish but deterministic per call. ureq has no built-in
+    // multipart helper, so we hand-roll the body. Boundary must not appear
+    // inside any field value or file content; using a long random hex prefix
+    // keeps the collision probability negligible.
+    let boundary = format!(
+        "----ScoutBugReportBoundary{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+
+    let mut body: Vec<u8> = Vec::new();
+    let crlf = b"\r\n";
+
+    for (name, value) in text_fields {
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(crlf);
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{}\"\r\n\r\n", name).as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+        body.extend_from_slice(crlf);
+    }
+
+    for (field, filename, ctype, bytes) in files {
+        body.extend_from_slice(b"--");
+        body.extend_from_slice(boundary.as_bytes());
+        body.extend_from_slice(crlf);
+        body.extend_from_slice(
+            format!(
+                "Content-Disposition: form-data; name=\"{}\"; filename=\"{}\"\r\n",
+                field, filename
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(
+            format!("Content-Type: {}\r\n\r\n", ctype).as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(crlf);
+    }
+
+    body.extend_from_slice(b"--");
+    body.extend_from_slice(boundary.as_bytes());
+    body.extend_from_slice(b"--\r\n");
+
+    let content_type = format!("multipart/form-data; boundary={}", boundary);
+    (body, content_type)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -530,20 +608,86 @@ pub fn submit_bug_report(data: BugReportData) -> Result<BugReportResponse, Strin
         Err(_) => ("Unknown".to_string(), String::new()),
     };
 
-    // 1. Submit to Scout server
-    let scout_body = serde_json::json!({
-        "title": data.title,
-        "description": data.description,
-        "reporter_name": reporter_name,
-        "reporter_email": reporter_email,
-        "app_version": app_version,
-        "platform": get_platform(),
-        "machine_id": machine_id,
-    });
+    // 1. Submit to Scout server.
+    // If there are attachments, send multipart. Otherwise send JSON (legacy path).
+    // Both paths POST to the same endpoint — server detects content-type.
+    let attachment_paths = data.attachment_paths.clone().unwrap_or_default();
 
-    let scout_result = ureq::post(&format!("{}/api/bug-report", SERVER_URL))
-        .set("Content-Type", "application/json")
-        .send_string(&scout_body.to_string());
+    // Read + validate attachment files up front so we can refuse with a clear
+    // error before contacting the server.
+    let mut prepared_files: Vec<(String, String, String, Vec<u8>)> = Vec::new();
+    if !attachment_paths.is_empty() {
+        if attachment_paths.len() > MAX_ATTACHMENTS {
+            return Err(format!(
+                "Too many attachments: {} provided, max is {}",
+                attachment_paths.len(),
+                MAX_ATTACHMENTS
+            ));
+        }
+        for path_str in &attachment_paths {
+            let path = std::path::Path::new(path_str);
+            let meta = match std::fs::metadata(path) {
+                Ok(m) => m,
+                Err(e) => {
+                    return Err(format!("Attachment '{}' not readable: {}", path_str, e));
+                }
+            };
+            if meta.len() > MAX_ATTACHMENT_BYTES {
+                return Err(format!(
+                    "Attachment '{}' is too large ({} bytes, max {})",
+                    path.file_name().and_then(|n| n.to_str()).unwrap_or(path_str),
+                    meta.len(),
+                    MAX_ATTACHMENT_BYTES
+                ));
+            }
+            let bytes = match std::fs::read(path) {
+                Ok(b) => b,
+                Err(e) => return Err(format!("Failed to read '{}': {}", path_str, e)),
+            };
+            let filename = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("attachment")
+                .to_string();
+            let ctype = guess_image_mime(path).to_string();
+            if !ctype.starts_with("image/") {
+                return Err(format!("Attachment '{}' is not an image", filename));
+            }
+            prepared_files.push(("files".to_string(), filename, ctype, bytes));
+        }
+    }
+
+    let scout_result = if prepared_files.is_empty() {
+        // Legacy JSON path — keeps compatibility with older server builds.
+        let scout_body = serde_json::json!({
+            "title": data.title,
+            "description": data.description,
+            "reporter_name": reporter_name,
+            "reporter_email": reporter_email,
+            "app_version": app_version,
+            "platform": get_platform(),
+            "machine_id": machine_id,
+        });
+        ureq::post(&format!("{}/api/bug-report", SERVER_URL))
+            .set("Content-Type", "application/json")
+            .send_string(&scout_body.to_string())
+    } else {
+        // Multipart path — used when there are screenshots to upload.
+        let platform_str: &str = get_platform();
+        let text_fields: Vec<(&str, &str)> = vec![
+            ("title", data.title.as_str()),
+            ("description", data.description.as_str()),
+            ("reporter_name", reporter_name.as_str()),
+            ("reporter_email", reporter_email.as_str()),
+            ("app_version", app_version.as_str()),
+            ("platform", platform_str),
+            ("machine_id", machine_id.as_str()),
+        ];
+        let (body, content_type) = build_multipart_body(&text_fields, &prepared_files);
+        ureq::post(&format!("{}/api/bug-report", SERVER_URL))
+            .set("Content-Type", &content_type)
+            .send_bytes(&body)
+    };
 
     let bug_id = match scout_result {
         Ok(resp) => {

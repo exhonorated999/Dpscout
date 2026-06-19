@@ -9,6 +9,7 @@ use chrono::{Utc, TimeZone};
 use md5::{Md5, Digest};
 use super::android::{get_bundled_adb_path, create_hidden_command};
 use super::android_sms::{SmsMessage, MessageType};
+use crate::dlog;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -405,6 +406,7 @@ pub fn extract_messages_multisilo(
     device_id: Option<&str>
 ) -> Result<MultiSiloResult, String> {
     eprintln!("[Multi-Silo] Starting multi-silo message discovery...");
+    dlog!("[MULTISILO] Starting multi-silo discovery");
     
     let mut all_messages = Vec::new();
     let mut silos_scanned = Vec::new();
@@ -412,12 +414,16 @@ pub fn extract_messages_multisilo(
     // Check root access
     let has_root = check_root_access(app_handle, device_id);
     eprintln!("[Multi-Silo] Root access: {}", has_root);
+    dlog!("[MULTISILO] Root access: {}", has_root);
     
     // Silo 1: Standard Android Telephony Provider
     eprintln!("[Multi-Silo] Silo 1: Standard Telephony Provider");
+    dlog!("[MULTISILO] Silo 1 START: Standard Telephony (content://sms --limit 5000)");
+    let t1 = std::time::Instant::now();
     match extract_standard_telephony(app_handle, device_id) {
         Ok(messages) => {
             let count = messages.len();
+            dlog!("[MULTISILO] Silo 1 OK in {}ms — {} messages", t1.elapsed().as_millis(), count);
             silos_scanned.push(MessageSilo {
                 silo_name: "Standard Telephony".to_string(),
                 app_package: "com.android.providers.telephony".to_string(),
@@ -430,15 +436,19 @@ pub fn extract_messages_multisilo(
             eprintln!("[Multi-Silo] ✓ Standard Telephony: {} messages", count);
         }
         Err(e) => {
+            dlog!("[MULTISILO] Silo 1 FAILED in {}ms — {}", t1.elapsed().as_millis(), e);
             eprintln!("[Multi-Silo] ✗ Standard Telephony failed: {}", e);
         }
     }
     
     // Silo 2: Google RCS/Messages (Bugle DB)
     eprintln!("[Multi-Silo] Silo 2: Google Messages (RCS)");
+    dlog!("[MULTISILO] Silo 2 START: Google Messages bugle_db (run-as or root)");
+    let t2 = std::time::Instant::now();
     match scan_google_messages(app_handle, device_id, has_root) {
         Ok(messages) => {
             let count = messages.len();
+            dlog!("[MULTISILO] Silo 2 OK in {}ms — {} messages", t2.elapsed().as_millis(), count);
             silos_scanned.push(MessageSilo {
                 silo_name: "Google Messages (RCS)".to_string(),
                 app_package: "com.google.android.apps.messaging".to_string(),
@@ -451,6 +461,7 @@ pub fn extract_messages_multisilo(
             eprintln!("[Multi-Silo] ✓ Google Messages: {} messages", count);
         }
         Err(e) => {
+            dlog!("[MULTISILO] Silo 2 FAILED in {}ms — {}", t2.elapsed().as_millis(), e);
             eprintln!("[Multi-Silo] ✗ Google Messages failed: {}", e);
             silos_scanned.push(MessageSilo {
                 silo_name: "Google Messages (RCS)".to_string(),
@@ -465,9 +476,12 @@ pub fn extract_messages_multisilo(
     
     // Silo 3: Samsung OEM Messages
     eprintln!("[Multi-Silo] Silo 3: Samsung Messages");
+    dlog!("[MULTISILO] Silo 3 START: Samsung Messages message.db (root only)");
+    let t3 = std::time::Instant::now();
     match scan_samsung_messages(app_handle, device_id, has_root) {
         Ok(messages) => {
             let count = messages.len();
+            dlog!("[MULTISILO] Silo 3 OK in {}ms — {} messages", t3.elapsed().as_millis(), count);
             silos_scanned.push(MessageSilo {
                 silo_name: "Samsung Messages".to_string(),
                 app_package: "com.samsung.android.messaging".to_string(),
@@ -480,15 +494,19 @@ pub fn extract_messages_multisilo(
             eprintln!("[Multi-Silo] ✓ Samsung Messages: {} messages", count);
         }
         Err(e) => {
+            dlog!("[MULTISILO] Silo 3 FAILED in {}ms — {}", t3.elapsed().as_millis(), e);
             eprintln!("[Multi-Silo] ✗ Samsung Messages failed: {}", e);
         }
     }
     
     // Silo 4: Samsung Recycle Bin
     eprintln!("[Multi-Silo] Silo 4: Samsung Recycle Bin (Deleted Messages)");
+    dlog!("[MULTISILO] Silo 4 START: Samsung Recycle Bin (root only)");
+    let t4 = std::time::Instant::now();
     match scan_samsung_recycle_bin(app_handle, device_id, has_root) {
         Ok(messages) => {
             let count = messages.len();
+            dlog!("[MULTISILO] Silo 4 OK in {}ms — {} messages", t4.elapsed().as_millis(), count);
             silos_scanned.push(MessageSilo {
                 silo_name: "Samsung Recycle Bin".to_string(),
                 app_package: "com.samsung.android.messaging".to_string(),
@@ -501,6 +519,7 @@ pub fn extract_messages_multisilo(
             eprintln!("[Multi-Silo] ✓ Samsung Recycle Bin: {} messages", count);
         }
         Err(e) => {
+            dlog!("[MULTISILO] Silo 4 FAILED in {}ms — {}", t4.elapsed().as_millis(), e);
             eprintln!("[Multi-Silo] ✗ Samsung Recycle Bin failed: {}", e);
         }
     }

@@ -26,6 +26,9 @@ export interface KeywordScanConfig {
   selectedBackup?: string;
   selectedDevice?: string;
   deviceType?: string;
+  /// 'afc' = live AFC streaming (default for iOS, no file copies)
+  /// 'mtp' = legacy MTP copy path (kept for pre-iOS-9 devices)
+  iosBackend?: 'afc' | 'mtp';
 }
 
 export interface HashMatchingConfig {
@@ -105,6 +108,7 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
   const [selectedDrives, setSelectedDrives] = useState<string[]>([]);
   const [iosBackups, setIosBackups] = useState<any[]>([]);
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
+  const [iosBackend, setIosBackend] = useState<'afc' | 'mtp'>('afc');
   const [androidDevices, setAndroidDevices] = useState<string[]>([]);
 
   useEffect(() => {
@@ -114,6 +118,14 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       detectIosBackups();
     } else if (deviceType === 'android') {
       detectAndroidDevices();
+    }
+    // Eagerly load hash lists if hashMatching defaults to ON (e.g. iOS)
+    if (modules.hashMatching && !hashListsLoaded) {
+      loadHashLists();
+    }
+    // Eagerly load keyword lists if keywordSearch defaults to ON
+    if (modules.keywordSearch && !keywordListsLoaded) {
+      loadKeywordLists();
     }
   }, [deviceType]);
 
@@ -437,6 +449,41 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               <br />
               SCOUT will scan media files (photos &amp; videos) directly from the device and run hash matching.
             </p>
+
+            {/* Backend selector: AFC (default, streams over Apple File Conduit) vs MTP (legacy) */}
+            <div style={{
+              display: 'flex',
+              gap: '8px',
+              marginBottom: '12px',
+              padding: '10px',
+              border: '1px solid var(--color-border, #2a2f3a)',
+              borderRadius: '6px',
+              alignItems: 'center'
+            }}>
+              <span style={{ fontWeight: 600, fontSize: '0.85rem', marginRight: '6px' }}>
+                Transport:
+              </span>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                <input
+                  type="radio"
+                  name="ios-backend"
+                  checked={iosBackend === 'afc'}
+                  onChange={() => setIosBackend('afc')}
+                />
+                <span><strong>AFC (live)</strong> — stream hash, no copies</span>
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer', fontSize: '0.85rem' }}>
+                <input
+                  type="radio"
+                  name="ios-backend"
+                  checked={iosBackend === 'mtp'}
+                  onChange={() => setIosBackend('mtp')}
+                />
+                <span style={{ color: 'var(--color-text-muted, #8a8a8a)' }}>
+                  MTP <em>(legacy — copies files)</em>
+                </span>
+              </label>
+            </div>
 
             {iosBackups.length === 0 ? (
               <div className="warning-box">
@@ -955,7 +1002,8 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
                   const iosConfig = {
                     ...keywordConfig,
                     selectedDevice: selectedBackup || iosBackups[0]?.udid || undefined,
-                    deviceType: 'ios'
+                    deviceType: 'ios',
+                    iosBackend,
                   };
                   const hashConfig: HashMatchingConfig = {
                     selectedHashLists: availableHashLists

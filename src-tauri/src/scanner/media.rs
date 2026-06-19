@@ -192,6 +192,9 @@ pub fn scan_media_files(
     let media_files: Vec<MediaFile> = candidate_files
         .par_iter()
         .filter_map(|(path, media_type, file_size)| {
+            if crate::scanner::hash_scan::is_scan_cancelled() {
+                return None;
+            }
             process_media_file(
                 path,
                 media_type,
@@ -233,14 +236,27 @@ where
             continue;
         }
 
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Media Scan] ⛔ Cancelled during Phase 1 (discovery)");
+            return Ok(Vec::new());
+        }
+
         println!("Scanning directory: {}", scan_path);
         
+        let mut walked = 0usize;
         for entry in WalkDir::new(scan_path)
             .follow_links(false)
             .max_depth(10)
             .into_iter()
             .filter_map(|e| e.ok())
         {
+            // Periodic cancel check during deep walk
+            walked += 1;
+            if walked % 500 == 0 && crate::scanner::hash_scan::is_scan_cancelled() {
+                eprintln!("[Media Scan] ⛔ Cancelled mid-walk at {}", scan_path);
+                return Ok(Vec::new());
+            }
+
             let path = entry.path();
             
             if !path.is_file() {
@@ -296,6 +312,12 @@ where
     eprintln!("[Media Scan] Starting Phase 2: Processing {} files", total_files);
     
     for (idx, (path, media_type, file_size)) in candidate_files.iter().enumerate() {
+        // Check cancellation at every iteration
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Media Scan] ⛔ Cancelled at file {}/{}", idx, total_files);
+            return Ok(media_files);
+        }
+
         if let Ok(media_file) = process_media_file(
             path,
             media_type,

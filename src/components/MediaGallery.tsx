@@ -2,11 +2,29 @@ import React, { useState, useRef, useEffect } from 'react';
 import { MediaFile } from '../types/media';
 import { Button } from './Button';
 import './MediaGallery.css';
-import { invoke } from '@tauri-apps/api/core';
+import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { convertToMediaProtocol } from '../utils/mediaProtocol';
 import { LazyThumbnail } from './LazyThumbnail';
 import { useAndroidMedia } from '../hooks/useAndroidMedia';
 import { getVideoThumbnail } from '../utils/videoThumbnail';
+
+// ─── Module-level persistent thumbnail caches ────────────────────────────
+// These survive MediaGallery mount/unmount cycles, so closing and
+// reopening the Media Explorer does NOT re-fetch thumbnails that have
+// already been generated. Cleared on app restart (not persisted to disk).
+//
+// Keyed by AFC virtual path (e.g. "/DCIM/106APPLE/IMG_6785.MOV") or
+// local absolute path. data:image/jpeg;base64,... data URLs as values.
+//
+// Both maps are exported so the App-level "Clear Cache" handler can wipe
+// them if/when the user explicitly asks for a fresh fetch.
+export const persistentVideoThumbCache = new Map<string, string>();
+export const persistentImageThumbCache = new Map<string, string>();
+// Larger previews used by the Media Detail modal for iOS AFC images.
+// Separate cache so the small grid thumbs don't get evicted by full-size
+// loads, and so the modal can fall back to the small thumb instantly
+// while the full-res preview is fetched.
+export const persistentIosFullCache = new Map<string, string>();
 
 interface MediaGalleryProps {
   media: MediaFile[];
@@ -39,7 +57,9 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
   const { pullMediaFile, isPulling, getCachedFile } = useAndroidMedia();
   
   // Batch-generated video thumbnails: filePath -> cached thumbnail path
-  const [videoThumbnailMap, setVideoThumbnailMap] = useState<Map<string, string>>(new Map());
+  const [videoThumbnailMap, setVideoThumbnailMap] = useState<Map<string, string>>(
+    () => new Map(persistentVideoThumbCache)
+  );
 
   // Extension-based type sets for reliable classification
   const IMAGE_EXTS = new Set(['jpg','jpeg','png','gif','bmp','tiff','tif','webp','heic','heif','ico','raw','cr2','nef','arw','svg']);
@@ -67,7 +87,15 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
   videoThumbnailMapRef.current = videoThumbnailMap;
   
   useEffect(() => {
-    const localVideos = videos.filter(v => !v.isAndroidFile && !v.thumbnailPath);
+    // Skip videos that are remote (Android-shell-served or iOS AFC virtual
+    // paths). ffmpeg + canvas both need a real local file path; AFC
+    // paths like "/DCIM/106APPLE/IMG_6785.MOV" produce os-error-3 noise
+    // and asset.localhost 403s. iOS AFC video thumbs would require a
+    // dedicated daemon-side ffmpeg pipeline — until then, fall through
+    // to the camera placeholder.
+    const localVideos = videos.filter(
+      v => !v.isAndroidFile && !v.isIosAfcFile && !v.thumbnailPath
+    );
     console.log(`[VideoThumb] Effect fired: ${videos.length} videos, ${localVideos.length} local without thumb`);
     if (localVideos.length === 0) return;
     
@@ -99,6 +127,7 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
           if (result && !cancelled) {
             console.log(`[VideoThumb] [${i+1}] ffmpeg OK: ${video.fileName}`);
             newMap.set(video.filePath, result);
+            persistentVideoThumbCache.set(video.filePath, result);
             generated++;
             setVideoThumbnailMap(new Map(newMap));
             continue;
@@ -116,6 +145,7 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
           if (thumb && !cancelled) {
             console.log(`[VideoThumb] [${i+1}] canvas OK: ${video.fileName}`);
             newMap.set(video.filePath, thumb);
+            persistentVideoThumbCache.set(video.filePath, thumb);
             generated++;
             setVideoThumbnailMap(new Map(newMap));
           } else {
@@ -133,6 +163,113 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
     const timer = setTimeout(processQueue, 500);
     return () => { cancelled = true; clearTimeout(timer); };
   }, [videos.length]); // Re-run when video count changes
+
+  // ── iOS AFC video thumbnails ──
+  // The walk emits AFC virtual paths like /DCIM/106APPLE/IMG_6785.MOV that
+  // can't be touched by ffmpeg directly. Instead, ask the daemon to pipe
+  // AFC bytes through ffmpeg and hand us back a data-URL JPEG. We run this
+  // in serial (one AFC connection on the device) and slowly — the scan
+  // walk is already saturating AFC, so we yield aggressively between calls.
+  //
+  // GUARD against React.StrictMode double-effect-invocation. Without this,
+  // dev mode spawns TWO concurrent queues that hammer the daemon with the
+  // same paths in parallel, multiplying AFC contention and producing
+  // duplicate "Queue starting for N videos" logs.
+  const afcQueueRunningRef = React.useRef(false);
+  useEffect(() => {
+    const afcVideos = videos.filter(
+      v => v.isIosAfcFile && !videoThumbnailMapRef.current.has(v.filePath)
+    );
+    console.log(`[AfcThumb] Effect fired: ${afcVideos.length} AFC videos without thumb`);
+    if (afcVideos.length === 0) return;
+    if (afcQueueRunningRef.current) {
+      console.log('[AfcThumb] Queue already running — skipping duplicate StrictMode invocation');
+      return;
+    }
+
+    let cancelled = false;
+    const processAfcQueue = async () => {
+      if (cancelled) return;
+      afcQueueRunningRef.current = true;
+
+      // ─── PRIORITY GATE ────────────────────────────────────────────
+      // Auto-hash flags are the highest-priority investigative signal.
+      // Hold the (slow, lock-contending) AFC video queue until every
+      // flagged AFC image has either resolved or definitively failed.
+      // This guarantees CSAM hits render FIRST, not last.
+      const flaggedAfcImages = media.filter(
+        m => m.isIosAfcFile
+          && m.flags && Array.isArray(m.flags) && m.flags.length > 0
+          && getReliableType(m) === 'image'
+      );
+      if (flaggedAfcImages.length > 0) {
+        console.log(`[AfcThumb] Priority gate: waiting on ${flaggedAfcImages.length} flagged image thumbs before starting video queue`);
+        const gateDeadline = Date.now() + 90_000; // hard cap 90s so we never block forever
+        while (!cancelled && Date.now() < gateDeadline) {
+          const pending = flaggedAfcImages.filter(
+            m => !persistentImageThumbCache.has(m.filePath)
+          );
+          if (pending.length === 0) {
+            console.log('[AfcThumb] Priority gate cleared — all flagged image thumbs in cache');
+            break;
+          }
+          await new Promise(r => setTimeout(r, 500));
+        }
+        if (cancelled) return;
+      }
+
+      console.log(`[AfcThumb] Queue starting for ${afcVideos.length} videos`);
+      const newMap = new Map(videoThumbnailMapRef.current);
+      let generated = 0;
+      let consecutiveFails = 0;
+
+      try {
+        for (let i = 0; i < afcVideos.length; i++) {
+          if (cancelled) break;
+          // After 3 consecutive failures, back off for a while — AFC is
+          // probably saturated by the walk. Don't hammer it.
+          if (consecutiveFails >= 3) {
+            console.warn(`[AfcThumb] ${consecutiveFails} fails in a row, sleeping 5s`);
+            await new Promise(r => setTimeout(r, 5000));
+            consecutiveFails = 0;
+          }
+          const video = afcVideos[i];
+          console.log(`[AfcThumb] [${i+1}/${afcVideos.length}] Requesting: ${video.fileName} (${(video.fileSize / 1024 / 1024).toFixed(1)} MB)`);
+          try {
+            const result = await invoke<{ dataUrl: string }>('get_ios_afc_video_thumbnail', {
+              udid: video.iosUdid || null,
+              path: video.filePath,
+              maxDim: 320,
+            });
+            if (result?.dataUrl && !cancelled) {
+              console.log(`[AfcThumb] [${i+1}] OK: ${video.fileName}`);
+              newMap.set(video.filePath, result.dataUrl);
+              persistentVideoThumbCache.set(video.filePath, result.dataUrl);
+              generated++;
+              setVideoThumbnailMap(new Map(newMap));
+              consecutiveFails = 0;
+            } else {
+              consecutiveFails++;
+            }
+          } catch (err) {
+            console.warn(`[AfcThumb] [${i+1}] FAIL: ${video.fileName}`, err);
+            consecutiveFails++;
+          }
+          // Yield so other AFC operations (Range requests for the video
+          // player) can interleave between thumbnail generations.
+          await new Promise(r => setTimeout(r, 250));
+        }
+      } finally {
+        afcQueueRunningRef.current = false;
+        console.log(`[AfcThumb] Queue complete: ${generated}/${afcVideos.length} thumbnails generated`);
+      }
+    };
+
+    // Bigger delay than local thumbs — AFC is shared with the walk and
+    // we don't want to fight it from the moment the first video shows up.
+    const timer = setTimeout(processAfcQueue, 1500);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [videos.length]);
 
   // Get filtered media based on active category
   const getFilteredMedia = (): MediaFile[] => {
@@ -271,7 +408,16 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
             <Button variant="secondary" size="sm" onClick={onClose}>
               ✕ Close
             </Button>
-            <Button variant="secondary" size="sm" onClick={onClearCache}>
+            <Button variant="secondary" size="sm" onClick={() => {
+              // Investigators expect "Clear Cache" to drop in-memory thumbs
+              // too, so a re-scan or re-open starts fresh. Wipe both
+              // singleton maps AND local state, then forward to host.
+              persistentVideoThumbCache.clear();
+              persistentImageThumbCache.clear();
+              persistentIosFullCache.clear();
+              setVideoThumbnailMap(new Map());
+              onClearCache();
+            }}>
               🗑️ Clear Cache
             </Button>
           <Button variant="primary" size="sm" onClick={onStartScan} disabled={isScanning}>
@@ -279,6 +425,60 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
           </Button>
         </div>
       </div>
+
+      {/* iOS AFC disclaimer banner — shown when iPhone media is present.
+          AFC video thumbnails require streaming the full file off the
+          device over USB, so users coming from the near-instant Windows
+          / Android experience need to know up front that it's slow. */}
+      {(() => {
+        const iosVideosTotal = videos.filter(v => v.isIosAfcFile).length;
+        if (iosVideosTotal === 0) return null;
+        const iosVideosDone = videos.filter(
+          v => v.isIosAfcFile && videoThumbnailMap.has(v.filePath)
+        ).length;
+        const allDone = iosVideosDone >= iosVideosTotal;
+        return (
+          <div
+            className="ios-thumb-disclaimer"
+            style={{
+              background: allDone
+                ? 'rgba(52, 168, 83, 0.10)'
+                : 'rgba(255, 184, 0, 0.12)',
+              border: `1px solid ${allDone ? 'rgba(52, 168, 83, 0.45)' : 'rgba(255, 184, 0, 0.40)'}`,
+              borderRadius: 8,
+              padding: '10px 14px',
+              margin: '0 16px 12px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              fontSize: 13,
+              color: 'var(--color-text-primary, #e6e6e6)',
+            }}
+          >
+            <span style={{ fontSize: 18, lineHeight: 1 }}>
+              {allDone ? '✅' : '⏳'}
+            </span>
+            <div style={{ flex: 1, lineHeight: 1.45 }}>
+              {allDone ? (
+                <>
+                  <strong>iPhone video thumbnails complete</strong>
+                  {' '}— {iosVideosDone} of {iosVideosTotal} generated.
+                </>
+              ) : (
+                <>
+                  <strong>
+                    iPhone video thumbnails: {iosVideosDone} of {iosVideosTotal} generated
+                  </strong>
+                  {' '}— iOS recordings are streamed live over USB,
+                  which is slower than local Windows / Android scans.
+                  Large 4K videos can take 30–60 seconds each.
+                  This is normal — you can continue browsing while they load.
+                </>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Category Tabs */}
       <div className="category-tabs">
@@ -364,6 +564,8 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
                   pullMediaFile={pullMediaFile}
                   getCachedFile={getCachedFile}
                   preGeneratedThumbnail={videoThumbnailMap.get(item.filePath)}
+                  onToggleFlag={onToggleFlag}
+                  isFlagged={isFlagged}
                 />
               ))}
             </div>
@@ -455,15 +657,33 @@ const MediaThumbnail: React.FC<{
   pullMediaFile?: (media: MediaFile) => Promise<any>;
   getCachedFile?: (filePath: string) => any;
   preGeneratedThumbnail?: string;
-}> = ({ media, onClick, pullMediaFile, getCachedFile, preGeneratedThumbnail }) => {
+  onToggleFlag?: (itemId: string) => void;
+  isFlagged?: (itemId: string) => boolean;
+}> = ({ media, onClick, pullMediaFile, getCachedFile, preGeneratedThumbnail, onToggleFlag, isFlagged }) => {
   const hasCriticalFlags = media.flags && Array.isArray(media.flags) && media.flags.some(f => f.severity === 'critical');
   const hasFlags = media.flags && Array.isArray(media.flags) && media.flags.length > 0;
+  // User "Tag as Evidence" state — independent of scanner flags
+  const itemId = `media-${media.filePath}`;
+  const evidenceFlagged = isFlagged?.(itemId) || false;
+  const handleEvidenceClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onToggleFlag?.(itemId);
+  };
   // Use extension for reliable type detection (mediaType from backend can be wrong)
   const ext = (media.extension || media.fileName?.split('.').pop() || '').toLowerCase();
   const VIDEO_EXT_SET = new Set(['mp4','avi','mov','wmv','flv','mkv','webm','m4v','mpg','mpeg','3gp','ogv','ts','mts']);
   const isVideo = VIDEO_EXT_SET.has(ext);
   const isAndroid = media.isAndroidFile;
-  const [thumbnailPath, setThumbnailPath] = React.useState(media.thumbnailPath || preGeneratedThumbnail || null);
+  const isIosAfc = media.isIosAfcFile;
+  // Seed from persistent cache (survives MediaGallery mount/unmount) before
+  // falling back to backend-provided thumbnailPath or pre-generated.
+  const [thumbnailPath, setThumbnailPath] = React.useState(
+    persistentImageThumbCache.get(media.filePath)
+      || media.thumbnailPath
+      || preGeneratedThumbnail
+      || null
+  );
   const [isGenerating, setIsGenerating] = React.useState(false);
   const [videoThumbnail, setVideoThumbnail] = React.useState<string | null>(null);
   const thumbnailRef = React.useRef<HTMLDivElement>(null);
@@ -509,6 +729,7 @@ const MediaThumbnail: React.FC<{
 
       if (result?.thumbnailPath) {
         setThumbnailPath(result.thumbnailPath);
+        persistentImageThumbCache.set(media.filePath, result.thumbnailPath);
       } else if (isVideo && result?.localPath) {
         // No backend thumbnail, generate in browser for videos
         const videoUrl = convertToMediaProtocol(result.localPath);
@@ -564,18 +785,94 @@ const MediaThumbnail: React.FC<{
     return () => observer.disconnect();
   }, [isAndroid, thumbnailPath, hasFlags, pullMediaFile, getCachedFile, generateThumbnail, isGenerating, media.filePath]);
 
+  // ─── iOS AFC live-triage: lazy thumbnail via Python sidecar ──────────────
+  // Per-item path handles IMAGES ONLY. AFC videos are handled exclusively
+  // by the gallery-level sequential queue (see useEffect near line 152),
+  // which has proper backoff/yield so it doesn't fight the walk hasher for
+  // the single AFC connection. Without this gate both code paths fire
+  // get_ios_afc_video_thumbnail for the same files, causing daemon-side
+  // serialization and starving image thumbnails on the Flagged tab.
+  React.useEffect(() => {
+    if (!isIosAfc || thumbnailPath || !media.filePath || isVideo) {
+      return;
+    }
+
+    let cancelled = false;
+    const fetchAfcThumb = async () => {
+      if (hasAttemptedGeneration.current) return;
+      hasAttemptedGeneration.current = true;
+      setIsGenerating(true);
+      try {
+        const r = await invoke<{ dataUrl: string }>('get_ios_afc_thumbnail', {
+          udid: media.iosUdid || null,
+          path: media.filePath,
+          maxDim: 256,
+        });
+        // ALWAYS persist on success — even if this component was unmounted
+        // mid-await. Otherwise React StrictMode / parent re-renders that
+        // toggle `cancelled=true` between invoke and resolve cause us to
+        // throw away the result, so the next mount fires another invoke and
+        // the loop repeats forever. The next mount reads the cache via the
+        // initial useState() seed.
+        //
+        // Also: drop the `!cancelled` guard on setThumbnailPath. Under
+        // StrictMode the first effect's cleanup runs `cancelled=true` before
+        // the in-flight fetch resolves; but the SECOND effect run skips
+        // re-fetching because hasAttemptedGeneration is set, so without the
+        // unconditional setState the component sits on `isGenerating=true`
+        // forever. React drops state updates on truly-unmounted components
+        // (with a dev warning), so this is safe.
+        if (r?.dataUrl) {
+          persistentImageThumbCache.set(media.filePath, r.dataUrl);
+          setThumbnailPath(r.dataUrl);
+        }
+      } catch (err) {
+        // Common: unsupported codec/format, file too large, transient AFC
+        // error, ffmpeg fails on weird MOV layouts. Surface once.
+        console.warn('[iOS AFC thumb]', media.fileName, err);
+      } finally {
+        if (!cancelled) setIsGenerating(false);
+      }
+    };
+
+    // Flagged items: fetch immediately. Otherwise wait for viewport.
+    if (hasFlags) {
+      fetchAfcThumb();
+    } else {
+      const observer = new IntersectionObserver(
+        (entries) => {
+          if (entries[0].isIntersecting) {
+            fetchAfcThumb();
+            observer.disconnect();
+          }
+        },
+        { rootMargin: '200px' }
+      );
+      if (thumbnailRef.current) observer.observe(thumbnailRef.current);
+      return () => {
+        cancelled = true;
+        observer.disconnect();
+      };
+    }
+    return () => {
+      cancelled = true;
+    };
+  }, [isIosAfc, thumbnailPath, isVideo, media.filePath, media.iosUdid, media.fileName, hasFlags]);
+
   // No individual video thumbnail generation — handled by sequential queue at MediaGallery level
 
   return (
     <div
       ref={thumbnailRef}
-      className={`media-thumbnail ${hasCriticalFlags ? 'critical' : ''} ${hasFlags ? 'flagged' : ''} ${isVideo ? 'video' : ''} ${isAndroid ? 'android' : ''}`}
+      className={`media-thumbnail ${hasCriticalFlags ? 'critical' : ''} ${hasFlags ? 'flagged' : ''} ${evidenceFlagged ? 'evidence-flagged' : ''} ${isVideo ? 'video' : ''} ${isAndroid ? 'android' : ''}`}
       onClick={onClick}
       title={isAndroid ? 'Click to pull from device and view' : (isVideo ? 'Click to play video' : 'Click to view details')}
     >
       <div className="thumbnail-image-container">
-        {/* Local videos: use <video> element — browser shows first frame automatically */}
-        {isVideo && !isAndroid && media.filePath ? (
+        {/* Local videos: use <video> element — browser shows first frame automatically.
+            Skip Android (no local path) and iOS AFC (asset protocol 403s; thumb arrives via
+            daemon as a data URL in `thumbnailPath`). */}
+        {isVideo && !isAndroid && !isIosAfc && media.filePath ? (
           <video
             src={convertToMediaProtocol(media.filePath) + '#t=0.1'}
             muted
@@ -607,19 +904,23 @@ const MediaThumbnail: React.FC<{
         ) : isGenerating ? (
           <div className="thumbnail-placeholder">
             <div className="loading-spinner-small"></div>
-            <div className="generating-text">Generating...</div>
+            <div className="generating-text">
+              {isIosAfc ? 'Streaming…' : 'Generating...'}
+            </div>
           </div>
         ) : isVideo ? (
           <div className="thumbnail-placeholder">
             <div className="video-icon">🎥</div>
             <div className="video-filename">{media.fileName}</div>
             {isAndroid && <div className="android-badge">📱 On Device</div>}
+            {isIosAfc && <div className="android-badge">📱 On iPhone</div>}
           </div>
         ) : (
           <div className="thumbnail-placeholder">
             <div className="image-icon">🖼️</div>
             <div className="image-filename">{media.fileName}</div>
             {isAndroid && <div className="android-badge">📱 On Device</div>}
+            {isIosAfc && <div className="android-badge">📱 On iPhone</div>}
           </div>
         )}
 
@@ -646,6 +947,23 @@ const MediaThumbnail: React.FC<{
 
       {hasCriticalFlags && (
         <div className="critical-badge">🚨 CRITICAL</div>
+      )}
+
+      {/* Evidence-flag toggle button (user "Tag as Evidence" — distinct from scanner flags) */}
+      {onToggleFlag && (
+        <button
+          type="button"
+          className={`evidence-flag-button ${evidenceFlagged ? 'is-flagged' : ''}`}
+          onClick={handleEvidenceClick}
+          onMouseDown={(e) => e.stopPropagation()}
+          title={evidenceFlagged ? 'Tagged as Evidence — click to remove' : 'Tag as Evidence'}
+          aria-label={evidenceFlagged ? 'Remove evidence tag' : 'Tag as evidence'}
+        >
+          <span className="evidence-flag-icon">{evidenceFlagged ? '🔖' : '🏷️'}</span>
+          <span className="evidence-flag-label">
+            {evidenceFlagged ? 'Tagged' : 'Tag'}
+          </span>
+        </button>
       )}
 
       {/* File Info */}
@@ -737,6 +1055,66 @@ const MediaDetailModal: React.FC<{
 }> = ({ media, onClose, onOpenInExplorer, onToggleFlag, isFlagged }) => {
   const itemId = `media-${media.filePath}`;
   const flagged = isFlagged?.(itemId) || false;
+
+  // For iOS AFC images, neither `thumbnailPath` nor `localCachePath` is
+  // populated on the MediaFile object — the only thumbnail we have is the
+  // small (256px) data URL the grid fetched via `get_ios_afc_thumbnail` and
+  // stashed in `persistentImageThumbCache`. We:
+  //   1) show that small thumb immediately (better than the placeholder),
+  //   2) request a larger (1600px) preview from the daemon for the modal,
+  //   3) cache the larger preview in `persistentIosFullCache`.
+  // Falls through to the standard asset-protocol path for everything else.
+  const isIosAfc = media.isIosAfcFile;
+  const cachedSmall = isIosAfc
+    ? persistentImageThumbCache.get(media.filePath) || null
+    : null;
+  const cachedFull = isIosAfc
+    ? persistentIosFullCache.get(media.filePath) || null
+    : null;
+
+  const [iosPreview, setIosPreview] = React.useState<string | null>(
+    cachedFull || cachedSmall
+  );
+  const [iosLoading, setIosLoading] = React.useState<boolean>(
+    !!isIosAfc && !cachedFull
+  );
+  const [iosError, setIosError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    if (!isIosAfc || cachedFull) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await invoke<{ dataUrl: string }>('get_ios_afc_thumbnail', {
+          udid: media.iosUdid || null,
+          path: media.filePath,
+          maxDim: 1600,
+        });
+        if (cancelled) return;
+        if (r?.dataUrl) {
+          persistentIosFullCache.set(media.filePath, r.dataUrl);
+          setIosPreview(r.dataUrl);
+        }
+      } catch (err: any) {
+        if (cancelled) return;
+        console.warn('[MediaDetailModal] full preview failed:', media.fileName, err);
+        setIosError(String(err?.message || err || 'preview failed'));
+      } finally {
+        if (!cancelled) setIosLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isIosAfc, cachedFull, media.filePath]);
+
+  // Pick the best image source:
+  // - iOS AFC: iosPreview (full → small → null)
+  // - everything else: existing thumbnailPath / localCachePath
+  const previewSrc = isIosAfc
+    ? iosPreview
+    : (media.thumbnailPath || media.localCachePath || null);
+
   return (
     <div className="media-modal-overlay" onClick={onClose}>
       <div className="media-modal" onClick={(e) => e.stopPropagation()}>
@@ -747,12 +1125,26 @@ const MediaDetailModal: React.FC<{
 
         <div className="modal-body">
           <div className="modal-preview">
-            {media.thumbnailPath || media.localCachePath ? (
-              <img src={convertToMediaProtocol(media.thumbnailPath || media.localCachePath!)} alt={media.fileName} />
+            {previewSrc ? (
+              <img src={convertToMediaProtocol(previewSrc)} alt={media.fileName} />
+            ) : iosLoading ? (
+              <div className="preview-placeholder">
+                <div className="wt-spinner" />
+                <p>Loading preview from iPhone…</p>
+              </div>
             ) : (
               <div className="preview-placeholder">
                 {media.mediaType === 'video' ? '🎥' : '🖼️'}
                 {media.isAndroidFile && <p>File on Android device - click to pull</p>}
+                {isIosAfc && (
+                  <p>
+                    {media.mediaType === 'video'
+                      ? 'Video on iPhone — open the player to stream it'
+                      : iosError
+                        ? `Preview failed: ${iosError}`
+                        : 'Thumbnail not available (unsupported format or stream error)'}
+                  </p>
+                )}
               </div>
             )}
           </div>
@@ -875,6 +1267,28 @@ const VideoPlayerModal: React.FC<{
       try {
         setIsLoading(true);
         setVideoError(null);
+
+        // iOS AFC live-triage: hand the <video> element a URL pointed
+        // at our registered `scout-afc` URI scheme. On Windows/Tauri 2
+        // that resolves to http://scout-afc.localhost/<encoded-path>,
+        // which the Rust handler proxies through AFC byte-ranges.
+        // No file copy to disk — the element issues HTTP Range
+        // requests as it buffers.
+        if (media.isIosAfcFile) {
+          const afcPath = media.filePath || '';
+          if (!afcPath) {
+            setVideoError('iOS AFC video has no path');
+            setIsLoading(false);
+            return;
+          }
+          // convertFileSrc handles platform differences and encodes the
+          // path. The Rust handler strips any duplicate leading slashes
+          // introduced by the percent-encoding round-trip.
+          const url = convertFileSrc(afcPath, 'scout-afc');
+          console.log('[Video] iOS AFC src:', url);
+          setVideoSrc(url);
+          return;
+        }
         
         // Debug logging with explicit string conversion
         console.log('Video player preparing:', {
@@ -987,16 +1401,20 @@ const VideoPlayerModal: React.FC<{
                 <div className="video-error">
                   <p className="error-message">❌ {videoError}</p>
                   <p className="error-hint">
-                    {media.isAndroidFile && media.localCachePath
+                    {media.isIosAfcFile
+                      ? 'iOS AFC streaming failed. The codec may not be supported, the AFC connection may have dropped, or the file is too large to range-request. Try unplugging and reconnecting the iPhone.'
+                      : media.isAndroidFile && media.localCachePath
                       ? 'File pulled from device. Open with VLC or Windows Media Player for playback.'
                       : 'Try opening the file directly in a media player like VLC'}
                   </p>
-                  <button 
-                    className="open-external-button"
-                    onClick={() => onOpenInExplorer(media.localCachePath || mediaPath)}
-                  >
-                    📂 Open File Location
-                  </button>
+                  {!media.isIosAfcFile && (
+                    <button
+                      className="open-external-button"
+                      onClick={() => onOpenInExplorer(media.localCachePath || mediaPath)}
+                    >
+                      📂 Open File Location
+                    </button>
+                  )}
                 </div>
               )}
               <video

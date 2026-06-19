@@ -209,6 +209,49 @@
   font-weight: 700;
 }
 
+/* "License required" variant — used on tiles that are locked because the
+   user's demo / paid license has expired.  Slightly darker / more amber
+   than the "coming soon" pill so investigators read it as "your problem
+   to fix" rather than "Scout hasn't shipped this yet". */
+.coming-soon-pill.license-pill {
+  color: #f5b14e;
+  background: rgba(245, 177, 78, 0.12);
+  border-color: rgba(245, 177, 78, 0.45);
+  letter-spacing: 0.12em;
+}
+
+/* Tile-level locked state — kicks in alongside .disabled.  Keeps the
+   accent stripe visible so the icon is still recognizable but ghosted
+   out, and adds a faint amber outline so the lock state reads at a
+   glance. */
+.provider-tile.license-locked {
+  opacity: 0.5;
+  filter: grayscale(0.55);
+  border-color: rgba(245, 177, 78, 0.28);
+  background:
+    linear-gradient(135deg, rgba(245, 177, 78, 0.04), rgba(0, 0, 0, 0) 60%),
+    var(--tile-bg, #0d1424);
+}
+.provider-tile.license-locked .provider-accent-stripe {
+  opacity: 0.35;
+}
+
+/* In-page banner shown above the provider grid when the license is
+   expired — tells the user *why* some tiles are locked. */
+.warrant-license-banner {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 0.86rem;
+  line-height: 1.45;
+  color: #f5d39a;
+  background: rgba(245, 177, 78, 0.08);
+  border: 1px solid rgba(245, 177, 78, 0.35);
+}
+.warrant-license-banner strong {
+  color: #ffd98a;
+}
+
 .provider-cta {
   margin-top: auto;
   color: var(--accent, #6c8aed);

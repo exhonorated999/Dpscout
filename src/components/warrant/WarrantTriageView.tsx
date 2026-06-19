@@ -183,6 +183,12 @@ const SECTION_LABELS: Record<string, string> = {
   change_history: "Account Changes",
   emails: "Emails",
   drive_files: "Drive Files",
+  // Yahoo
+  account_action: "Account Actions",
+  // Kik
+  blocks: "Blocked Users",
+  media_messages: "Media Messages",
+  group_media: "Group Media",
 };
 
 const NEW_BUCKET_COLORS = [
@@ -1197,6 +1203,12 @@ const SECTION_ICONS: Record<string, string> = {
   change_history: "📝",
   emails: "✉️",
   drive_files: "📁",
+  // Yahoo
+  account_action: "🛠️",
+  // Kik
+  blocks: "🚫",
+  media_messages: "🖼️",
+  group_media: "🎞️",
 };
 
 const CaseOverview: React.FC<CaseOverviewProps> = ({

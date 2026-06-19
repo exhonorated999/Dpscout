@@ -168,15 +168,29 @@ pub fn scan_keywords(options: KeywordScanOptions) -> Result<Vec<KeywordMatch>, B
 
         eprintln!("Found {} files to scan", files.len());
 
+        // Early exit if cancelled
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Keyword Scan] ⛔ Cancelled before processing files");
+            return Ok(all_matches);
+        }
+
         // Process files in parallel
         let matches: Vec<KeywordMatch> = files
             .par_iter()
             .filter_map(|file_path| {
+                if crate::scanner::hash_scan::is_scan_cancelled() {
+                    return None;
+                }
                 scan_file(file_path, &all_keywords, &options).ok().flatten()
             })
             .collect();
 
         all_matches.extend(matches);
+
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Keyword Scan] ⛔ Cancelled after path: {}", scan_path);
+            return Ok(all_matches);
+        }
     }
 
     eprintln!("Total keyword matches found: {}", all_matches.len());
@@ -261,6 +275,12 @@ where
 
         // Process files sequentially to maintain progress order
         for (idx, file_path) in files.iter().enumerate() {
+            // Check cancellation at every iteration
+            if crate::scanner::hash_scan::is_scan_cancelled() {
+                eprintln!("[Keyword Scan] ⛔ Cancelled at file {}/{}", idx, files.len());
+                return Ok(all_matches);
+            }
+
             if let Ok(Some(keyword_match)) = scan_file(file_path, &all_keywords, &options) {
                 all_matches.push(keyword_match);
             }

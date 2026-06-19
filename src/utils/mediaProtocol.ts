@@ -18,7 +18,14 @@ export function convertToMediaProtocol(filePath: string): string {
     console.error('[Media Protocol] Invalid filePath:', filePath, 'type:', typeof filePath);
     return '';
   }
-  
+
+  // Data URLs and blob URLs are already directly renderable — never
+  // route them through Tauri's asset protocol (which would corrupt
+  // them by URL-encoding the base64 payload as a filesystem path).
+  if (filePath.startsWith('data:') || filePath.startsWith('blob:')) {
+    return filePath;
+  }
+
   // Normalize path for Windows
   let normalizedPath = filePath.replace(/\\/g, '/');
   

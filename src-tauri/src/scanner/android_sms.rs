@@ -5,6 +5,7 @@ use std::process::Command;
 use rusqlite::{Connection, Result as SqliteResult};
 use chrono::{DateTime, Utc, TimeZone};
 use super::android::{get_bundled_adb_path, create_hidden_command};
+use crate::dlog;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -915,6 +916,29 @@ pub async fn extract_android_sms(
 ) -> Result<SmsExtractionResult, String> {
     eprintln!("[SMS] Starting SMS extraction...");
     
+    // ── Diagnostic build: start a fresh log session on Desktop ──
+    #[cfg(feature = "diag")]
+    {
+        crate::diag_log::start_session(&format!(
+            "SMS triage — device_id={:?}, limit={:?}",
+            device_id, limit
+        ));
+        // Capture device fingerprint for the log
+        let adb_p = get_bundled_adb_path(&app_handle);
+        for prop in &[
+            "ro.product.model", "ro.product.brand", "ro.build.version.release",
+            "ro.build.version.sdk", "ro.build.id", "ro.build.display.id",
+        ] {
+            let mut c = create_hidden_command(&adb_p);
+            if let Some(d) = device_id.as_deref() { c.arg("-s").arg(d); }
+            c.args(&["shell", "getprop", prop]);
+            if let Ok(o) = c.output() {
+                let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                dlog!("[DEVICE] {} = {}", prop, v);
+            }
+        }
+    }
+    
     let device = device_id.as_deref();
     
     // Create temp directory for extraction
@@ -948,6 +972,11 @@ pub async fn extract_android_sms(
             let result = build_extraction_result(messages, "Multi-Silo Discovery");
             eprintln!("[SMS] ✓ Extraction complete: {} messages, {} threads",
                 result.total_messages, result.threads.len());
+            #[cfg(feature = "diag")]
+            crate::diag_log::end_session(&format!(
+                "SUCCESS (multi-silo) — {} messages, {} threads",
+                result.total_messages, result.threads.len()
+            ));
             return Ok(result);
         }
         Ok(_) => {
@@ -1000,9 +1029,18 @@ pub async fn extract_android_sms(
         Ok(res) => {
             eprintln!("[SMS] ✓ Extraction complete: {} messages, {} threads", 
                 res.total_messages, res.threads.len());
+            #[cfg(feature = "diag")]
+            crate::diag_log::end_session(&format!(
+                "SUCCESS — {} messages, {} threads",
+                res.total_messages, res.threads.len()
+            ));
             Ok(res)
         }
-        Err(e) => Err(e)
+        Err(e) => {
+            #[cfg(feature = "diag")]
+            crate::diag_log::end_session(&format!("FAILED — {}", e));
+            Err(e)
+        }
     }
 }
 
@@ -1072,6 +1110,7 @@ fn extract_sms_via_content_provider(
     limit: Option<usize>,
 ) -> Result<SmsExtractionResult, String> {
     eprintln!("[SMS] Using content provider method (no root/backup needed)");
+    dlog!("[METHOD2] Entering extract_sms_via_content_provider (multi-silo failed or returned 0)");
     
     let adb_path = get_bundled_adb_path(app_handle);
     let max_messages = limit.unwrap_or(5000);
@@ -1086,15 +1125,23 @@ fn extract_sms_via_content_provider(
         }
         let query = "content query --uri content://sms --projection _id:thread_id:address:person:date:date_sent:type:body:read:status --sort 'date DESC'";
         eprintln!("[SMS] Querying content://sms ...");
+        dlog!("[METHOD2] Calling: adb shell {}", query);
+        let t0 = std::time::Instant::now();
         
         if let Ok(output) = cmd.arg("shell").arg(query).output() {
+            let dt = t0.elapsed().as_millis();
+            dlog!("[METHOD2] content://sms returned in {}ms (status={}, stdout_len={})",
+                dt, output.status, output.stdout.len());
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let sms_msgs = parse_content_provider_rows(&stdout, false);
                 eprintln!("[SMS] content://sms returned {} messages", sms_msgs.len());
+                dlog!("[METHOD2] Parsed {} SMS rows", sms_msgs.len());
                 messages.extend(sms_msgs);
             } else {
                 eprintln!("[SMS] content://sms query failed");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                dlog!("[METHOD2] content://sms FAILED — stderr: {}", stderr.trim());
             }
         }
     }
@@ -1108,27 +1155,72 @@ fn extract_sms_via_content_provider(
         // MMS uses different columns: _id, thread_id, date (seconds not ms), msg_box (like type), sub (subject), read
         let query = "content query --uri content://mms --projection _id:thread_id:date:msg_box:sub:read --sort 'date DESC'";
         eprintln!("[SMS] Querying content://mms ...");
+        dlog!("[METHOD2] Calling: adb shell {}", query);
+        let t0 = std::time::Instant::now();
         
         if let Ok(output) = cmd.arg("shell").arg(query).output() {
+            let dt = t0.elapsed().as_millis();
+            dlog!("[METHOD2] content://mms returned in {}ms (status={}, stdout_len={})",
+                dt, output.status, output.stdout.len());
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let mut mms_msgs = parse_mms_content_rows(&stdout);
                 eprintln!("[SMS] content://mms returned {} messages", mms_msgs.len());
+                dlog!("[MMS-LOOP] content://mms returned {} rows — beginning per-message body/address resolution", mms_msgs.len());
+                
+                let loop_start = std::time::Instant::now();
+                let total = mms_msgs.len();
+                let mut body_calls: u64 = 0;
+                let mut addr_calls: u64 = 0;
+                let mut body_total_ms: u128 = 0;
+                let mut addr_total_ms: u128 = 0;
                 
                 // For each MMS, try to get the text body from content://mms/{id}/part
-                for msg in &mut mms_msgs {
+                for (idx, msg) in mms_msgs.iter_mut().enumerate() {
                     if msg.body.is_empty() {
+                        let t0 = std::time::Instant::now();
                         if let Some(body) = get_mms_text_part_via_adb(app_handle, device_id, msg.id) {
                             msg.body = body;
                         }
+                        let dt = t0.elapsed().as_millis();
+                        body_calls += 1;
+                        body_total_ms += dt;
                     }
                     // Try to get the sender/recipient address
                     if msg.address.is_empty() || msg.address == "Unknown" {
+                        let t0 = std::time::Instant::now();
                         if let Some(addr) = get_mms_address_via_adb(app_handle, device_id, msg.id) {
                             msg.address = addr;
                         }
+                        let dt = t0.elapsed().as_millis();
+                        addr_calls += 1;
+                        addr_total_ms += dt;
+                    }
+                    
+                    // Progress every 25 MMS — enough granularity to spot per-call slowdown without log spam
+                    if (idx + 1) % 25 == 0 || idx + 1 == total {
+                        let elapsed_s = loop_start.elapsed().as_secs_f64();
+                        let avg_body_ms = if body_calls > 0 { body_total_ms / body_calls as u128 } else { 0 };
+                        let avg_addr_ms = if addr_calls > 0 { addr_total_ms / addr_calls as u128 } else { 0 };
+                        let projected_total_s = if idx + 1 > 0 {
+                            elapsed_s * (total as f64) / ((idx + 1) as f64)
+                        } else { 0.0 };
+                        dlog!(
+                            "[MMS-LOOP] {}/{} ({:.1}%) — elapsed {:.1}s, projected total {:.1}s, avg body call {}ms, avg addr call {}ms",
+                            idx + 1, total,
+                            100.0 * (idx + 1) as f64 / total as f64,
+                            elapsed_s, projected_total_s,
+                            avg_body_ms, avg_addr_ms,
+                        );
                     }
                 }
+                
+                dlog!(
+                    "[MMS-LOOP] DONE — {} MMS processed in {:.1}s ({} body calls totaling {}ms, {} addr calls totaling {}ms)",
+                    total, loop_start.elapsed().as_secs_f64(),
+                    body_calls, body_total_ms,
+                    addr_calls, addr_total_ms,
+                );
                 
                 // Filter out MMS with no text body (pure image MMS etc.)
                 let mms_with_text: Vec<SmsMessage> = mms_msgs.into_iter()

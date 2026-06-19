@@ -212,6 +212,16 @@
   box-shadow: 0 8px 30px rgba(255, 0, 51, 0.5);
 }
 
+/* User-tagged-as-evidence ring (independent of scanner critical/flag) */
+.media-thumbnail.evidence-flagged {
+  border-color: #ffb800;
+  box-shadow: 0 0 0 2px rgba(255, 184, 0, 0.35), 0 0 18px rgba(255, 184, 0, 0.25);
+}
+
+.media-thumbnail.evidence-flagged:hover {
+  box-shadow: 0 8px 28px rgba(255, 184, 0, 0.45);
+}
+
 .media-thumbnail.video .thumbnail-image-container::after {
   content: '';
   position: absolute;
@@ -360,6 +370,58 @@
   50% {
     box-shadow: 0 0 20px rgba(255, 0, 51, 0.8);
   }
+}
+
+/* Evidence-flag toggle button — lower-right of every thumbnail.
+   Distinct from scanner flag-badge (top-right) and critical-badge (top-left). */
+.evidence-flag-button {
+  position: absolute;
+  bottom: 60px; /* sit just above the thumbnail-info bar */
+  right: var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 9px;
+  background-color: rgba(20, 20, 24, 0.78);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fff;
+  cursor: pointer;
+  z-index: 3;
+  backdrop-filter: blur(4px);
+  transition: background-color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+  opacity: 0.85;
+}
+
+.evidence-flag-button:hover {
+  background-color: rgba(255, 184, 0, 0.92);
+  border-color: #ffb800;
+  color: #1a1300;
+  transform: scale(1.04);
+  opacity: 1;
+}
+
+.evidence-flag-button.is-flagged {
+  background-color: rgba(255, 184, 0, 0.95);
+  border-color: #ffb800;
+  color: #1a1300;
+  opacity: 1;
+  box-shadow: 0 0 10px rgba(255, 184, 0, 0.6);
+}
+
+.evidence-flag-button.is-flagged:hover {
+  background-color: rgba(255, 200, 40, 1);
+}
+
+.evidence-flag-icon {
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.evidence-flag-label {
+  letter-spacing: 0.3px;
 }
 
 /* Thumbnail Info */

@@ -790,6 +790,12 @@ pub fn scan_all_browsers_for_drives(target_drives: Option<&[String]>) -> Result<
     let browser_paths = get_browser_paths_for_drives(target_drives);
 
     for (browser_type, browser_name, path) in browser_paths {
+        // Honor scan cancellation between browsers
+        if crate::scanner::hash_scan::is_scan_cancelled() {
+            eprintln!("[Browser Scan] ⛔ Cancelled before {}", browser_name);
+            return Ok(all_browser_data);
+        }
+
         eprintln!("Scanning {} at {:?}", browser_name, path);
         
         match browser_type {

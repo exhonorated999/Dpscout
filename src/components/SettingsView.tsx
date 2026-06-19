@@ -318,6 +318,18 @@ interface UpdateInfo {
   current_version?: string;
 }
 
+interface ManualUpdateInfo {
+  version: string;
+  product_type: string;
+  download_url: string;
+  website_url: string;
+  filename: string;
+  notes?: string;
+}
+
+const SERVER_URL = 'https://scout-server-production-1d65.up.railway.app';
+const IS_PORTABLE_BUILD = import.meta.env.VITE_PORTABLE === 'true';
+
 type UpdateProgress = {
   phase: 'idle' | 'checking' | 'downloading' | 'installing' | 'done' | 'error';
   percent: number;
@@ -339,6 +351,7 @@ const LicensePanel: React.FC = () => {
   const [activating, setActivating] = React.useState(false);
   const [checking, setChecking] = React.useState(false);
   const [updateProgress, setUpdateProgress] = React.useState<UpdateProgress>({ phase: 'idle', percent: 0, message: '' });
+  const [manualFallback, setManualFallback] = React.useState<ManualUpdateInfo | null>(null);
   const [message, setMessage] = React.useState('');
   const [error, setError] = React.useState('');
 
@@ -382,9 +395,21 @@ const LicensePanel: React.FC = () => {
     }
   };
 
+  const fetchManualFallback = async (): Promise<ManualUpdateInfo | null> => {
+    try {
+      const product = IS_PORTABLE_BUILD ? 'portable' : 'desktop';
+      const resp = await fetch(`${SERVER_URL}/api/updates/manual-info/${product}`);
+      if (!resp.ok) return null;
+      return (await resp.json()) as ManualUpdateInfo;
+    } catch {
+      return null;
+    }
+  };
+
   const handleCheckAndInstallUpdate = async () => {
     setUpdateProgress({ phase: 'checking', percent: 0, message: 'Checking for updates...' });
     setUpdateInfo(null);
+    setManualFallback(null);
     setError('');
     try {
       const { check } = await import('@tauri-apps/plugin-updater');
@@ -438,6 +463,10 @@ const LicensePanel: React.FC = () => {
     } catch (err) {
       console.error('Update error:', err);
       setUpdateProgress({ phase: 'error', percent: 0, message: String(err) });
+      // Auto-fetch manual-download fallback so legacy clients with mismatched
+      // pubkeys can still upgrade by downloading the installer directly.
+      const fallback = await fetchManualFallback();
+      if (fallback) setManualFallback(fallback);
     }
   };
 
@@ -699,6 +728,52 @@ const LicensePanel: React.FC = () => {
             <p style={{ color: '#ef4444', fontWeight: 600, margin: 0, fontSize: '13px' }}>
               ❌ Update failed: {updateProgress.message}
             </p>
+            {manualFallback && (
+              <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #2a3a4a' }}>
+                <p style={{ color: 'var(--color-text-secondary)', margin: '0 0 10px', fontSize: '13px', lineHeight: 1.45 }}>
+                  Your installed version can't verify the new signature (older builds were signed with a different key).
+                  Download <strong style={{ color: 'var(--color-text-primary)' }}>v{manualFallback.version}</strong> manually and run the installer —
+                  your license and settings will be preserved.
+                </p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  <a
+                    href={manualFallback.download_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'inline-block',
+                      padding: '8px 14px',
+                      background: 'linear-gradient(90deg, #6366f1, #8b5cf6)',
+                      color: '#fff',
+                      borderRadius: '4px',
+                      fontSize: '13px',
+                      fontWeight: 600,
+                      textDecoration: 'none',
+                    }}
+                  >
+                    ⬇ Download Installer ({manualFallback.version})
+                  </a>
+                  <a
+                    href={manualFallback.website_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{
+                      display: 'inline-block',
+                      padding: '8px 14px',
+                      background: 'transparent',
+                      color: 'var(--color-text-primary)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: '4px',
+                      fontSize: '13px',
+                      fontWeight: 500,
+                      textDecoration: 'none',
+                    }}
+                  >
+                    Visit dpscout.com
+                  </a>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
@@ -1380,7 +1455,7 @@ const HashListsPanel: React.FC<{
           // Refresh stats
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nTotal lists: ${updatedLists.length}\n\nLook for it in the left sidebar!`);
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nTotal lists: ${updatedLists.length}`);
         } finally {
           unlisten();
         }
@@ -1449,7 +1524,7 @@ const HashListsPanel: React.FC<{
           
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nType: ${hashType}\n\nLook for it in the left sidebar!`);
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nType: ${hashType}`);
         } finally {
           unlisten();
         }
@@ -2012,7 +2087,7 @@ const CustomAppsPanel: React.FC<{
       // Add new
       updatedApps = [...localApps, editingApp];
       console.log('Added new app', updatedApps);
-      alert(`✓ Added "${editingApp.name}"\nTotal apps: ${updatedApps.length}\n\nLook for it in the left sidebar!`);
+      alert(`✓ Added "${editingApp.name}"\nTotal apps: ${updatedApps.length}`);
     }
     
     // Update both local and parent state

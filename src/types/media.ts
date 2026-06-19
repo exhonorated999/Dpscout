@@ -19,6 +19,9 @@ export interface MediaFile {
   isAndroidFile?: boolean;
   androidSerial?: string;
   localCachePath?: string; // Path to locally cached file if pulled
+  // iOS AFC live-triage fields
+  isIosAfcFile?: boolean;
+  iosUdid?: string;
 }
 
 export type MediaType = 'image' | 'video' | 'unknown';

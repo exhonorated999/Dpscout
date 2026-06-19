@@ -11,7 +11,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4QzkxMDhDRkI1M0JDQjkKUldTNXZGUDdqQkRKU0hQcWJ5aVcyUjBndHdwV3pGeVNCT0diclM4T2gK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ4QzkxMDhDRkI1M0JDQjkKUldTNXZGUDdqQkRKU0hQcWJ5aUxZZURxWUxHTERPZ053aVcyUjBndHdwV3pGeVNCT0diclM4T2gK",
       "endpoints": [
         "https://scout-server-production-1d65.up.railway.app/api/updates/tauri/portable/{target}/{arch}/{current_version}"
       ],

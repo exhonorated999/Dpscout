@@ -1,11 +1,34 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import './WarrantLanding.css';
 
 /**
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
  * Adding a new provider here AND in Rust + setting `enabled: true` lights up the tile.
  */
-export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google';
+export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo';
+
+/**
+ * Providers that remain available when the demo trial / paid license has
+ * expired.  Everything else is greyed out until the user enters a valid
+ * license key in Settings.  This list is intentionally small — Meta and
+ * Google are the two highest-volume providers in the field and serve as
+ * the "free forever" tier when a customer hasn't upgraded yet.
+ */
+const POST_EXPIRY_ALLOWED: ReadonlySet<WarrantProvider> = new Set([
+  'meta',
+  'google',
+]);
+
+interface LicenseInfo {
+  registered: boolean;
+  agency_name?: string;
+  plan?: string;
+  status?: string;
+  expires_at?: string;
+  days_remaining: number;
+  is_expired: boolean;
+}
 
 interface ProviderTile {
   id: WarrantProvider;
@@ -68,6 +91,15 @@ const GoogleIcon = () => (
   </svg>
 );
 
+// Yahoo "Y!" mark in their purple brand color.
+const YahooIcon = () => (
+  <svg viewBox="0 0 48 48" width="44" height="44" fill="none">
+    <text x="24" y="34" textAnchor="middle" fontFamily="system-ui, sans-serif"
+      fontWeight="900" fontSize="28" fill="#7B0099" letterSpacing="-1">Y!</text>
+    <rect x="6" y="6" width="36" height="36" rx="9" stroke="#7B0099" strokeWidth="2.5"/>
+  </svg>
+);
+
 const PROVIDERS: ProviderTile[] = [
   {
     id: 'meta',
@@ -91,8 +123,8 @@ const PROVIDERS: ProviderTile[] = [
     id: 'kik',
     name: 'KIK',
     subtitle: 'KIK Messenger',
-    formatHint: 'Coming soon',
-    enabled: false,
+    formatHint: 'Kik Warrant Return (.zip or extracted folder)',
+    enabled: true,
     icon: <KikIcon />,
     accent: '#82C341',
   },
@@ -114,9 +146,44 @@ const PROVIDERS: ProviderTile[] = [
     icon: <GoogleIcon />,
     accent: '#4285F4',
   },
+  {
+    id: 'yahoo',
+    name: 'Yahoo',
+    subtitle: 'Yahoo Inc.',
+    formatHint: 'Yahoo Warrant Return (.zip or YAHOO-{caseId} folder)',
+    enabled: true,
+    icon: <YahooIcon />,
+    accent: '#7B0099',
+  },
 ];
 
 export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelectProvider }) => {
+  // Pull license status once on mount.  When the demo / paid license has
+  // expired we still allow Meta + Google as a "free forever" tier so the
+  // user can keep working on the most common returns; all other providers
+  // are visibly greyed out with a license-required hint until the user
+  // enters a key in Settings.
+  const [licenseExpired, setLicenseExpired] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await invoke<LicenseInfo>('get_license_status');
+        if (!cancelled) setLicenseExpired(Boolean(info?.is_expired));
+      } catch (err) {
+        // If we can't reach the backend / offline cache, default to "not
+        // expired" so we don't unfairly punish the user.  Settings will
+        // surface the real status separately.
+        console.warn('[WarrantLanding] get_license_status failed:', err);
+        if (!cancelled) setLicenseExpired(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <div className="warrant-landing">
       <button className="warrant-back-button" onClick={onBack} title="Back to start">
@@ -131,37 +198,66 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
             Each provider ships warrant returns in a different format.
             Pick the one that matches the data the detective brought you.
           </p>
+          {licenseExpired && (
+            <div className="warrant-license-banner" role="status">
+              ⚠ Your trial / license has expired. Meta and Google returns
+              remain available — enter a license key in <strong>Settings</strong>
+              {' '}to re-enable Snapchat, KIK, Discord, and Yahoo.
+            </div>
+          )}
         </div>
 
         <div className="provider-grid">
-          {PROVIDERS.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              className={`provider-tile ${p.enabled ? 'enabled' : 'disabled'}`}
-              onClick={() => p.enabled && onSelectProvider(p.id)}
-              disabled={!p.enabled}
-              style={{ ['--accent' as any]: p.accent }}
-              aria-label={`${p.name} — ${p.enabled ? 'available' : 'coming soon'}`}
-            >
-              <div className="provider-accent-stripe" />
-              <div className="provider-icon-wrap">{p.icon}</div>
-              <div className="provider-meta">
-                <div className="provider-name">{p.name}</div>
-                <div className="provider-subtitle">{p.subtitle}</div>
-                <div className="provider-format-hint">
-                  {p.enabled ? (
-                    <>Looking for: <code>{p.formatHint}</code></>
-                  ) : (
-                    <span className="coming-soon-pill">Coming soon</span>
-                  )}
+          {PROVIDERS.map((p) => {
+            const lockedByLicense =
+              licenseExpired && !POST_EXPIRY_ALLOWED.has(p.id);
+            const tileEnabled = p.enabled && !lockedByLicense;
+            return (
+              <button
+                key={p.id}
+                type="button"
+                className={`provider-tile ${tileEnabled ? 'enabled' : 'disabled'}${
+                  lockedByLicense ? ' license-locked' : ''
+                }`}
+                onClick={() => tileEnabled && onSelectProvider(p.id)}
+                disabled={!tileEnabled}
+                style={{ ['--accent' as any]: p.accent }}
+                aria-label={`${p.name} — ${
+                  lockedByLicense
+                    ? 'license required'
+                    : p.enabled
+                      ? 'available'
+                      : 'coming soon'
+                }`}
+                title={
+                  lockedByLicense
+                    ? 'Trial expired — enter a license key in Settings to unlock this provider'
+                    : undefined
+                }
+              >
+                <div className="provider-accent-stripe" />
+                <div className="provider-icon-wrap">{p.icon}</div>
+                <div className="provider-meta">
+                  <div className="provider-name">{p.name}</div>
+                  <div className="provider-subtitle">{p.subtitle}</div>
+                  <div className="provider-format-hint">
+                    {lockedByLicense ? (
+                      <span className="coming-soon-pill license-pill">
+                        🔒 License required
+                      </span>
+                    ) : p.enabled ? (
+                      <>
+                        Looking for: <code>{p.formatHint}</code>
+                      </>
+                    ) : (
+                      <span className="coming-soon-pill">Coming soon</span>
+                    )}
+                  </div>
                 </div>
-              </div>
-              {p.enabled && (
-                <div className="provider-cta">Select →</div>
-              )}
-            </button>
-          ))}
+                {tileEnabled && <div className="provider-cta">Select →</div>}
+              </button>
+            );
+          })}
         </div>
 
         <div className="warrant-footer-note">

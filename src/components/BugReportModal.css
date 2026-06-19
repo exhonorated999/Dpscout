@@ -300,3 +300,93 @@
   font-family: monospace;
   margin-bottom: 20px !important;
 }
+
+/* ── Attachment picker ──────────────────────────────────────── */
+
+.bugreport-attach-field {
+  margin-top: -6px;
+}
+
+.bugreport-attach-hint {
+  color: rgba(255, 255, 255, 0.45);
+  font-weight: 400;
+  font-size: 0.78rem;
+  margin-left: 4px;
+}
+
+.bugreport-attach-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bugreport-attach-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 6px;
+}
+
+.bugreport-attach-icon {
+  font-size: 1.05rem;
+  flex-shrink: 0;
+}
+
+.bugreport-attach-name {
+  flex: 1 1 auto;
+  color: #ffffff;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.bugreport-attach-size {
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.bugreport-attach-remove {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: rgba(255, 255, 255, 0.7);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.bugreport-attach-remove:hover {
+  background: rgba(255, 70, 70, 0.18);
+  border-color: rgba(255, 70, 70, 0.55);
+  color: #ff8a8a;
+}
+
+.bugreport-attach-btn {
+  align-self: flex-start;
+  font-size: 0.85rem;
+  padding: 7px 14px;
+}
+
+.bugreport-attach-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+ 
