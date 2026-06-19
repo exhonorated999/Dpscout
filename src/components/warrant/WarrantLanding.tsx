@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './WarrantLanding.css';
+import { SubmitWarrantSample } from './SubmitWarrantSample';
 
 /**
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
@@ -164,6 +165,7 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
   // are visibly greyed out with a license-required hint until the user
   // enters a key in Settings.
   const [licenseExpired, setLicenseExpired] = useState(false);
+  const [showSampleSubmit, setShowSampleSubmit] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -264,7 +266,39 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
           The provider you pick determines how Scout parses the return.
           Picking the wrong one will fail validation — no data is lost.
         </div>
+
+        {/* CTA banner — submit an unsupported warrant return as a
+            structural sample so we can build a real parser. */}
+        <div
+          className="warrant-sample-cta"
+          role="button"
+          tabIndex={0}
+          onClick={() => setShowSampleSubmit(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.preventDefault();
+              setShowSampleSubmit(true);
+            }
+          }}
+        >
+          <div className="warrant-sample-cta-icon">📨</div>
+          <div className="warrant-sample-cta-text">
+            <div className="warrant-sample-cta-title">
+              Don't see your provider?
+            </div>
+            <div className="warrant-sample-cta-body">
+              Send us a structural fingerprint of the return — no case
+              content leaves your machine. We'll build a parser and
+              email you when it ships.
+            </div>
+          </div>
+          <div className="warrant-sample-cta-arrow">→</div>
+        </div>
       </div>
+
+      {showSampleSubmit && (
+        <SubmitWarrantSample onClose={() => setShowSampleSubmit(false)} />
+      )}
     </div>
   );
 };

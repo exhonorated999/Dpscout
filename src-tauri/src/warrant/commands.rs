@@ -514,3 +514,127 @@ pub async fn warrant_export_investigation_report(
         report_dir: folder.to_string_lossy().to_string(),
     })
 }
+
+// ─── Parser submission: structural sample ────────────────────────────────
+//
+// The user picks an unsupported warrant return; we build a JSON
+// "structural fingerprint" envelope describing its shape *without* any
+// case content, then POST it to the admin server so the parser author
+// can build a real parser from real shape data.  See
+// `src/warrant/sample/mod.rs` for the privacy model.
+
+const SAMPLE_SUBMIT_DEFAULT_URL: &str =
+    "https://scout-server-production-1d65.up.railway.app/api/parser-submission";
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildSampleArgs {
+    /// Path to a folder OR a `.zip` warrant return.
+    pub root_path: String,
+    /// Free-text provider hint typed by the user ("KIK return", "T-Mobile CDR",
+    /// "Apple iCloud zip", etc.).  Empty string is allowed.
+    #[serde(default)]
+    pub provider_hint: String,
+    /// Submitter contact info — frontend pre-fills from cached registration.
+    #[serde(default)]
+    pub submitter_email: String,
+    #[serde(default)]
+    pub agency_name: String,
+    /// Free-text notes from the submitter.
+    #[serde(default)]
+    pub submitter_notes: String,
+    /// Last-4 of the active license key (for audit), if any.
+    #[serde(default)]
+    pub license_key_last4: String,
+}
+
+#[tauri::command]
+pub async fn warrant_build_sample_envelope(
+    args: BuildSampleArgs,
+) -> Result<serde_json::Value, String> {
+    let root = PathBuf::from(&args.root_path);
+    if !root.exists() {
+        return Err(format!("path does not exist: {}", args.root_path));
+    }
+
+    // Heavy I/O — run on a blocking worker so the UI stays responsive.
+    let envelope = tauri::async_runtime::spawn_blocking(move || {
+        super::sample::build_envelope(
+            &root,
+            super::sample::BuildOptions {
+                provider_hint: args.provider_hint,
+                submitter_email: args.submitter_email,
+                submitter_notes: args.submitter_notes,
+                agency_name: args.agency_name,
+                license_key_last4: args.license_key_last4,
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("sample task join error: {}", e))?
+    .map_err(|e| e.to_string())?;
+
+    serde_json::to_value(&envelope)
+        .map_err(|e| format!("envelope serialization failed: {}", e))
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SubmitSampleArgs {
+    /// The envelope built by `warrant_build_sample_envelope`, passed
+    /// through verbatim.  We accept a raw JSON Value here so the
+    /// frontend can show / edit / save it before submitting and we
+    /// don't reject extra fields the user might add later.
+    pub envelope: serde_json::Value,
+    /// Override the default endpoint (useful for staging / self-host).
+    /// Empty string falls back to `SAMPLE_SUBMIT_DEFAULT_URL`.
+    #[serde(default)]
+    pub endpoint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SubmitSampleResponse {
+    pub status: u16,
+    pub body: String,
+    /// `endpoint` that was actually used (after default fallback).
+    pub endpoint: String,
+}
+
+#[tauri::command]
+pub async fn warrant_submit_sample_envelope(
+    args: SubmitSampleArgs,
+) -> Result<SubmitSampleResponse, String> {
+    let endpoint = if args.endpoint.trim().is_empty() {
+        SAMPLE_SUBMIT_DEFAULT_URL.to_string()
+    } else {
+        args.endpoint.clone()
+    };
+
+    let body = serde_json::to_string(&args.envelope)
+        .map_err(|e| format!("envelope serialization failed: {}", e))?;
+
+    let endpoint_for_call = endpoint.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || -> Result<SubmitSampleResponse, String> {
+        match ureq::post(&endpoint_for_call)
+            .timeout(std::time::Duration::from_secs(60))
+            .set("Content-Type", "application/json")
+            .set("User-Agent", concat!("DatapilotScout/", env!("CARGO_PKG_VERSION")))
+            .send_string(&body)
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.into_string().unwrap_or_default();
+                Ok(SubmitSampleResponse { status, body, endpoint: endpoint_for_call })
+            }
+            Err(ureq::Error::Status(status, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                Ok(SubmitSampleResponse { status, body, endpoint: endpoint_for_call })
+            }
+            Err(e) => Err(format!("submission failed: {}", e)),
+        }
+    })
+    .await
+    .map_err(|e| format!("submit task join error: {}", e))??;
+
+    Ok(result)
+}

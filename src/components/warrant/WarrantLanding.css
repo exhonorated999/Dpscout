@@ -269,3 +269,73 @@
   max-width: 640px;
   line-height: 1.6;
 }
+
+/* CTA banner — "Don't see your provider? Submit a structural sample." */
+.warrant-sample-cta {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  width: 100%;
+  max-width: 880px;
+  background: linear-gradient(
+    135deg,
+    rgba(74, 122, 255, 0.12),
+    rgba(93, 207, 255, 0.08)
+  );
+  border: 1px solid rgba(93, 207, 255, 0.35);
+  border-radius: 12px;
+  padding: 18px 22px;
+  cursor: pointer;
+  transition: border-color 0.18s, transform 0.18s, background 0.18s;
+  text-align: left;
+}
+
+.warrant-sample-cta:hover,
+.warrant-sample-cta:focus-visible {
+  border-color: rgba(93, 207, 255, 0.7);
+  background: linear-gradient(
+    135deg,
+    rgba(74, 122, 255, 0.18),
+    rgba(93, 207, 255, 0.14)
+  );
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.warrant-sample-cta-icon {
+  font-size: 30px;
+  line-height: 1;
+  flex-shrink: 0;
+  filter: drop-shadow(0 0 6px rgba(93, 207, 255, 0.5));
+}
+
+.warrant-sample-cta-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.warrant-sample-cta-title {
+  color: #fff;
+  font-size: 0.98rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.warrant-sample-cta-body {
+  color: rgba(232, 236, 246, 0.75);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+.warrant-sample-cta-arrow {
+  color: #5dcfff;
+  font-size: 22px;
+  font-weight: 700;
+  flex-shrink: 0;
+  transition: transform 0.18s;
+}
+
+.warrant-sample-cta:hover .warrant-sample-cta-arrow {
+  transform: translateX(4px);
+}

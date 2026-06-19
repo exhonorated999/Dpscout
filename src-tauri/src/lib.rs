@@ -2602,7 +2602,10 @@ pub fn run() {
             warrant::commands::warrant_remove_return_from_investigation,
             warrant::commands::warrant_delete_investigation,
             warrant::commands::warrant_find_investigation_for_return,
-            warrant::commands::warrant_export_investigation_report
+            warrant::commands::warrant_export_investigation_report,
+            // Parser submission — structural sample envelope
+            warrant::commands::warrant_build_sample_envelope,
+            warrant::commands::warrant_submit_sample_envelope
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
