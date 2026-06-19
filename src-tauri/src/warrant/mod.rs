@@ -19,6 +19,7 @@ pub mod report_investigation;
 pub mod commands;
 pub mod scan;
 pub mod investigation;
+pub mod sample;
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
