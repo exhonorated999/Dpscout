@@ -131,7 +131,7 @@ const DialogModal: React.FC<{
 
 // Tab metadata: order, label, and subtitle shown under the page header.
 // Profile is intentionally NOT first — Keyword Lists is the default landing tab.
-type TabId = 'keywords' | 'hashes' | 'apps' | 'options' | 'profile' | 'reports' | 'license' | 'documentation';
+type TabId = 'keywords' | 'hashes' | 'apps' | 'options' | 'profile' | 'reports' | 'license' | 'privacy' | 'documentation';
 
 const TAB_CONFIG: Array<{ id: TabId; label: string; subtitle: string }> = [
   { id: 'keywords',      label: '🔍 Keyword Lists',     subtitle: 'Import and manage keyword lists used during scans. Each list can be toggled on or off per scan.' },
@@ -141,6 +141,7 @@ const TAB_CONFIG: Array<{ id: TabId; label: string; subtitle: string }> = [
   { id: 'profile',       label: '👤 Profile',           subtitle: 'Officer name, badge number, and agency name — included in the header of every generated PDF report.' },
   { id: 'reports',       label: '📄 Encrypted Reports', subtitle: 'View, open, and delete encrypted reports stored on this machine. Password required to view a report.' },
   { id: 'license',       label: '🔑 License',           subtitle: 'License status, expiration, and update checks for this installation.' },
+  { id: 'privacy',       label: '🛡️ Privacy',           subtitle: 'Anonymous usage telemetry — what we collect, what we never collect, and how to opt out.' },
   { id: 'documentation', label: '📚 Scan Documentation', subtitle: 'Reference documentation for each scan module and what it collects.' },
 ];
 
@@ -276,6 +277,10 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ settings, onSave, on
             <LicensePanel />
           )}
 
+          {activeTab === 'privacy' && (
+            <PrivacyPanel />
+          )}
+
           {activeTab === 'documentation' && (
             <ScanDocumentationPanel />
           )}
@@ -343,6 +348,157 @@ interface ActivateResponse {
   days_remaining?: number;
   message?: string;
 }
+
+// ─── Privacy / Telemetry Panel ─────────────────────────────────────────
+// Discloses exactly what we send to the licensing server for sales-lead
+// analytics, and lets the examiner opt out with one click. Default is ON
+// (opt-out, not opt-in) — matches the product decision recorded in the
+// project notes.
+const PrivacyPanel: React.FC = () => {
+  const [enabled, setEnabled] = React.useState<boolean>(true);
+  const [loading, setLoading] = React.useState<boolean>(true);
+  const [saving, setSaving] = React.useState<boolean>(false);
+  const [status, setStatus] = React.useState<string>('');
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const e = await invoke<boolean>('telemetry_get_enabled');
+        if (!cancelled) setEnabled(e);
+      } catch (err) {
+        console.warn('telemetry_get_enabled failed:', err);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const toggle = async () => {
+    const next = !enabled;
+    setSaving(true);
+    setStatus('');
+    try {
+      await invoke('telemetry_set_enabled', { enabled: next });
+      setEnabled(next);
+      setStatus(next ? 'Anonymous usage telemetry is ON.' : 'Telemetry disabled. No further data will be sent.');
+    } catch (err) {
+      setStatus(`Failed to update: ${err}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="settings-panel">
+      <div style={{
+        background: 'rgba(93, 207, 255, 0.06)',
+        border: '1px solid rgba(93, 207, 255, 0.35)',
+        borderRadius: 8,
+        padding: '18px 20px',
+        marginBottom: 18,
+        color: '#cfe6f5',
+        lineHeight: 1.55,
+      }}>
+        <h3 style={{ margin: '0 0 10px', color: '#5DCFFF', fontSize: 17 }}>
+          Anonymous Usage Telemetry
+        </h3>
+        <p style={{ margin: '0 0 12px' }}>
+          Datapilot Scout sends a small, anonymous count of which features
+          you use so we can prioritize what to build next and help our
+          sales team understand which agencies are actively using the app.
+        </p>
+        <p style={{ margin: '0 0 6px', fontWeight: 600, color: '#fff' }}>
+          What we send:
+        </p>
+        <ul style={{ margin: '0 0 12px 22px', padding: 0 }}>
+          <li>An anonymous machine fingerprint (same value used for licensing)</li>
+          <li>App version and platform (desktop / portable)</li>
+          <li>Count of feature uses (e.g. "hash_scan_run × 3")</li>
+        </ul>
+        <p style={{ margin: '0 0 6px', fontWeight: 600, color: '#fff' }}>
+          What we never send:
+        </p>
+        <ul style={{ margin: '0 0 12px 22px', padding: 0 }}>
+          <li>Case data, file paths, file contents, or hashes</li>
+          <li>Officer name, badge number, or agency address</li>
+          <li>Scan results, screenshots, or anything that could identify a subject</li>
+        </ul>
+        <p style={{ margin: 0, fontSize: 13, opacity: 0.85 }}>
+          You can disable telemetry at any time. Disabling stops all data
+          collection immediately and clears any pending events on this machine.
+        </p>
+      </div>
+
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        padding: '14px 18px',
+        background: 'rgba(255,255,255,0.03)',
+        border: '1px solid rgba(255,255,255,0.08)',
+        borderRadius: 8,
+      }}>
+        <div>
+          <div style={{ fontWeight: 600, color: '#fff' }}>
+            Send anonymous usage telemetry
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.75, marginTop: 4 }}>
+            {loading ? 'Loading…' : enabled ? 'Currently ON' : 'Currently OFF'}
+          </div>
+        </div>
+        <label style={{
+          position: 'relative',
+          display: 'inline-block',
+          width: 54,
+          height: 28,
+          cursor: saving || loading ? 'wait' : 'pointer',
+          opacity: saving || loading ? 0.6 : 1,
+        }}>
+          <input
+            type="checkbox"
+            checked={enabled}
+            disabled={saving || loading}
+            onChange={toggle}
+            style={{ opacity: 0, width: 0, height: 0 }}
+          />
+          <span style={{
+            position: 'absolute',
+            inset: 0,
+            background: enabled ? '#5DCFFF' : '#444',
+            borderRadius: 28,
+            transition: 'background 0.18s',
+          }} />
+          <span style={{
+            position: 'absolute',
+            top: 3,
+            left: enabled ? 29 : 3,
+            width: 22,
+            height: 22,
+            background: '#fff',
+            borderRadius: '50%',
+            transition: 'left 0.18s',
+          }} />
+        </label>
+      </div>
+
+      {status && (
+        <div style={{
+          marginTop: 14,
+          padding: '10px 14px',
+          background: 'rgba(93, 207, 255, 0.1)',
+          border: '1px solid rgba(93, 207, 255, 0.3)',
+          borderRadius: 6,
+          color: '#cfe6f5',
+          fontSize: 13,
+        }}>
+          {status}
+        </div>
+      )}
+    </div>
+  );
+};
 
 const LicensePanel: React.FC = () => {
   const [licenseInfo, setLicenseInfo] = React.useState<LicenseInfo | null>(null);

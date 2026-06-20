@@ -28,6 +28,7 @@ import { WarrantTriageView } from "./components/warrant/WarrantTriageView";
 import { WarrantInvestigationsList } from "./components/warrant/WarrantInvestigationsList";
 import { WarrantInvestigationDetail } from "./components/warrant/WarrantInvestigationDetail";
 import { ExportProgressPanel } from "./components/warrant/ExportProgressPanel";
+import { trackEvent } from "./lib/telemetry";
 import "./App.css";
 
 type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview" | "warrant" | "warrant_investigation" | "warrant_triage";
@@ -249,6 +250,7 @@ function App() {
 
   async function startAndroidScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
     try {
+      trackEvent("android_triage_opened");
       captureListPriority(keywordConfig, hashConfig);
       // Get selected Android device from keywordConfig
       const selectedDevice = keywordConfig?.selectedDevice;
@@ -383,6 +385,7 @@ function App() {
       
       // ─── PHASE 4: CSAM Hash Matching ────────────────────────────────
       if (modules.hashMatching && !scanCancelledRef.current) {
+        trackEvent("hash_scan_run");
         setCurrentScanModule("Hash Matching (CSAM)");
         
         // Listen for live hash matches and progress from backend
@@ -548,6 +551,7 @@ function App() {
   // iOS device scanning - Progressive scan with live updates
   async function startIosScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
     try {
+      trackEvent("ios_triage_opened");
       captureListPriority(keywordConfig, hashConfig);
       const selectedDevice = keywordConfig?.selectedDevice;
       const backend: 'afc' | 'mtp' = (keywordConfig as any)?.iosBackend === 'mtp' ? 'mtp' : 'afc';
@@ -1105,6 +1109,7 @@ function App() {
 
       // Scan Intrusion Detection (runs before media scan for faster results)
       if (modules.intrusionDetection && !scanCancelledRef.current) {
+        trackEvent("intrusion_scan_run");
         setCurrentScanModule("Intrusion Detection");
         const intrusionProgress: ScanProgressType = {
           moduleId: "intrusion",
@@ -1137,6 +1142,7 @@ function App() {
 
       // Scan for CSAM Hash Matches (INDEPENDENT of media scan)
       if (modules.hashMatching && !scanCancelledRef.current) {
+        trackEvent("hash_scan_run");
         setCurrentScanModule("CSAM Hash Matching");
         const hashProgress: ScanProgressType = {
           moduleId: "hash_matching",
@@ -1773,6 +1779,7 @@ function App() {
 
   async function performIosScan() {
     try {
+      trackEvent("ios_triage_opened");
       console.log("Starting iOS automatic scan");
       
       // Get connected iOS devices

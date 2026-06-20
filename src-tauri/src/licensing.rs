@@ -60,11 +60,11 @@ pub struct UpdateInfo {
 // ---------------------------------------------------------------------------
 
 /// Returns "portable" when built with the `portable` feature, else "desktop".
-fn get_platform() -> &'static str {
+pub fn get_platform() -> &'static str {
     if cfg!(feature = "portable") { "portable" } else { "desktop" }
 }
 
-fn get_machine_id() -> Result<String, String> {
+pub fn get_machine_id() -> Result<String, String> {
     use sha2::{Sha256, Digest};
 
     // Portable build: derive identity from the USB drive serial number

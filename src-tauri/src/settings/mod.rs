@@ -138,7 +138,7 @@ impl Default for ScanOptions {
 }
 
 /// Get the base Hindsight directory path
-fn get_base_dir() -> Result<PathBuf, String> {
+pub fn get_base_dir() -> Result<PathBuf, String> {
     let app_data = std::env::var("APPDATA")
         .map_err(|_| "Could not find APPDATA directory".to_string())?;
     

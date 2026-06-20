@@ -3,6 +3,10 @@ import { invoke } from '@tauri-apps/api/core';
 import './WarrantLanding.css';
 import { SubmitWarrantSample } from './SubmitWarrantSample';
 
+/** Portable USB builds hide the "submit unsupported format" feature —
+ * portable edition is intentionally a read-only triage tool. */
+const IS_PORTABLE_BUILD = import.meta.env.VITE_PORTABLE === 'true';
+
 /**
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
  * Adding a new provider here AND in Rust + setting `enabled: true` lights up the tile.
@@ -268,7 +272,9 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
         </div>
 
         {/* CTA banner — submit an unsupported warrant return as a
-            structural sample so we can build a real parser. */}
+            structural sample so we can build a real parser.  Hidden in
+            portable USB builds (read-only triage edition). */}
+        {!IS_PORTABLE_BUILD && (
         <div
           className="warrant-sample-cta"
           role="button"
@@ -294,9 +300,10 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
           </div>
           <div className="warrant-sample-cta-arrow">→</div>
         </div>
+        )}
       </div>
 
-      {showSampleSubmit && (
+      {!IS_PORTABLE_BUILD && showSampleSubmit && (
         <SubmitWarrantSample onClose={() => setShowSampleSubmit(false)} />
       )}
     </div>

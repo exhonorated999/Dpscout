@@ -10,6 +10,7 @@ mod media_server;
 mod thumbnail_generator;
 mod licensing;
 mod warrant;
+mod telemetry;
 pub mod diag_log;
 
 use scanner::QuestionableApp;
@@ -2345,6 +2346,15 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // ── Telemetry boot hook ─────────────────────────────────────────────
+        // Record one "app_launched" event per process start and kick off a
+        // best-effort flush of any buffered counters. Both calls are gated
+        // by the opt-out flag inside the telemetry module itself.
+        .setup(|_app| {
+            telemetry::record("app_launched");
+            telemetry::flush_in_background();
+            Ok(())
+        })
         // ── Auto-sink window when it loses focus ────────────────────────────
         // Examiners run Scout alongside V.I.P.E.R. and Cellebrite. When they
         // click into one of those apps, Scout should drop to the bottom of
@@ -2605,7 +2615,11 @@ pub fn run() {
             warrant::commands::warrant_export_investigation_report,
             // Parser submission — structural sample envelope
             warrant::commands::warrant_build_sample_envelope,
-            warrant::commands::warrant_submit_sample_envelope
+            warrant::commands::warrant_submit_sample_envelope,
+            // Telemetry (opt-out, allow-listed event counters)
+            telemetry::telemetry_track_event,
+            telemetry::telemetry_get_enabled,
+            telemetry::telemetry_set_enabled
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -157,6 +157,13 @@ pub enum DetectedFormat {
     Pdf,
     Xml,
     Text,
+    Image,
+    Video,
+    Audio,
+    Excel,
+    Word,
+    Powerpoint,
+    Archive,
     Binary,
 }
 
@@ -172,6 +179,13 @@ impl DetectedFormat {
             DetectedFormat::Pdf => "pdf",
             DetectedFormat::Xml => "xml",
             DetectedFormat::Text => "text",
+            DetectedFormat::Image => "image",
+            DetectedFormat::Video => "video",
+            DetectedFormat::Audio => "audio",
+            DetectedFormat::Excel => "excel",
+            DetectedFormat::Word => "word",
+            DetectedFormat::Powerpoint => "powerpoint",
+            DetectedFormat::Archive => "archive",
             DetectedFormat::Binary => "binary",
         }
     }
@@ -195,6 +209,28 @@ pub fn detect_format(path: &Path, peek: &[u8]) -> DetectedFormat {
         "pdf" => DetectedFormat::Pdf,
         "xml" => DetectedFormat::Xml,
         "txt" | "log" | "md" => DetectedFormat::Text,
+        // Images
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "tiff" | "tif"
+        | "bmp" | "heic" | "heif" | "svg" | "ico" | "avif"
+            => DetectedFormat::Image,
+        // Video
+        "mp4" | "m4v" | "mov" | "mkv" | "avi" | "wmv" | "webm"
+        | "flv" | "3gp" | "3g2" | "mpg" | "mpeg"
+            => DetectedFormat::Video,
+        // Audio
+        "mp3" | "m4a" | "wav" | "aac" | "ogg" | "opus" | "flac"
+        | "wma" | "amr"
+            => DetectedFormat::Audio,
+        // Spreadsheets
+        "xlsx" | "xlsm" | "xlsb" | "xls" | "ods" => DetectedFormat::Excel,
+        // Word processor docs
+        "docx" | "doc" | "odt" | "rtf" => DetectedFormat::Word,
+        // Presentations
+        "pptx" | "ppt" | "odp" => DetectedFormat::Powerpoint,
+        // Archives (top-level .zip is special-cased during walk; this
+        // catches inner archives we don't recurse into).
+        "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "tgz"
+            => DetectedFormat::Archive,
         _ => sniff_format(peek),
     }
 }
@@ -202,6 +238,10 @@ pub fn detect_format(path: &Path, peek: &[u8]) -> DetectedFormat {
 fn sniff_format(peek: &[u8]) -> DetectedFormat {
     if peek.starts_with(b"%PDF-") {
         return DetectedFormat::Pdf;
+    }
+    // Common media / office magic bytes.
+    if let Some(fmt) = sniff_binary_magic(peek) {
+        return fmt;
     }
     // Strip BOM
     let head = if peek.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -238,6 +278,90 @@ fn sniff_format(peek: &[u8]) -> DetectedFormat {
     } else {
         DetectedFormat::Binary
     }
+}
+
+/// Magic-byte sniffer for media + office container formats. Returns
+/// `Some(fmt)` only for confident matches; ambiguous bytes fall through
+/// to the text/binary heuristic.
+fn sniff_binary_magic(peek: &[u8]) -> Option<DetectedFormat> {
+    if peek.len() < 4 { return None; }
+    // ── Images ──
+    if peek.starts_with(&[0xFF, 0xD8, 0xFF]) { return Some(DetectedFormat::Image); } // JPEG
+    if peek.starts_with(&[0x89, b'P', b'N', b'G']) { return Some(DetectedFormat::Image); } // PNG
+    if peek.starts_with(b"GIF87a") || peek.starts_with(b"GIF89a") {
+        return Some(DetectedFormat::Image);
+    }
+    if peek.starts_with(b"BM") { return Some(DetectedFormat::Image); } // BMP
+    // RIFF container: WEBP, WAV, AVI all share this prefix.
+    if peek.len() >= 12 && &peek[0..4] == b"RIFF" {
+        return match &peek[8..12] {
+            b"WEBP" => Some(DetectedFormat::Image),
+            b"WAVE" => Some(DetectedFormat::Audio),
+            b"AVI " => Some(DetectedFormat::Video),
+            _ => Some(DetectedFormat::Binary),
+        };
+    }
+    // TIFF (little + big endian)
+    if peek.starts_with(&[0x49, 0x49, 0x2A, 0x00])
+        || peek.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+    {
+        return Some(DetectedFormat::Image);
+    }
+    // ISO BMFF box header: `....ftypXXXX` at offset 4 — MP4 / MOV / HEIC / 3GP.
+    if peek.len() >= 12 && &peek[4..8] == b"ftyp" {
+        let brand = &peek[8..12];
+        return match brand {
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis"
+            | b"hevm" | b"hevs" | b"mif1" | b"msf1" | b"avif"
+                => Some(DetectedFormat::Image),
+            b"qt  " | b"mp41" | b"mp42" | b"isom" | b"M4V "
+            | b"3gp4" | b"3gp5" | b"3g2a" | b"M4VP" | b"dash"
+                => Some(DetectedFormat::Video),
+            b"M4A " | b"M4B " => Some(DetectedFormat::Audio),
+            _ => Some(DetectedFormat::Video), // unknown ftyp brand → assume video container
+        };
+    }
+    // ── Audio ──
+    if peek.starts_with(b"ID3") { return Some(DetectedFormat::Audio); } // MP3 w/ID3
+    if peek.len() >= 2 && peek[0] == 0xFF && (peek[1] & 0xE0) == 0xE0 {
+        // MPEG audio frame (mp3 without ID3 tag)
+        return Some(DetectedFormat::Audio);
+    }
+    if peek.starts_with(b"OggS") { return Some(DetectedFormat::Audio); }
+    if peek.starts_with(b"fLaC") { return Some(DetectedFormat::Audio); }
+    // ── Video ──
+    if peek.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Some(DetectedFormat::Video); // Matroska / WebM (EBML)
+    }
+    if peek.starts_with(&[0x00, 0x00, 0x01, 0xBA])
+        || peek.starts_with(&[0x00, 0x00, 0x01, 0xB3])
+    {
+        return Some(DetectedFormat::Video); // MPEG-PS / MPEG-1/2 video
+    }
+    // ── Office (CFB / OLE — legacy .doc/.xls/.ppt) ──
+    if peek.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        // Without parsing the storage tree we can't tell doc vs xls vs ppt.
+        // Default to Word as the most common; caller still has the
+        // extension if present.
+        return Some(DetectedFormat::Word);
+    }
+    // ── ZIP container (.docx/.xlsx/.pptx/.zip) ──
+    // PK\x03\x04 magic. We can't cheaply peek the central directory in
+    // the first 1KiB, so we report Archive and let the extension override.
+    if peek.starts_with(&[0x50, 0x4B, 0x03, 0x04])
+        || peek.starts_with(&[0x50, 0x4B, 0x05, 0x06])
+        || peek.starts_with(&[0x50, 0x4B, 0x07, 0x08])
+    {
+        return Some(DetectedFormat::Archive);
+    }
+    // ── Other archives ──
+    if peek.starts_with(&[0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]) {
+        return Some(DetectedFormat::Archive); // RAR
+    }
+    if peek.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) {
+        return Some(DetectedFormat::Archive); // 7z
+    }
+    None
 }
 
 // ─── Build options ───────────────────────────────────────────────────────
@@ -478,8 +602,92 @@ fn inspect_bytes(fmt: DetectedFormat, content: &[u8]) -> serde_json::Value {
             "byte_count": content.len(),
             "line_count": count_lines(content),
         }),
+        DetectedFormat::Image
+        | DetectedFormat::Video
+        | DetectedFormat::Audio => serde_json::json!({
+            "byte_count": content.len(),
+            "media_subtype": media_subtype(content),
+        }),
+        DetectedFormat::Excel
+        | DetectedFormat::Word
+        | DetectedFormat::Powerpoint => serde_json::json!({
+            "byte_count": content.len(),
+            "container": office_container(content),
+        }),
+        DetectedFormat::Archive => serde_json::json!({
+            "byte_count": content.len(),
+            "container": archive_kind(content),
+        }),
         DetectedFormat::Binary => serde_json::json!({ "byte_count": content.len() }),
     }
+}
+
+/// Best-effort media subtype (`"jpeg"`, `"png"`, `"mp4"`, `"mov"`, etc.).
+/// Returns `"unknown"` when we can't tell from the magic bytes alone.
+fn media_subtype(content: &[u8]) -> &'static str {
+    if content.len() < 12 { return "unknown"; }
+    if content.starts_with(&[0xFF, 0xD8, 0xFF]) { return "jpeg"; }
+    if content.starts_with(&[0x89, b'P', b'N', b'G']) { return "png"; }
+    if content.starts_with(b"GIF87a") || content.starts_with(b"GIF89a") { return "gif"; }
+    if content.starts_with(b"BM") { return "bmp"; }
+    if content.starts_with(&[0x49, 0x49, 0x2A, 0x00])
+        || content.starts_with(&[0x4D, 0x4D, 0x00, 0x2A])
+    { return "tiff"; }
+    if &content[0..4] == b"RIFF" {
+        return match &content[8..12] {
+            b"WEBP" => "webp",
+            b"WAVE" => "wav",
+            b"AVI " => "avi",
+            _ => "riff",
+        };
+    }
+    if &content[4..8] == b"ftyp" {
+        let brand = &content[8..12];
+        return match brand {
+            b"heic" | b"heix" | b"hevc" | b"hevx" | b"heim" | b"heis"
+            | b"hevm" | b"hevs" | b"mif1" | b"msf1" => "heif",
+            b"avif" => "avif",
+            b"qt  " => "mov",
+            b"mp41" | b"mp42" | b"isom" | b"M4V " | b"M4VP" | b"dash" => "mp4",
+            b"3gp4" | b"3gp5" | b"3g2a" => "3gp",
+            b"M4A " | b"M4B " => "m4a",
+            _ => "iso_bmff",
+        };
+    }
+    if content.starts_with(b"ID3") || (content[0] == 0xFF && (content[1] & 0xE0) == 0xE0) {
+        return "mp3";
+    }
+    if content.starts_with(b"OggS") { return "ogg"; }
+    if content.starts_with(b"fLaC") { return "flac"; }
+    if content.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) { return "matroska"; }
+    "unknown"
+}
+
+/// Container kind for Office docs. Modern Office (xlsx/docx/pptx) is a
+/// ZIP, legacy is CFB. Caller already has the extension to disambiguate
+/// xlsx-vs-docx-vs-pptx.
+fn office_container(content: &[u8]) -> &'static str {
+    if content.starts_with(&[0x50, 0x4B, 0x03, 0x04]) { return "ooxml_zip"; }
+    if content.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return "cfb_legacy";
+    }
+    "unknown"
+}
+
+/// Archive subtype.
+fn archive_kind(content: &[u8]) -> &'static str {
+    if content.starts_with(&[0x50, 0x4B, 0x03, 0x04])
+        || content.starts_with(&[0x50, 0x4B, 0x05, 0x06])
+        || content.starts_with(&[0x50, 0x4B, 0x07, 0x08])
+    {
+        return "zip";
+    }
+    if content.starts_with(&[0x52, 0x61, 0x72, 0x21, 0x1A, 0x07]) { return "rar"; }
+    if content.starts_with(&[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C]) { return "7z"; }
+    if content.starts_with(&[0x1F, 0x8B]) { return "gzip"; }
+    if content.starts_with(b"BZh") { return "bzip2"; }
+    if content.starts_with(&[0xFD, b'7', b'z', b'X', b'Z', 0x00]) { return "xz"; }
+    "unknown"
 }
 
 // ─── Small helpers ───────────────────────────────────────────────────────
@@ -564,6 +772,165 @@ mod tests {
         assert_eq!(detect_format(p, &bytes), DetectedFormat::Binary);
     }
 
+    // ─── Media + Office detection ──────────────────────────────────────
+
+    #[test]
+    fn detect_image_by_ext() {
+        for (name, expect) in &[
+            ("photo.jpg", DetectedFormat::Image),
+            ("photo.jpeg", DetectedFormat::Image),
+            ("img.PNG", DetectedFormat::Image),
+            ("a.gif", DetectedFormat::Image),
+            ("h.heic", DetectedFormat::Image),
+            ("w.webp", DetectedFormat::Image),
+            ("a.bmp", DetectedFormat::Image),
+            ("a.tiff", DetectedFormat::Image),
+            ("a.svg", DetectedFormat::Image),
+        ] {
+            assert_eq!(detect_format(Path::new(name), b""), *expect,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_video_by_ext() {
+        for name in &["clip.mp4", "vid.MOV", "movie.mkv", "v.webm", "a.avi"] {
+            assert_eq!(detect_format(Path::new(name), b""), DetectedFormat::Video,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_audio_by_ext() {
+        for name in &["song.mp3", "voice.m4a", "rec.wav", "track.flac", "v.opus"] {
+            assert_eq!(detect_format(Path::new(name), b""), DetectedFormat::Audio,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_excel_by_ext() {
+        for name in &["sheet.xlsx", "old.xls", "macro.xlsm", "calc.ods"] {
+            assert_eq!(detect_format(Path::new(name), b""), DetectedFormat::Excel,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_word_by_ext() {
+        for name in &["doc.docx", "old.doc", "doc.odt", "page.rtf"] {
+            assert_eq!(detect_format(Path::new(name), b""), DetectedFormat::Word,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_powerpoint_by_ext() {
+        for name in &["deck.pptx", "old.ppt", "slides.odp"] {
+            assert_eq!(detect_format(Path::new(name), b""), DetectedFormat::Powerpoint,
+                "wrong format for {}", name);
+        }
+    }
+
+    #[test]
+    fn detect_image_by_magic() {
+        let p = Path::new("noext");
+        // JPEG
+        assert_eq!(detect_format(p, &[0xFF, 0xD8, 0xFF, 0xE0]), DetectedFormat::Image);
+        // PNG
+        assert_eq!(detect_format(p, b"\x89PNG\r\n\x1a\n"), DetectedFormat::Image);
+        // GIF
+        assert_eq!(detect_format(p, b"GIF89a..."), DetectedFormat::Image);
+        // HEIC (ISO BMFF with `heic` brand)
+        let mut heic = vec![0u8, 0, 0, 32];
+        heic.extend_from_slice(b"ftyp");
+        heic.extend_from_slice(b"heic");
+        heic.extend_from_slice(&[0u8; 16]);
+        assert_eq!(detect_format(p, &heic), DetectedFormat::Image);
+    }
+
+    #[test]
+    fn detect_video_by_magic() {
+        let p = Path::new("noext");
+        // MP4 (ISO BMFF `mp42` brand)
+        let mut mp4 = vec![0u8, 0, 0, 32];
+        mp4.extend_from_slice(b"ftyp");
+        mp4.extend_from_slice(b"mp42");
+        mp4.extend_from_slice(&[0u8; 16]);
+        assert_eq!(detect_format(p, &mp4), DetectedFormat::Video);
+        // QuickTime MOV
+        let mut mov = vec![0u8, 0, 0, 32];
+        mov.extend_from_slice(b"ftyp");
+        mov.extend_from_slice(b"qt  ");
+        mov.extend_from_slice(&[0u8; 16]);
+        assert_eq!(detect_format(p, &mov), DetectedFormat::Video);
+        // Matroska / WebM (EBML)
+        assert_eq!(detect_format(p, &[0x1A, 0x45, 0xDF, 0xA3, 0, 0, 0, 0]),
+            DetectedFormat::Video);
+    }
+
+    #[test]
+    fn detect_audio_by_magic() {
+        let p = Path::new("noext");
+        // MP3 with ID3
+        assert_eq!(detect_format(p, b"ID3\x04\0\0\0\0\0\0"), DetectedFormat::Audio);
+        // WAV (RIFF + WAVE)
+        let mut wav = Vec::from(*b"RIFF");
+        wav.extend_from_slice(&[0u8; 4]);
+        wav.extend_from_slice(b"WAVE");
+        assert_eq!(detect_format(p, &wav), DetectedFormat::Audio);
+        // Ogg
+        assert_eq!(detect_format(p, b"OggS\0\0\0\0"), DetectedFormat::Audio);
+        // FLAC
+        assert_eq!(detect_format(p, b"fLaC\0\0\0\0"), DetectedFormat::Audio);
+    }
+
+    #[test]
+    fn detect_office_legacy_cfb_magic() {
+        let p = Path::new("noext");
+        // CFB OLE2 magic — legacy .doc / .xls / .ppt all share this.
+        let cfb = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0u8, 0u8];
+        assert_eq!(detect_format(p, &cfb), DetectedFormat::Word);
+    }
+
+    #[test]
+    fn detect_archive_by_magic() {
+        let p = Path::new("noext");
+        // ZIP (also matches docx/xlsx/pptx without extension hint)
+        assert_eq!(detect_format(p, b"PK\x03\x04\0\0\0\0"), DetectedFormat::Archive);
+        // RAR
+        assert_eq!(detect_format(p, b"Rar!\x1A\x07\0"), DetectedFormat::Archive);
+        // 7z
+        assert_eq!(detect_format(p, &[0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C, 0, 0]),
+            DetectedFormat::Archive);
+    }
+
+    #[test]
+    fn extension_overrides_zip_magic_for_office() {
+        // docx is a ZIP — but extension should classify it as Word.
+        let p = Path::new("memo.docx");
+        assert_eq!(detect_format(p, b"PK\x03\x04\0\0\0\0"), DetectedFormat::Word);
+        let p = Path::new("data.xlsx");
+        assert_eq!(detect_format(p, b"PK\x03\x04\0\0\0\0"), DetectedFormat::Excel);
+        let p = Path::new("deck.pptx");
+        assert_eq!(detect_format(p, b"PK\x03\x04\0\0\0\0"), DetectedFormat::Powerpoint);
+    }
+
+    #[test]
+    fn media_structure_has_no_pixel_data() {
+        // A JPEG with embedded "secret" string after the header — we
+        // must surface only byte_count + media_subtype, never the bytes.
+        let mut jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0];
+        jpeg.extend_from_slice(b"GPS:34.0522,-118.2437 SECRET_PAYLOAD_AAA");
+        let s = inspect_bytes(DetectedFormat::Image, &jpeg);
+        let raw = serde_json::to_string(&s).unwrap();
+        assert!(!raw.contains("SECRET_PAYLOAD_AAA"),
+            "raw bytes leaked from image structure: {}", raw);
+        assert!(!raw.contains("GPS"),
+            "GPS hint leaked from image structure: {}", raw);
+        assert!(raw.contains("jpeg"));
+    }
+
     /// Integration smoke against the real YAHOO-11540.zip sample.
     /// Ignored by default — run explicitly with:
     ///   cargo test --lib warrant::sample::tests::smoke_yahoo_zip -- --ignored --nocapture
@@ -635,5 +1002,81 @@ mod tests {
             );
         }
         assert!(env.root_summary.total_files > 0, "no files captured");
+    }
+
+    /// Integration smoke against the real Meta clean-data zip — verifies
+    /// the html_fp envelope upgrades (title_text, label_vocab, sentinel
+    /// phrases, per_id_skeleton) actually capture the labels a parser
+    /// author needs.
+    ///   cargo test --lib warrant::sample::tests::smoke_meta_zip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn smoke_meta_zip() {
+        let path = Path::new(
+            r"C:\Users\JUSTI\Downloads\Clean Data Archive for Distribution[4] (1).zip",
+        );
+        if !path.exists() {
+            eprintln!("Meta clean zip not present at {:?}, skipping", path);
+            return;
+        }
+        let env = build_envelope(
+            path,
+            BuildOptions {
+                provider_hint: "meta clean".into(),
+                submitter_email: "test@example.com".into(),
+                submitter_notes: "smoke meta".into(),
+                agency_name: "Test PD".into(),
+                license_key_last4: "TEST".into(),
+            },
+        )
+        .expect("envelope built");
+
+        println!("files captured: {}", env.root_summary.total_files);
+        println!("format counts:  {:?}", env.root_summary.format_counts);
+
+        // Find each HTML entry and assert the new fields are populated.
+        let mut html_seen = 0usize;
+        let mut combined_title = String::new();
+        let mut combined_labels: Vec<String> = Vec::new();
+        let mut combined_ids: Vec<String> = Vec::new();
+        for e in env.tree.iter().filter(|e| e.format == "html") {
+            html_seen += 1;
+            let s = &e.structure;
+            if let Some(t) = s.get("title_text").and_then(|v| v.as_str()) {
+                if !t.is_empty() {
+                    combined_title.push_str(t);
+                    combined_title.push(' ');
+                }
+            }
+            if let Some(arr) = s.get("label_vocab").and_then(|v| v.as_array()) {
+                for entry in arr {
+                    if let Some(t) = entry.get("text").and_then(|v| v.as_str()) {
+                        combined_labels.push(t.to_string());
+                    }
+                }
+            }
+            if let Some(obj) = s.get("per_id_skeleton").and_then(|v| v.as_object()) {
+                for k in obj.keys() { combined_ids.push(k.clone()); }
+            }
+        }
+        println!("html files:     {}", html_seen);
+        println!("combined title: {:?}", combined_title);
+        println!("sample labels:  {:?}",
+            combined_labels.iter().take(20).collect::<Vec<_>>());
+        println!("ids w/skeleton: {:?}",
+            combined_ids.iter().take(10).collect::<Vec<_>>());
+
+        assert!(html_seen >= 1, "no HTML files in envelope");
+        assert!(combined_title.to_ascii_lowercase().contains("facebook"),
+            "title_text missing Facebook signal: {:?}", combined_title);
+        // Meta records use these labels — at least some must surface.
+        let want_any = ["Author", "Sent", "Body", "Posted", "Status",
+                        "Type", "Size", "Thread"];
+        let hit = want_any.iter().any(|l|
+            combined_labels.iter().any(|t| t == l));
+        assert!(hit, "label_vocab missed all Meta labels: {:?}", combined_labels);
+        // At least one property-* bucket id should be in per_id_skeleton.
+        assert!(combined_ids.iter().any(|i| i.starts_with("property-")),
+            "per_id_skeleton missing property-* buckets: {:?}", combined_ids);
     }
 }

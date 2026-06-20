@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { ScanningIndicator } from "../ScanningIndicator";
 import { LocationMapView, LocationOverviewMap } from "./LocationMapView";
+import { trackEvent } from "../../lib/telemetry";
 import "./WarrantTriageView.css";
 
 // ─── Types (mirrors of Rust shapes) ─────────────────────────────────────
@@ -260,6 +261,15 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
   useEffect(() => {
     reload();
   }, [reload]);
+
+  // Telemetry: fire once per case open. Triage view is the canonical
+  // "user is using the warrant feature" signal for sales analytics.
+  useEffect(() => {
+    trackEvent("warrant_triage_opened");
+    // Intentionally empty deps: we want one event per mount, not per
+    // re-render. Re-mounting on a different caseId is a separate open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ─── Load keyword lists + cached scan results on mount ────────────────
   useEffect(() => {

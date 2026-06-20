@@ -610,7 +610,42 @@ pub async fn warrant_submit_sample_envelope(
         args.endpoint.clone()
     };
 
-    let body = serde_json::to_string(&args.envelope)
+    // The server expects `{ envelope: {...}, submitter: {...} }`. The
+    // envelope itself already carries the submitter fields (the builder
+    // stamped them in), so we lift them into a top-level submitter block
+    // without round-tripping through the UI. machine_id + platform come
+    // from the licensing module so the server can attribute the row to
+    // an Agency without trusting client-supplied claims.
+    fn pick_str(env: &serde_json::Value, key: &str) -> String {
+        env.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    }
+    let scout_version = {
+        let from_env = pick_str(&args.envelope, "scout_version");
+        if from_env.is_empty() {
+            env!("CARGO_PKG_VERSION").to_string()
+        } else {
+            from_env
+        }
+    };
+    let submitter = serde_json::json!({
+        "machine_id": crate::licensing::get_machine_id().unwrap_or_default(),
+        "platform": crate::licensing::get_platform(),
+        "scout_version": scout_version,
+        "provider_hint":      pick_str(&args.envelope, "provider_hint"),
+        "submitter_email":    pick_str(&args.envelope, "submitter_email"),
+        "submitter_notes":    pick_str(&args.envelope, "submitter_notes"),
+        "agency_name":        pick_str(&args.envelope, "agency_name"),
+        "license_key_last4":  pick_str(&args.envelope, "license_key_last4"),
+    });
+    let wrapped = serde_json::json!({
+        "envelope": &args.envelope,
+        "submitter": submitter,
+    });
+
+    let body = serde_json::to_string(&wrapped)
         .map_err(|e| format!("envelope serialization failed: {}", e))?;
 
     let endpoint_for_call = endpoint.clone();
