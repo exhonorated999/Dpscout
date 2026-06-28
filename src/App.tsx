@@ -1642,12 +1642,19 @@ function App() {
     );
   }
 
-  // If license expired, force user to settings only
-  if (licenseExpired && state !== 'settings') {
-    // Auto-redirect to settings with a message
-    if (state !== 'start') {
-      setState('settings');
-    }
+  // If license expired, restrict navigation. Settings is always reachable.
+  // The Warrant Triage flow stays open as a "free forever" tier — but only the
+  // Meta + Google parsers, enforced in WarrantLanding's provider picker
+  // (POST_EXPIRY_ALLOWED). All other modules redirect back to Settings.
+  const POST_EXPIRY_ALLOWED_STATES = [
+    'settings',
+    'start',
+    'warrant',
+    'warrant_investigation',
+    'warrant_triage',
+  ];
+  if (licenseExpired && !POST_EXPIRY_ALLOWED_STATES.includes(state)) {
+    setState('settings');
   }
   
   // Debug logging removed — was causing console flood on every render
@@ -1975,26 +1982,47 @@ function App() {
               <span style={{ color: '#6B8AFF' }}>SCOUT</span>
             </h1>
             <h2 style={{ color: '#ef4444', margin: 0 }}>License Expired</h2>
-            <p style={{ color: 'var(--color-text-secondary)', maxWidth: '400px', lineHeight: 1.6 }}>
-              Your trial or license has expired. Please enter a valid license key in Settings to continue using all features.
+            <p style={{ color: 'var(--color-text-secondary)', maxWidth: '440px', lineHeight: 1.6 }}>
+              Your trial or license has expired. Enter a valid license key in Settings to
+              restore full access. In the meantime, <strong>Warrant Triage</strong> stays
+              available for <strong>Meta</strong> and <strong>Google</strong> returns.
             </p>
-            <button
-              onClick={openSettings}
-              style={{
-                padding: '14px 40px',
-                background: 'linear-gradient(135deg, var(--primary-blue), var(--accent-blue))',
-                border: 'none',
-                borderRadius: '8px',
-                color: '#fff',
-                fontSize: '16px',
-                fontWeight: 600,
-                cursor: 'pointer',
-                textTransform: 'uppercase',
-                letterSpacing: '1px'
-              }}
-            >
-              ⚙️ Open Settings
-            </button>
+            <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              <button
+                onClick={openWarrant}
+                style={{
+                  padding: '14px 40px',
+                  background: 'linear-gradient(135deg, var(--primary-blue), var(--accent-blue))',
+                  border: 'none',
+                  borderRadius: '8px',
+                  color: '#fff',
+                  fontSize: '16px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px'
+                }}
+              >
+                📋 Warrant Triage
+              </button>
+              <button
+                onClick={openSettings}
+                style={{
+                  padding: '14px 40px',
+                  background: 'transparent',
+                  border: '1px solid var(--accent-blue)',
+                  borderRadius: '8px',
+                  color: '#fff',
+                  fontSize: '16px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  textTransform: 'uppercase',
+                  letterSpacing: '1px'
+                }}
+              >
+                ⚙️ Open Settings
+              </button>
+            </div>
           </div>
         ) : (
           <>
