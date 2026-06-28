@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './IosView.css';
 
@@ -111,6 +111,10 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
   const [showResultsView, setShowResultsView] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [scanProgress, setScanProgress] = useState<string>('');
+  // Guards against overlapping detect runs: each click of Refresh (and the
+  // mount-time auto-detect) otherwise spawns a concurrent pymobiledevice3
+  // process whose results race and clobber the device list.
+  const detectingRef = useRef(false);
   const [libimobileAvailable, setLibimobileAvailable] = useState<boolean | null>(null);
   const [apps, setApps] = useState<IosAppInfo[]>([]);
   const [hashMatches, setHashMatches] = useState<IosHashMatch[]>([]);
@@ -148,17 +152,25 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
   }
 
   async function detectDevices() {
+    // Ignore re-entrant calls (rapid Refresh clicks / mount + trust refresh)
+    // so we never run two detections at once.
+    if (detectingRef.current) {
+      console.log('[iOS] detectDevices already in progress — ignoring duplicate call');
+      return;
+    }
+    detectingRef.current = true;
     try {
+      setIsLoading(true);
       setError('');
       setScanProgress('Detecting iOS devices...');
-      
+
       // Try libimobiledevice detection
       const detectedDevices = await invoke<LiveIosDevice[]>('detect_live_ios_devices');
       console.log('libimobiledevice detected devices:', detectedDevices);
-      
+
       setDevices(detectedDevices);
       setScanProgress('');
-      
+
       if (detectedDevices.length === 0) {
         // Check if MTP detection works as fallback info
         try {
@@ -184,8 +196,11 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
       }
     } catch (err) {
       console.error('Failed to detect iOS devices:', err);
-      setScanProgress('');
       setError(`Failed to detect iOS devices: ${err}`);
+    } finally {
+      setScanProgress('');
+      setIsLoading(false);
+      detectingRef.current = false;
     }
   }
 
@@ -414,7 +429,7 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
         </button>
         <h1>🍎 iOS Device Scanner</h1>
         <button onClick={detectDevices} className="refresh-button" disabled={isLoading}>
-          🔄 Refresh Devices
+          {isLoading ? '⏳ Detecting…' : '🔄 Refresh Devices'}
         </button>
       </div>
 
@@ -448,6 +463,9 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
                 <li>Try a different USB cable or port</li>
               </ul>
             </div>
+            <button onClick={detectDevices} className="refresh-button" disabled={isLoading}>
+              {isLoading ? '⏳ Detecting…' : '🔄 Refresh Devices'}
+            </button>
           </div>
         ) : (
           <>

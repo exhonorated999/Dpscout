@@ -146,9 +146,49 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     }
   };
 
-  const detectIosBackups = async () => {
+  // Map a Windows-MTP device (from detect_ios_mtp_devices) into the
+  // iosBackups shape used by the render + scan. MTP devices have no UDID,
+  // so we synthesize one from the device path (the MTP scan path
+  // `scan_ios_mtp_media` doesn't actually need a UDID).
+  const mapMtpDevice = (d: any) => ({
+    udid: d.devicePath || d.deviceName || 'mtp-device',
+    deviceName: d.deviceName || 'Apple iPhone (MTP)',
+    deviceModel: 'MTP Device',
+    iosVersion: 'Unknown',
+    isTrusted: true,
+    isMtp: true,
+    devicePath: d.devicePath,
+  });
+
+  // Try Windows MTP detection (iPhone visible in File Explorer). Returns true
+  // if a device was found + populated. Switches transport to 'mtp' so the
+  // scan uses the MTP copy path.
+  const tryDetectMtp = async (): Promise<boolean> => {
     try {
-      // Step 1: Try live device detection via pymobiledevice3
+      console.log('[iOS] Detecting via Windows MTP...');
+      const mtpDevices = await invoke<any[]>('detect_ios_mtp_devices');
+      console.log('[iOS] MTP devices found:', mtpDevices.length);
+      if (mtpDevices.length > 0) {
+        const mapped = mtpDevices.map(mapMtpDevice);
+        setIosBackups(mapped);
+        setSelectedBackup(mapped[0].udid);
+        setIosBackend('mtp');
+        return true;
+      }
+    } catch (mtpError) {
+      console.warn('[iOS] MTP detection failed:', mtpError);
+    }
+    return false;
+  };
+
+  const detectIosBackups = async () => {
+    // If the operator explicitly chose MTP transport, detect via MTP first.
+    if (iosBackend === 'mtp') {
+      if (await tryDetectMtp()) return;
+    }
+
+    try {
+      // Step 1: Try live device detection via pymobiledevice3 (AFC)
       console.log('[iOS] Detecting live devices via pymobiledevice3...');
       const liveDevices = await invoke<any[]>('detect_live_ios_devices');
       console.log('[iOS] Live devices found:', liveDevices.length);
@@ -177,6 +217,11 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     } catch (backupError) {
       console.warn('[iOS] Backup detection failed:', backupError);
     }
+
+    // Step 3: AFC + backups found nothing. The device may still be visible
+    // via Windows MTP (File Explorer) even when pairing/AFC fails — try MTP
+    // as a last resort so a connected iPhone is actually detected.
+    if (await tryDetectMtp()) return;
     
     // Nothing found
     setIosBackups([]);
@@ -519,7 +564,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
                           {device.deviceName || 'iPhone'}
                         </span>
                         <span style={{ fontSize: '0.8rem', color: 'var(--color-text-muted)' }}>
-                          {device.deviceModel || device.productType || ''} • iOS {device.iosVersion || 'Unknown'} • {device.udid?.slice(0, 8)}...
+                          {device.isMtp
+                            ? 'Detected via Windows MTP — media scan + hash matching'
+                            : `${device.deviceModel || device.productType || ''} • iOS ${device.iosVersion || 'Unknown'} • ${device.udid?.slice(0, 8)}...`}
                         </span>
                         {device.isTrusted === false && (
                           <span style={{ fontSize: '0.8rem', color: 'var(--accent-orange)' }}>

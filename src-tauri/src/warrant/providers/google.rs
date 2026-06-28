@@ -1289,6 +1289,18 @@ fn handle_play_devices(files: &[CategoryFile], ctx: &mut ParseCtx) {
     }
 }
 
+/// Truncate a string to at most `max_chars` characters, appending an
+/// ellipsis when shortened.  Char-safe: never slices on a byte index, so it
+/// cannot panic on multibyte UTF-8 (emoji / accented text).
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() > max_chars {
+        let truncated: String = s.chars().take(max_chars).collect();
+        format!("{}…", truncated)
+    } else {
+        s.to_string()
+    }
+}
+
 fn extract_kv_value(blob: String, key: &str) -> Option<String> {
     // Protobuf-text-ish blob:   `key: "value"`
     let needle = format!("{}: \"", key);
@@ -1714,11 +1726,11 @@ fn handle_chat_messages(files: &[CategoryFile], ctx: &mut ParseCtx) {
                             .and_then(|v| v.as_str())
                             .map(String::from);
                         let summary_text = text.clone().unwrap_or_default();
-                        let summary_short = if summary_text.len() > 80 {
-                            format!("{}…", &summary_text[..80])
-                        } else {
-                            summary_text
-                        };
+                        // Char-safe truncation: slicing on a fixed BYTE index
+                        // (`[..80]`) panics when byte 80 lands mid-UTF-8-char
+                        // (emoji / accented text is common in chat returns),
+                        // which crashed the whole app. Truncate by chars.
+                        let summary_short = truncate_chars(&summary_text, 80);
                         ctx.push(WarrantItem {
                             id,
                             section: "unified_messages".into(),
@@ -2719,6 +2731,27 @@ mod tests {
 
     fn sample_exists() -> bool {
         std::path::Path::new(SAMPLE_ZIP).exists()
+    }
+
+    #[test]
+    fn truncate_chars_is_utf8_safe() {
+        // Pure ASCII under the limit — unchanged.
+        assert_eq!(truncate_chars("hello", 80), "hello");
+
+        // A multibyte char (😀 = 4 bytes) sitting exactly across byte 80
+        // would panic with the old `&s[..80]` byte-slice. 79 ASCII + emoji
+        // = 80 chars but 83 bytes, so the old guard (`len() > 80`) fired and
+        // sliced mid-char. Must not panic and must truncate by chars.
+        let s = format!("{}{}", "a".repeat(79), "😀😀😀😀😀");
+        let out = truncate_chars(&s, 80);
+        assert!(out.ends_with('…'), "should be truncated with ellipsis");
+        // 80 retained chars + the ellipsis char.
+        assert_eq!(out.chars().count(), 81);
+
+        // Emoji-heavy string shorter than the char limit but longer in bytes
+        // — must be returned intact (this is the exact old crash case).
+        let short_emoji = "👮‍♂️🚔🔍 evidence 📂";
+        assert_eq!(truncate_chars(short_emoji, 80), short_emoji);
     }
 
     #[test]
