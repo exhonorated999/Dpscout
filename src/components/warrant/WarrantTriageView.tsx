@@ -190,6 +190,18 @@ const SECTION_LABELS: Record<string, string> = {
   blocks: "Blocked Users",
   media_messages: "Media Messages",
   group_media: "Group Media",
+  // X (Twitter)
+  x_account: "Account",
+  tweets: "Posts / Tweets",
+  direct_messages: "Direct Messages",
+  followers: "Followers",
+  following: "Following",
+  ip_audit: "IP / Login Audit",
+  devices: "Devices",
+  personalization: "Personalization",
+  ad_data: "Ad Data",
+  x_metadata: "Account Metadata",
+  audio: "Audio",
 };
 
 const NEW_BUCKET_COLORS = [
@@ -1219,6 +1231,18 @@ const SECTION_ICONS: Record<string, string> = {
   blocks: "🚫",
   media_messages: "🖼️",
   group_media: "🎞️",
+  // X (Twitter)
+  x_account: "👤",
+  tweets: "🐦",
+  direct_messages: "✉️",
+  followers: "👥",
+  following: "➡️",
+  ip_audit: "🌐",
+  devices: "📱",
+  personalization: "🎯",
+  ad_data: "📢",
+  x_metadata: "🗂️",
+  audio: "🎧",
 };
 
 const CaseOverview: React.FC<CaseOverviewProps> = ({

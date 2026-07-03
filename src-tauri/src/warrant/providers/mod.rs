@@ -12,6 +12,7 @@ pub mod kik;
 pub mod discord;
 pub mod google;
 pub mod yahoo;
+pub mod x;
 
 // Shared utilities used by multiple providers.
 pub(crate) mod mbox_lib;

@@ -11,7 +11,7 @@ const IS_PORTABLE_BUILD = import.meta.env.VITE_PORTABLE === 'true';
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
  * Adding a new provider here AND in Rust + setting `enabled: true` lights up the tile.
  */
-export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo';
+export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo' | 'x';
 
 /**
  * Providers that remain available when the demo trial / paid license has
@@ -43,6 +43,8 @@ interface ProviderTile {
   enabled: boolean;
   icon: React.ReactNode;
   accent: string; // brand-ish accent stripe color
+  /** Show a DEMO badge — parser is best-effort and may not cover every record. */
+  demo?: boolean;
 }
 
 interface WarrantLandingProps {
@@ -105,6 +107,15 @@ const YahooIcon = () => (
   </svg>
 );
 
+// X (formerly Twitter) — the "X" wordmark inside a rounded square.
+const XIcon = () => (
+  <svg viewBox="0 0 48 48" width="44" height="44" fill="none">
+    <rect x="6" y="6" width="36" height="36" rx="9" stroke="#e7e9ea" strokeWidth="2.5"/>
+    <path d="M17 16 L31 32 M31 16 L17 32" stroke="#e7e9ea" strokeWidth="3"
+      strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
+
 const PROVIDERS: ProviderTile[] = [
   {
     id: 'meta',
@@ -160,6 +171,16 @@ const PROVIDERS: ProviderTile[] = [
     icon: <YahooIcon />,
     accent: '#7B0099',
   },
+  {
+    id: 'x',
+    name: 'X (Twitter)',
+    subtitle: 'X Corp.',
+    formatHint: 'X / Twitter production (.zip or extracted folder)',
+    enabled: true,
+    icon: <XIcon />,
+    accent: '#71767b',
+    demo: true,
+  },
 ];
 
 export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelectProvider }) => {
@@ -208,7 +229,7 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
             <div className="warrant-license-banner" role="status">
               ⚠ Your trial / license has expired. Meta and Google returns
               remain available — enter a license key in <strong>Settings</strong>
-              {' '}to re-enable Snapchat, KIK, Discord, and Yahoo.
+              {' '}to re-enable Snapchat, KIK, Discord, Yahoo, and X.
             </div>
           )}
         </div>
@@ -244,7 +265,14 @@ export const WarrantLanding: React.FC<WarrantLandingProps> = ({ onBack, onSelect
                 <div className="provider-accent-stripe" />
                 <div className="provider-icon-wrap">{p.icon}</div>
                 <div className="provider-meta">
-                  <div className="provider-name">{p.name}</div>
+                  <div className="provider-name">
+                    {p.name}
+                    {p.demo && (
+                      <span className="provider-demo-badge" title="Beta parser — may not cover every record type">
+                        DEMO
+                      </span>
+                    )}
+                  </div>
                   <div className="provider-subtitle">{p.subtitle}</div>
                   <div className="provider-format-hint">
                     {lockedByLicense ? (

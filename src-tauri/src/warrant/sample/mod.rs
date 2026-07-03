@@ -105,7 +105,7 @@ impl From<serde_json::Error> for SampleError {
 
 // ─── Envelope schema (the JSON we send to the server) ────────────────────
 
-pub const SCHEMA_VERSION: u32 = 1;
+pub const SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SampleEnvelope {
@@ -208,7 +208,7 @@ pub fn detect_format(path: &Path, peek: &[u8]) -> DetectedFormat {
         "eml" | "msg" => DetectedFormat::Eml,
         "pdf" => DetectedFormat::Pdf,
         "xml" => DetectedFormat::Xml,
-        "txt" | "log" | "md" => DetectedFormat::Text,
+        "txt" | "log" | "md" => classify_textlike(peek),
         // Images
         "jpg" | "jpeg" | "png" | "gif" | "webp" | "tiff" | "tif"
         | "bmp" | "heic" | "heif" | "svg" | "ico" | "avif"
@@ -242,6 +242,11 @@ fn sniff_format(peek: &[u8]) -> DetectedFormat {
     // Common media / office magic bytes.
     if let Some(fmt) = sniff_binary_magic(peek) {
         return fmt;
+    }
+    // X / Twitter productions wrap JSON in a PGP cleartext signature and use
+    // `.txt` (or no) extensions.  Peek past the wrapper for a JSON opener.
+    if peek_is_jsonish(peek) {
+        return DetectedFormat::Json;
     }
     // Strip BOM
     let head = if peek.starts_with(&[0xEF, 0xBB, 0xBF]) {
@@ -590,7 +595,21 @@ fn inspect_zip_entry(
 /// it under `FileEntry.structure`.
 fn inspect_bytes(fmt: DetectedFormat, content: &[u8]) -> serde_json::Value {
     match fmt {
-        DetectedFormat::Json => json_schema::inspect(content),
+        DetectedFormat::Json => {
+            let (bytes, meta) = normalize_jsonish(content);
+            let mut fp = json_schema::inspect(&bytes);
+            if let serde_json::Value::Object(map) = &mut fp {
+                if meta.pgp_signed {
+                    map.insert("pgp_signed".into(), serde_json::json!(true));
+                    map.insert("container".into(), serde_json::json!("pgp_cleartext"));
+                }
+                if meta.marker_delimited {
+                    map.insert("marker_delimited".into(), serde_json::json!(true));
+                    map.insert("object_count".into(), serde_json::json!(meta.object_count));
+                }
+            }
+            fp
+        }
         DetectedFormat::Html => html_fp::inspect(content),
         DetectedFormat::Csv => csv_fp::inspect(content, b','),
         DetectedFormat::Tsv => csv_fp::inspect(content, b'\t'),
@@ -705,6 +724,159 @@ fn count_lines(content: &[u8]) -> usize {
     content.iter().filter(|&&b| b == b'\n').count() + 1
 }
 
+// ─── PGP-cleartext-aware JSON detection (X / Twitter productions) ─────────
+
+/// `.txt` files that are actually JSON (X wraps each record file in a PGP
+/// cleartext signature) get routed to the JSON fingerprinter; plain text
+/// stays text.
+fn classify_textlike(peek: &[u8]) -> DetectedFormat {
+    if peek_is_jsonish(peek) {
+        DetectedFormat::Json
+    } else {
+        DetectedFormat::Text
+    }
+}
+
+/// True if the first non-whitespace byte (after stripping an optional PGP
+/// cleartext-signature wrapper and BOM) opens a JSON object/array.
+fn peek_is_jsonish(peek: &[u8]) -> bool {
+    let head = if peek.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        &peek[3..]
+    } else {
+        peek
+    };
+    if let Some(inner) = strip_pgp_cleartext_bytes(head) {
+        return first_nonws_is_json(&inner);
+    }
+    first_nonws_is_json(head)
+}
+
+fn first_nonws_is_json(bytes: &[u8]) -> bool {
+    for &b in bytes {
+        if b.is_ascii_whitespace() {
+            continue;
+        }
+        return b == b'{' || b == b'[';
+    }
+    false
+}
+
+/// Strip a PGP cleartext-signature wrapper, returning just the payload
+/// bytes.  Returns `None` when the content isn't PGP-cleartext-signed.
+fn strip_pgp_cleartext_bytes(content: &[u8]) -> Option<Vec<u8>> {
+    const BEGIN: &str = "-----BEGIN PGP SIGNED MESSAGE-----";
+    const SIG: &str = "-----BEGIN PGP SIGNATURE-----";
+
+    let text = String::from_utf8_lossy(content);
+    let begin = text.find(BEGIN)?;
+    let after = &text[begin + BEGIN.len()..];
+    // Payload starts after the blank line that ends the armor headers.
+    let body_start = after
+        .find("\r\n\r\n")
+        .map(|i| i + 4)
+        .or_else(|| after.find("\n\n").map(|i| i + 2))
+        .unwrap_or(0);
+    let rest = &after[body_start..];
+    let end = rest.find(SIG).unwrap_or(rest.len());
+    let body = &rest[..end];
+
+    // Un-escape cleartext dash-escaping ("- " at line start → "").
+    let mut out = String::with_capacity(body.len());
+    for line in body.split_inclusive('\n') {
+        if let Some(stripped) = line.strip_prefix("- ") {
+            out.push_str(stripped);
+        } else {
+            out.push_str(line);
+        }
+    }
+    Some(out.trim().as_bytes().to_vec())
+}
+
+#[derive(Default)]
+struct JsonMeta {
+    pgp_signed: bool,
+    marker_delimited: bool,
+    object_count: usize,
+}
+
+/// Turn possibly-PGP-wrapped, possibly-marker-delimited content into a clean
+/// JSON byte buffer suitable for the schema fingerprinter.  X tweet/DM files
+/// are a *stream* of `{...}` objects rather than a single JSON array, so we
+/// wrap the extracted objects into an array to fingerprint the element shape.
+fn normalize_jsonish(content: &[u8]) -> (Vec<u8>, JsonMeta) {
+    let mut meta = JsonMeta::default();
+    let body: Vec<u8> = match strip_pgp_cleartext_bytes(content) {
+        Some(b) => {
+            meta.pgp_signed = true;
+            b
+        }
+        None => content.to_vec(),
+    };
+
+    // Already a valid JSON document?  Use as-is.
+    if serde_json::from_slice::<serde_json::Value>(&body).is_ok() {
+        return (body, meta);
+    }
+
+    // Otherwise pull out concatenated top-level objects and wrap them.
+    let objs = extract_json_objects_bytes(&body);
+    if !objs.is_empty() {
+        meta.marker_delimited = true;
+        meta.object_count = objs.len();
+        if let Ok(bytes) = serde_json::to_vec(&serde_json::Value::Array(objs)) {
+            return (bytes, meta);
+        }
+    }
+
+    (body, meta)
+}
+
+/// Balanced-brace scanner: pull top-level `{...}` objects out of a byte
+/// buffer that isn't a strict JSON document (string/escape aware).
+fn extract_json_objects_bytes(bytes: &[u8]) -> Vec<serde_json::Value> {
+    let s = String::from_utf8_lossy(bytes);
+    let b = s.as_bytes();
+    let mut out = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+
+    for (i, &c) in b.iter().enumerate() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == b'\\' {
+                esc = true;
+            } else if c == b'"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            b'"' => in_str = true,
+            b'{' => {
+                if depth == 0 {
+                    start = i;
+                }
+                depth += 1;
+            }
+            b'}' => {
+                if depth > 0 {
+                    depth -= 1;
+                    if depth == 0 {
+                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&s[start..=i]) {
+                            out.push(v);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 fn approx_entry_size(entry: &FileEntry) -> usize {
     // Rough cost: path + 200B fixed + serialized structure bytes
     entry.path.len()
@@ -770,6 +942,64 @@ mod tests {
         let p = Path::new("blob");
         let bytes: Vec<u8> = (0u8..=255).collect();
         assert_eq!(detect_format(p, &bytes), DetectedFormat::Binary);
+    }
+
+    // ─── X / Twitter: PGP-wrapped JSON in .txt files ───────────────────
+
+    fn pgp_wrap(body: &str) -> String {
+        format!(
+            "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n{}\n-----BEGIN PGP SIGNATURE-----\nAAAA\n-----END PGP SIGNATURE-----\n",
+            body
+        )
+    }
+
+    #[test]
+    fn txt_plain_stays_text() {
+        let p = Path::new("notes.txt");
+        assert_eq!(detect_format(p, b"just some notes\nmore notes"), DetectedFormat::Text);
+    }
+
+    #[test]
+    fn txt_with_pgp_json_detected_as_json() {
+        let wrapped = pgp_wrap("[{\"account\":{\"accountId\":\"12345\"}}]");
+        let p = Path::new("1234-account.txt");
+        assert_eq!(detect_format(p, wrapped.as_bytes()), DetectedFormat::Json);
+    }
+
+    #[test]
+    fn pgp_marker_delimited_tweets_fingerprint_captures_fields() {
+        // Two concatenated tweet objects (the real X shape) inside a PGP wrapper.
+        let body = "{\"tweet\":{\"id_str\":\"111\",\"full_text\":\"secret text one\"}}\n\
+                    {\"tweet\":{\"id_str\":\"222\",\"full_text\":\"secret text two\"}}";
+        let wrapped = pgp_wrap(body);
+        let fmt = detect_format(Path::new("tweets.txt"), wrapped.as_bytes());
+        assert_eq!(fmt, DetectedFormat::Json);
+
+        let structure = inspect_bytes(fmt, wrapped.as_bytes());
+        let s = serde_json::to_string(&structure).unwrap();
+
+        // Structural key paths must be captured...
+        assert!(s.contains("[].tweet.id_str"), "missing tweet.id_str path: {s}");
+        assert!(s.contains("[].tweet.full_text"), "missing full_text path");
+        // ...the PGP + marker-delimited flags surfaced...
+        assert!(s.contains("pgp_signed"), "missing pgp_signed flag");
+        assert!(s.contains("marker_delimited"), "missing marker_delimited flag");
+        // ...and NO actual content leaks.
+        assert!(!s.contains("secret text"), "content value leaked into fingerprint!");
+    }
+
+    #[test]
+    fn pgp_dm_fingerprint_no_value_leak() {
+        let body = "[{\"dmConversation\":{\"conversationId\":\"1-2\",\"messages\":[\
+                    {\"messageCreate\":{\"id\":\"m1\",\"senderId\":\"1\",\"recipientId\":\"2\",\
+                    \"text\":\"meet me at midnight\"}}]}}]";
+        let wrapped = pgp_wrap(body);
+        let fmt = detect_format(Path::new("direct-messages.txt"), wrapped.as_bytes());
+        assert_eq!(fmt, DetectedFormat::Json);
+        let structure = inspect_bytes(fmt, wrapped.as_bytes());
+        let s = serde_json::to_string(&structure).unwrap();
+        assert!(s.contains("messageCreate.text"), "missing DM text path");
+        assert!(!s.contains("midnight"), "DM content leaked!");
     }
 
     // ─── Media + Office detection ──────────────────────────────────────

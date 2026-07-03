@@ -240,7 +240,7 @@ export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClos
                 type="text"
                 value={providerHint}
                 onChange={(e) => setProviderHint(e.target.value)}
-                placeholder='e.g. "T-Mobile CDR", "KIK return", "Apple iCloud zip"'
+                placeholder='e.g. "X / Twitter return", "T-Mobile CDR", "Apple iCloud zip"'
                 className="sws-input"
               />
             </div>

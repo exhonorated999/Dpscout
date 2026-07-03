@@ -28,6 +28,9 @@ use std::path::{Component, Path};
 #[derive(Default)]
 pub struct PathSanitizer {
     counters: HashMap<String, usize>,
+    /// Per-parent set of already-emitted structural leaf names, so two
+    /// files that preserve the same record-type stem stay distinct.
+    used_leaves: HashMap<String, std::collections::HashSet<String>>,
 }
 
 impl PathSanitizer {
@@ -72,22 +75,59 @@ impl PathSanitizer {
             .and_then(|e| e.to_str())
             .map(|e| e.to_ascii_lowercase());
 
-        // Per-parent counter.
         let parent_key = dirs_out.join("/");
-        let n = self
-            .counters
-            .entry(parent_key.clone())
-            .or_insert(0);
-        *n += 1;
-        let leaf_out = match ext {
-            Some(e) if !e.is_empty() => format!("file_{:03}.{}", n, e),
-            _ => format!("file_{:03}", n),
+
+        // Prefer preserving a *structural* record-type stem.  Some
+        // providers (notably X / Twitter) encode the record type in the
+        // leaf filename itself — `account.txt`, `tweets.txt`,
+        // `direct-messages.txt`, `follower.txt` — rather than in the
+        // directory layout.  We keep the stem ONLY when it matches a
+        // known, non-PII warrant record vocabulary (after stripping any
+        // leading numeric account-id prefix).  Everything else keeps the
+        // privacy-first `file_NNN.ext` numbering.
+        let leaf_out = if let Some(stem) = structural_leaf_stem(leaf_in) {
+            let base = match &ext {
+                Some(e) if !e.is_empty() => format!("{}.{}", stem, e),
+                _ => stem,
+            };
+            self.dedupe_leaf(&parent_key, base)
+        } else {
+            let n = self.counters.entry(parent_key.clone()).or_insert(0);
+            *n += 1;
+            match &ext {
+                Some(e) if !e.is_empty() => format!("file_{:03}.{}", n, e),
+                _ => format!("file_{:03}", n),
+            }
         };
 
         if dirs_out.is_empty() {
             leaf_out
         } else {
             format!("{}/{}", parent_key, leaf_out)
+        }
+    }
+
+    /// Ensure a preserved structural leaf name is unique within its parent
+    /// directory; on collision append `_2`, `_3`, …
+    fn dedupe_leaf(&mut self, parent_key: &str, base: String) -> String {
+        let set = self
+            .used_leaves
+            .entry(parent_key.to_string())
+            .or_default();
+        if set.insert(base.clone()) {
+            return base;
+        }
+        let (stem, ext) = split_ext(&base);
+        let mut i = 2usize;
+        loop {
+            let cand = match &ext {
+                Some(e) => format!("{}_{}.{}", stem, i, e),
+                None => format!("{}_{}", stem, i),
+            };
+            if set.insert(cand.clone()) {
+                return cand;
+            }
+            i += 1;
         }
     }
 }
@@ -213,6 +253,147 @@ fn looks_like_high_entropy_id(s: &str) -> bool {
     false
 }
 
+// ─── Structural leaf-name preservation ───────────────────────────────────
+
+/// Known warrant record-type filename stems (lower-case, extension-free).
+/// These are structural — they identify a record type, contain no PII, and
+/// are exactly what a parser author needs to see.  Preserved verbatim; any
+/// leaf not in this set keeps the privacy-first `file_NNN` numbering.
+///
+/// Heavily weighted toward X / Twitter productions (where the record type
+/// lives in the filename), plus a handful of common structural leaves used
+/// by other providers.
+const RECORD_STEMS: &[&str] = &[
+    // ── X / Twitter ──
+    "account",
+    "account-limited",
+    "account-creation-ip",
+    "account-label",
+    "account-suspension",
+    "account-timezone",
+    "expanded-profile",
+    "verified-organization",
+    "ageinfo",
+    "screen-name-change",
+    "timezone",
+    "email-address-change",
+    "phone-number",
+    "tweets",
+    "deleted-tweets",
+    "tweet-headers",
+    "deleted-tweet-headers",
+    "moment",
+    "article",
+    "community-tweet",
+    "community_tweet",
+    "note-tweet",
+    "direct-messages",
+    "deleted-direct-messages",
+    "direct-messages-group",
+    "deleted-direct-messages-group",
+    "message-event",
+    "grok-chat-item",
+    "audio-video-calls",
+    "follower",
+    "following",
+    "like",
+    "block",
+    "mute",
+    "lists",
+    "lists-created",
+    "lists-member",
+    "lists-subscribed",
+    "saved-search",
+    "ad-impressions",
+    "ad-engagements",
+    "ad-mobile-conversions-attributed",
+    "personalization",
+    "ads-revenue-sharing",
+    "catalog",
+    "commerce",
+    "product",
+    "shop",
+    "shopify",
+    "community-note",
+    "spaces",
+    "periscope",
+    "ip-audit",
+    "device",
+    "device-token",
+    "sso",
+    "key-registry",
+    "connected-application",
+    "connected-app-permissions",
+    "user-directory",
+    // ── Common structural leaves from other providers ──
+    "conversations",
+    "messages",
+    "subscriber_info",
+    "login_history",
+    "friends",
+    "snap_history",
+    "ai_conversations",
+    "call_logs",
+    "memories",
+    "geo_locations",
+    "device_advertising_id",
+    "readme",
+    "index",
+    "manifest",
+];
+
+/// Return a cleaned, structural leaf *stem* (no extension) when the leaf
+/// filename is a recognised record-type token safe to preserve, else
+/// `None` (the caller then applies `file_NNN` numbering).
+fn structural_leaf_stem(leaf_in: &str) -> Option<String> {
+    let stem = Path::new(leaf_in).file_stem().and_then(|s| s.to_str())?;
+    let core = strip_numeric_id_prefix(stem);
+    if core.is_empty() {
+        return None;
+    }
+    // Defence-in-depth: never preserve a PII-shaped stem even if it somehow
+    // collides with the vocabulary.
+    if looks_like_email(core)
+        || looks_like_uuid(core)
+        || looks_like_phone(core)
+        || looks_like_high_entropy_id(core)
+    {
+        return None;
+    }
+    let lower = core.to_ascii_lowercase();
+    if RECORD_STEMS.contains(&lower.as_str()) {
+        // Preserve the original casing (e.g. `README`), matched case-insensitively.
+        Some(core.to_string())
+    } else {
+        None
+    }
+}
+
+/// Strip a leading numeric account-id prefix: `1234567890-account` →
+/// `account`.  Only strips when the head is ≥4 digits and something follows.
+fn strip_numeric_id_prefix(stem: &str) -> &str {
+    if let Some((head, rest)) = stem.split_once('-') {
+        if head.len() >= 4
+            && !rest.is_empty()
+            && head.chars().all(|c| c.is_ascii_digit())
+        {
+            return rest;
+        }
+    }
+    stem
+}
+
+fn split_ext(name: &str) -> (String, Option<String>) {
+    let p = Path::new(name);
+    match p.extension().and_then(|e| e.to_str()) {
+        Some(e) => {
+            let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+            (stem.to_string(), Some(e.to_string()))
+        }
+        None => (name.to_string(), None),
+    }
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -285,9 +466,11 @@ mod tests {
 
     #[test]
     fn root_level_file() {
+        // README is a recognised structural manifest — preserved verbatim
+        // (it's the content catalog in an X production).
         let mut sa = PathSanitizer::new();
         let out = sa.sanitize(Path::new("README.txt"));
-        assert_eq!(out, "file_001.txt");
+        assert_eq!(out, "README.txt");
     }
 
     #[test]
@@ -307,5 +490,56 @@ mod tests {
         assert_eq!(sanitize_dir_component("messages"), "messages");
         assert_eq!(sanitize_dir_component("Attachments"), "Attachments");
         assert_eq!(sanitize_dir_component("user_data_backup"), "user_data_backup");
+    }
+
+    // ── Structural leaf-name preservation (X / Twitter) ──
+
+    #[test]
+    fn preserves_x_record_type_leaf() {
+        assert_eq!(s("tweets.txt"), "tweets.txt");
+        assert_eq!(s("direct-messages.txt"), "direct-messages.txt");
+        assert_eq!(s("follower.txt"), "follower.txt");
+        assert_eq!(s("ad-impressions.txt"), "ad-impressions.txt");
+    }
+
+    #[test]
+    fn strips_numeric_account_prefix_on_leaf() {
+        // `<accountId>-account.txt` → `account.txt`
+        assert_eq!(s("1234567890-account.txt"), "account.txt");
+        assert_eq!(
+            s("999888777-direct-messages-group.txt"),
+            "direct-messages-group.txt"
+        );
+    }
+
+    #[test]
+    fn distinguishes_follower_from_following() {
+        // The whole point: these differ ONLY by filename.
+        let mut sa = PathSanitizer::new();
+        assert_eq!(sa.sanitize(Path::new("follower.txt")), "follower.txt");
+        assert_eq!(sa.sanitize(Path::new("following.txt")), "following.txt");
+    }
+
+    #[test]
+    fn non_vocab_leaf_still_numbered() {
+        // Unknown / opaque leaves keep the privacy-first numbering.
+        assert_eq!(s("random-notes.txt"), "file_001.txt");
+        assert_eq!(s("IMG_2093.jpg"), "file_001.jpg");
+    }
+
+    #[test]
+    fn media_named_by_id_is_numbered_not_preserved() {
+        // X media: `<tweetId>-<token>.jpg` → not a record stem → numbered.
+        assert_eq!(
+            s("2009594515716546639-Ab12Cd.jpg"),
+            "file_001.jpg"
+        );
+    }
+
+    #[test]
+    fn dedupes_duplicate_structural_leaves() {
+        let mut sa = PathSanitizer::new();
+        assert_eq!(sa.sanitize(Path::new("A/tweets.txt")), "A/tweets.txt");
+        assert_eq!(sa.sanitize(Path::new("A/tweets.txt")), "A/tweets_2.txt");
     }
 }
