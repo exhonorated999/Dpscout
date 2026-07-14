@@ -71,8 +71,62 @@ pub struct HtmlFingerprint {
     /// row template per bucket without seeing values.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub per_id_skeleton: BTreeMap<String, IdSkeleton>,
+    /// Per-section key/value field map with value-shape inference.  This is
+    /// the HTML analogue of the CSV column fingerprint: for each label
+    /// (`<th>` / key cell) grouped by its nearest ancestor element id
+    /// (the section, e.g. `property-ncmec_reports`, `home`), we record the
+    /// inferred value format, length range, occurrence count, and how many
+    /// of those values reference a media file — WITHOUT ever storing a
+    /// value.  A parser author can read these directly into a schema:
+    /// which fields exist per section, what shape each value is, how many
+    /// records repeat, and which field starts each record.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub kv_sections: BTreeMap<String, KvSection>,
+    /// Media-reference patterns found across values / `src` / `href`:
+    /// `"<parent_dir>/*.<ext>"` → count (e.g. `"linked_media/*.mp4": 3`).
+    /// Tells a parser author exactly how attachments are referenced so the
+    /// link-media step can be written without seeing evidence.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub media_refs: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parse_error: Option<String>,
+}
+
+/// Per-section key/value field map (HTML analogue of a CSV column set).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KvSection {
+    /// Distinct labels seen under this section, in first-seen order.
+    pub fields: Vec<KvField>,
+    /// Label with the highest occurrence count — the likely record-boundary
+    /// key for a repeating record block (e.g. "Timestamp", "CyberTip ID").
+    /// Only set when the section looks like a repeating record (>1 field,
+    /// max count >= 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub record_boundary: Option<String>,
+    /// Approximate number of repeating records = the max field occurrence
+    /// count in the section.
+    pub approx_records: usize,
+}
+
+/// One label within a section: its inferred value shape and stats.  Never
+/// contains a value — only the classification and lengths.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct KvField {
+    pub label: String,
+    /// `format_infer` tag: `iso8601_timestamp`, `phone_us10`, `md5_hex`,
+    /// `integer_string`, `string(a..b)`, etc.  None when no values seen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value_format: Option<String>,
+    pub count: usize,
+    pub min_len: usize,
+    pub max_len: usize,
+    /// How many of this field's values referenced a media file.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub media_ref_count: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -304,6 +358,11 @@ fn walk(doc: &Html, fp: &mut HtmlFingerprint) {
 
     // Build per-id structural skeleton for each safe id.
     build_id_skeletons(doc, fp);
+
+    // Build per-section KV field map (labels + value-shape inference) and
+    // media-reference patterns — the parser-authoring payload.
+    build_kv_sections(doc, fp);
+    build_media_refs(doc, fp);
 
     // Walk tables specifically for row/column distribution.
     let table_sel = Selector::parse("table").unwrap();
@@ -601,6 +660,311 @@ fn scheme_bucket(url: &str) -> String {
     "relative".into()
 }
 
+// ─── KV field-map + media-reference builders ─────────────────────────────
+
+use super::format_infer::infer_tag_from_samples;
+
+const MAX_KV_SECTIONS: usize = 48;
+const MAX_KV_FIELDS_PER_SECTION: usize = 96;
+const MAX_KV_SAMPLES: usize = 64;
+const MAX_KV_LABEL_LEN: usize = 60;
+const MAX_MEDIA_REF_BUCKETS: usize = 48;
+
+/// Transient per-(section,label) accumulator.  `samples` are held only
+/// long enough to infer a value-shape tag, then dropped — they are NEVER
+/// serialized (same privacy model as the CSV column fingerprint).
+#[derive(Default)]
+struct KvAcc {
+    count: usize,
+    min_len: usize,
+    max_len: usize,
+    media_ref_count: usize,
+    samples: Vec<String>,
+}
+
+#[derive(Default)]
+struct SectionAcc {
+    order: Vec<String>,
+    fields: HashMap<String, KvAcc>,
+}
+
+/// Media file extensions we recognise for reference-pattern bucketing.
+fn media_ext_of(name: &str) -> Option<String> {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let known = [
+        "jpg", "jpeg", "png", "gif", "webp", "tiff", "tif", "bmp", "heic",
+        "heif", "avif", "svg", "ico", "mp4", "m4v", "mov", "mkv", "avi",
+        "wmv", "webm", "flv", "3gp", "3g2", "mpg", "mpeg", "mp3", "m4a",
+        "wav", "aac", "ogg", "opus", "flac", "wma", "amr", "pdf", "vcf",
+    ];
+    if known.contains(&ext.as_str()) {
+        Some(ext)
+    } else {
+        None
+    }
+}
+
+/// Turn a path-ish token into a structural media bucket
+/// `"<parent_dir>/*.<ext>"` — dropping the (PII-shaped) filename while
+/// keeping the folder + extension a parser needs.  Returns None when the
+/// token is not a relative media path.
+fn media_ref_bucket(token: &str) -> Option<String> {
+    let t = token.trim().trim_matches(|c| c == '"' || c == '\'');
+    if t.is_empty() || !t.contains('/') { return None; }
+    if t.contains("://") || t.starts_with("data:") { return None; }
+    let ext = media_ext_of(t)?;
+    let segs: Vec<&str> = t.split('/').filter(|s| !s.is_empty()).collect();
+    if segs.len() < 2 { return None; }
+    let parent = segs[segs.len() - 2];
+    // Guard: parent dir name must be structural (not a redacted/PII shape).
+    if parent.len() > 40 || parent.contains('@') { return None; }
+    Some(format!("{}/*.{}", parent, ext))
+}
+
+/// Normalised text of an element: descendant text, whitespace-collapsed.
+fn el_text_norm(el: scraper::ElementRef<'_>) -> String {
+    el.text()
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn first_direct_text(el: scraper::ElementRef<'_>) -> String {
+    for child in el.children() {
+        if let scraper::node::Node::Text(t) = child.value() {
+            let s = t.text.trim();
+            if !s.is_empty() {
+                return s.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+fn direct_child_el<'a>(
+    el: scraper::ElementRef<'a>,
+    name: &str,
+) -> Option<scraper::ElementRef<'a>> {
+    el.children()
+        .filter_map(scraper::ElementRef::wrap)
+        .find(|e| e.value().name() == name)
+}
+
+/// A KV label is acceptable when it is short, PII-safe, and non-empty.
+/// (Field names like "Account Identifier", "From", "Ncmec File Id".)
+fn kv_label_ok(label: &str) -> bool {
+    let l = label.trim();
+    !l.is_empty() && l.chars().count() <= MAX_KV_LABEL_LEN && is_pii_safe(l)
+}
+
+fn nearest_section_id(el: scraper::ElementRef<'_>) -> String {
+    for anc in el.ancestors() {
+        if let Some(e) = anc.value().as_element() {
+            if let Some(id) = e.attr("id") {
+                if !id.is_empty() {
+                    return id.to_string();
+                }
+            }
+        }
+    }
+    "(root)".into()
+}
+
+fn kv_record(
+    sections: &mut BTreeMap<String, SectionAcc>,
+    section: String,
+    label: String,
+    value: &str,
+    media_hits: usize,
+) {
+    if !sections.contains_key(&section) && sections.len() >= MAX_KV_SECTIONS {
+        return;
+    }
+    let sec = sections.entry(section).or_default();
+    let is_new = !sec.fields.contains_key(&label);
+    if is_new && sec.order.len() >= MAX_KV_FIELDS_PER_SECTION {
+        return;
+    }
+    if is_new {
+        sec.order.push(label.clone());
+    }
+    let acc = sec.fields.entry(label).or_default();
+    acc.count += 1;
+    let len = value.chars().count();
+    if acc.count == 1 {
+        acc.min_len = len;
+        acc.max_len = len;
+    } else {
+        acc.min_len = acc.min_len.min(len);
+        acc.max_len = acc.max_len.max(len);
+    }
+    if media_hits > 0 {
+        acc.media_ref_count += 1;
+    }
+    // Keep a bounded, non-empty sample bag for shape inference only.
+    if !value.is_empty() && acc.samples.len() < MAX_KV_SAMPLES {
+        acc.samples.push(value.to_string());
+    }
+}
+
+/// Count media references inside a value cell: descendant `src`/`href`
+/// attributes plus path-like tokens in the text.
+fn media_hits_in_cell(
+    cell: scraper::ElementRef<'_>,
+    value_text: &str,
+    src_sel: &Selector,
+) -> usize {
+    let mut hits = 0usize;
+    for e in cell.select(src_sel) {
+        let ev = e.value();
+        if let Some(s) = ev.attr("src").or_else(|| ev.attr("href")) {
+            if media_ref_bucket(s).is_some() {
+                hits += 1;
+            }
+        }
+    }
+    for tok in value_text.split_whitespace() {
+        if media_ref_bucket(tok).is_some() {
+            hits += 1;
+        }
+    }
+    hits
+}
+
+/// Build the per-section KV field map from both real `<table>` markup and
+/// Meta-style `div.div_table` markup.
+fn build_kv_sections(doc: &Html, fp: &mut HtmlFingerprint) {
+    let tr_sel = Selector::parse("tr").unwrap();
+    let table_sel = Selector::parse("table").unwrap();
+    let src_sel = Selector::parse("[src], [href]").unwrap();
+    let dt_sel = match Selector::parse(r#"div.div_table[style*="display:table"]"#) {
+        Ok(s) => s,
+        Err(_) => Selector::parse("div.div_table").unwrap(),
+    };
+    let cell_sel = Selector::parse(r#"div[style*="display:table-cell"]"#).unwrap();
+
+    let mut sections: BTreeMap<String, SectionAcc> = BTreeMap::new();
+
+    // (a) Real-table KV: <tr> with direct <th> + leaf <td> (no nested table).
+    for tr in doc.select(&tr_sel) {
+        let (Some(th), Some(td)) = (direct_child_el(tr, "th"), direct_child_el(tr, "td"))
+        else {
+            continue;
+        };
+        if td.select(&table_sel).next().is_some() {
+            continue; // wrapper row — its leaves are visited separately
+        }
+        let label = th
+            .text()
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if !kv_label_ok(&label) {
+            continue;
+        }
+        let value = el_text_norm(td);
+        let media = media_hits_in_cell(td, &value, &src_sel);
+        let sec = nearest_section_id(tr);
+        kv_record(&mut sections, sec, label, &value, media);
+    }
+
+    // (b) Meta div_table KV: div.div_table[display:table] → label + cell.
+    for dt in doc.select(&dt_sel) {
+        let label = first_direct_text(dt);
+        if !kv_label_ok(&label) || label.contains("Definition") {
+            continue;
+        }
+        let Some(cell) = dt.select(&cell_sel).next() else {
+            continue;
+        };
+        let value = el_text_norm(cell);
+        let media = media_hits_in_cell(cell, &value, &src_sel);
+        let sec = nearest_section_id(dt);
+        kv_record(&mut sections, sec, label, &value, media);
+    }
+
+    // Finalize: infer value shapes, pick record boundary, drop samples.
+    for (sec_id, acc) in sections {
+        let mut fields = Vec::new();
+        let mut max_count = 0usize;
+        let mut boundary: Option<String> = None;
+        for label in &acc.order {
+            let a = &acc.fields[label];
+            let sample_refs: Vec<&str> = a.samples.iter().map(|s| s.as_str()).collect();
+            let value_format = infer_tag_from_samples(&sample_refs);
+            if a.count > max_count {
+                max_count = a.count;
+                boundary = Some(label.clone());
+            }
+            fields.push(KvField {
+                label: label.clone(),
+                value_format,
+                count: a.count,
+                min_len: a.min_len,
+                max_len: a.max_len,
+                media_ref_count: a.media_ref_count,
+            });
+        }
+        if fields.is_empty() {
+            continue;
+        }
+        // Only call it a "record boundary" for repeating multi-field blocks.
+        let record_boundary = if fields.len() > 1 && max_count >= 2 {
+            boundary
+        } else {
+            None
+        };
+        fp.kv_sections.insert(
+            sec_id,
+            KvSection {
+                fields,
+                record_boundary,
+                approx_records: max_count,
+            },
+        );
+    }
+}
+
+/// Scan the whole document for media-reference patterns (src/href attrs +
+/// path-like text tokens) and bucket them as `"<parent>/*.<ext>": count`.
+fn build_media_refs(doc: &Html, fp: &mut HtmlFingerprint) {
+    let attr_sel = Selector::parse("[src], [href]").unwrap();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+
+    for e in doc.select(&attr_sel) {
+        let ev = e.value();
+        if let Some(s) = ev.attr("src").or_else(|| ev.attr("href")) {
+            if let Some(bucket) = media_ref_bucket(s) {
+                if counts.len() < MAX_MEDIA_REF_BUCKETS || counts.contains_key(&bucket) {
+                    *counts.entry(bucket).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    // Also scan visible text for `linked_media/...`-style references that
+    // appear as plain text values rather than attributes.
+    let td_sel = Selector::parse("td, div").unwrap();
+    let table_sel = Selector::parse("table").unwrap();
+    for td in doc.select(&td_sel) {
+        if td.select(&table_sel).next().is_some() {
+            continue;
+        }
+        let text = td.text().collect::<String>();
+        for tok in text.split_whitespace() {
+            if let Some(bucket) = media_ref_bucket(tok) {
+                if counts.len() < MAX_MEDIA_REF_BUCKETS || counts.contains_key(&bucket) {
+                    *counts.entry(bucket).or_insert(0) += 1;
+                }
+            }
+        }
+    }
+
+    fp.media_refs = counts;
+}
+
 // ─── Tests ───────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -879,5 +1243,103 @@ mod tests {
             .collect();
         assert!(bad.is_empty(),
             "IP leaked: {:?}", bad);
+    }
+
+    // ── KV field-map + media-reference tests ──────────────────────────────
+
+    /// A realistic WhatsApp-style section: repeating record rows in a real
+    /// <table>, grouped under a property-id, with value shapes to infer.
+    const WA_OFFLINE: &str = r##"<html><head><title>Facebook Legal Request</title></head><body>
+      <div id="property-offline_log_info" class="content-pane">
+        <table><tr><th>Offline Log Info Definition</th><td>defn<br /></td></tr></table>
+        <table><tr><th>Offline Message Logs</th><td>
+          <table><tr><th>Timestamp</th><td>2023-04-05 04:00:50 UTC<br /></td></tr></table>
+          <table><tr><th>ID</th><td>8EBA9935269E9CAEE59D7E570FDDCA34<br /></td></tr></table>
+          <table><tr><th>From</th><td>50585859530<br /></td></tr></table>
+          <table><tr><th>Event</th><td>media<br /></td></tr></table>
+          <table><tr><th>Timestamp</th><td>2023-04-05 04:07:40 UTC<br /></td></tr></table>
+          <table><tr><th>ID</th><td>52DC0F832E30928BAA07E76E78FA3E68<br /></td></tr></table>
+          <table><tr><th>From</th><td>50585859530<br /></td></tr></table>
+          <table><tr><th>Event</th><td>text<br /></td></tr></table>
+        </td></tr></table>
+      </div>
+    </body></html>"##;
+
+    #[test]
+    fn kv_sections_group_labels_and_infer_shapes() {
+        let fp = build(WA_OFFLINE);
+        let sec = fp
+            .kv_sections
+            .get("property-offline_log_info")
+            .expect("section missing");
+        // Record boundary is the most frequent field.
+        assert_eq!(sec.record_boundary.as_deref(), Some("Timestamp"));
+        assert_eq!(sec.approx_records, 2);
+        let field = |name: &str| sec.fields.iter().find(|f| f.label == name);
+        assert_eq!(field("Timestamp").unwrap().count, 2);
+        assert_eq!(
+            field("Timestamp").unwrap().value_format.as_deref(),
+            Some("iso8601_timestamp")
+        );
+        // 32-char hex message id → md5_hex shape.
+        assert_eq!(field("ID").unwrap().value_format.as_deref(), Some("md5_hex"));
+        // The "Definition" wrapper label lives under the same section but is
+        // fine to keep — it just carries a string shape.
+        assert!(field("From").is_some());
+    }
+
+    #[test]
+    fn kv_sections_capture_ncmec_media_reference() {
+        let html = r##"<html><body>
+          <div id="property-ncmec_reports" class="content-pane">
+            <table><tr><th>CyberTip ID</th><td>159954830<br /></td></tr></table>
+            <table><tr><th>Ncmec File Id</th><td>bc8c3292d319570b197013863cb4d7d2<br /></td></tr></table>
+            <table><tr><th>Linked Media File:</th><td>linked_media/ncmec_reports_2724630461.mp4<br /></td></tr></table>
+            <video controls="1"><source src="linked_media/ncmec_reports_2724630461.mp4" type="video/mp4" /></video>
+          </div>
+        </body></html>"##;
+        let fp = build(html);
+        let sec = fp.kv_sections.get("property-ncmec_reports").unwrap();
+        let lmf = sec.fields.iter().find(|f| f.label == "Linked Media File:").unwrap();
+        assert_eq!(lmf.media_ref_count, 1, "media ref not counted on field");
+        assert_eq!(
+            sec.fields.iter().find(|f| f.label == "Ncmec File Id").unwrap().value_format.as_deref(),
+            Some("md5_hex")
+        );
+        // Global media-reference pattern surfaced for the parser author.
+        assert!(
+            fp.media_refs.get("linked_media/*.mp4").copied().unwrap_or(0) >= 1,
+            "media_refs missing linked_media/*.mp4: {:?}",
+            fp.media_refs
+        );
+    }
+
+    #[test]
+    fn kv_sections_never_leak_values() {
+        // Values must never appear in the serialized envelope — only shapes.
+        let raw = inspect(WA_OFFLINE.as_bytes());
+        let s = serde_json::to_string(&raw).unwrap();
+        assert!(!s.contains("8EBA9935"), "leaked message id: {}", s);
+        assert!(!s.contains("50585859530"), "leaked phone: {}", s);
+        assert!(!s.contains("04:00:50"), "leaked timestamp value: {}", s);
+        // But labels + shapes must be present.
+        assert!(s.contains("Timestamp"));
+        assert!(s.contains("iso8601_timestamp"));
+    }
+
+    #[test]
+    fn media_ref_bucket_rules() {
+        assert_eq!(
+            media_ref_bucket("linked_media/ncmec_reports_1.mp4").as_deref(),
+            Some("linked_media/*.mp4")
+        );
+        assert_eq!(
+            media_ref_bucket("Attachments/photo_007.jpg").as_deref(),
+            Some("Attachments/*.jpg")
+        );
+        // Absolute URLs and non-media are rejected.
+        assert!(media_ref_bucket("https://cdn.example.com/x.mp4").is_none());
+        assert!(media_ref_bucket("records.html").is_none());
+        assert!(media_ref_bucket("just_text").is_none());
     }
 }

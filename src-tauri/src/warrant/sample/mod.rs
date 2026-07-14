@@ -1309,4 +1309,56 @@ mod tests {
         assert!(combined_ids.iter().any(|i| i.starts_with("property-")),
             "per_id_skeleton missing property-* buckets: {:?}", combined_ids);
     }
+
+    /// Prove the enriched envelope carries enough to WRITE the WhatsApp
+    /// parser from scratch: per-section KV field maps with value shapes,
+    /// record counts, and media-reference patterns.
+    ///   cargo test --lib warrant::sample::tests::smoke_whatsapp_zip -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn smoke_whatsapp_zip() {
+        let path = Path::new(
+            r"C:\Users\JUSTI\Desktop\New VIPER Evidence Support Files\Warrant Returns\WhatsApp R\628361162547139.zip",
+        );
+        if !path.exists() {
+            eprintln!("WhatsApp zip not present at {:?}, skipping", path);
+            return;
+        }
+        let env = build_envelope(path, BuildOptions::default()).expect("envelope built");
+        println!("files captured: {}", env.root_summary.total_files);
+        println!("format counts:  {:?}", env.root_summary.format_counts);
+
+        for e in env.tree.iter().filter(|e| e.format == "html") {
+            let s = &e.structure;
+            println!("\n=== {} ===", e.path);
+            if let Some(t) = s.get("title_text").and_then(|v| v.as_str()) {
+                println!("title: {}", t);
+            }
+            if let Some(m) = s.get("media_refs").and_then(|v| v.as_object()) {
+                if !m.is_empty() { println!("media_refs: {:?}", m); }
+            }
+            if let Some(secs) = s.get("kv_sections").and_then(|v| v.as_object()) {
+                for (sec, body) in secs {
+                    let approx = body.get("approx_records").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let boundary = body.get("record_boundary").and_then(|v| v.as_str()).unwrap_or("-");
+                    println!("  [{}] approx_records={} boundary={}", sec, approx, boundary);
+                    if let Some(fields) = body.get("fields").and_then(|v| v.as_array()) {
+                        for f in fields {
+                            let label = f.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                            let fmt = f.get("value_format").and_then(|v| v.as_str()).unwrap_or("-");
+                            let cnt = f.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let media = f.get("media_ref_count").and_then(|v| v.as_u64()).unwrap_or(0);
+                            println!("      {:<26} fmt={:<20} n={:<5} media={}", label, fmt, cnt, media);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Full envelope must NOT leak evidence values.
+        let json = serde_json::to_string(&env).unwrap();
+        assert!(!json.contains("+19098270848"), "leaked account phone");
+        assert!(!json.contains("50585859530"), "leaked sender phone");
+        assert!(!json.contains("8EBA9935"), "leaked message id");
+    }
 }

@@ -11,7 +11,7 @@ const IS_PORTABLE_BUILD = import.meta.env.VITE_PORTABLE === 'true';
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
  * Adding a new provider here AND in Rust + setting `enabled: true` lights up the tile.
  */
-export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo' | 'x';
+export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo' | 'x' | 'whatsapp';
 
 /**
  * Providers that remain available when the demo trial / paid license has
@@ -116,6 +116,20 @@ const XIcon = () => (
   </svg>
 );
 
+// WhatsApp — speech-bubble with tail in brand green.
+const WhatsAppIcon = () => (
+  <svg viewBox="0 0 48 48" width="44" height="44" fill="none">
+    <path
+      d="M24 7c-9.4 0-17 7.6-17 17 0 3 .8 5.9 2.3 8.4L7 41l8.9-2.3c2.4 1.3 5.2 2 8.1 2 9.4 0 17-7.6 17-17S33.4 7 24 7z"
+      stroke="#25D366" strokeWidth="2.5" strokeLinejoin="round"
+    />
+    <path
+      d="M18.5 16.5c-.5 0-1 .2-1.4.9-.5.8-1.6 1.9-1.6 4s1.6 4.3 1.9 4.6c.2.3 3.1 5 7.7 6.8 3.8 1.5 4.6 1.2 5.4 1.1.8-.1 2.6-1 3-2.1.4-1 .4-1.9.3-2.1-.1-.2-.5-.3-1-.6-.5-.3-2.6-1.3-3-1.4-.4-.2-.7-.2-1 .2-.3.5-1.1 1.4-1.3 1.6-.2.3-.5.3-.9.1-.5-.2-2-.7-3.7-2.3-1.4-1.2-2.3-2.7-2.5-3.2-.2-.5 0-.7.2-1 .2-.2.5-.5.7-.8.2-.3.3-.5.5-.8.2-.3.1-.6 0-.9-.1-.2-1-2.5-1.4-3.4-.3-.7-.6-.6-.9-.6h-.5z"
+      fill="#25D366"
+    />
+  </svg>
+);
+
 const PROVIDERS: ProviderTile[] = [
   {
     id: 'meta',
@@ -180,6 +194,15 @@ const PROVIDERS: ProviderTile[] = [
     icon: <XIcon />,
     accent: '#71767b',
     demo: true,
+  },
+  {
+    id: 'whatsapp',
+    name: 'WhatsApp',
+    subtitle: 'WhatsApp / Meta',
+    formatHint: 'WhatsApp production .zip (index.html + preservation) or folder',
+    enabled: true,
+    icon: <WhatsAppIcon />,
+    accent: '#25D366',
   },
 ];
 

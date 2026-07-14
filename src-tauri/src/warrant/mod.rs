@@ -36,6 +36,7 @@ pub enum Provider {
     Google,
     Yahoo,
     X,
+    WhatsApp,
 }
 
 impl Provider {
@@ -48,6 +49,7 @@ impl Provider {
             Provider::Google => "Google",
             Provider::Yahoo => "Yahoo",
             Provider::X => "X (Twitter)",
+            Provider::WhatsApp => "WhatsApp",
         }
     }
 }
@@ -199,6 +201,7 @@ pub mod registry {
             Box::new(super::providers::google::GoogleWarrantParser),
             Box::new(super::providers::yahoo::YahooWarrantParser),
             Box::new(super::providers::x::XWarrantParser),
+            Box::new(super::providers::whatsapp::WhatsAppWarrantParser),
         ]
     }
 
@@ -212,6 +215,7 @@ pub mod registry {
             Provider::Google => Some(Box::new(super::providers::google::GoogleWarrantParser)),
             Provider::Yahoo => Some(Box::new(super::providers::yahoo::YahooWarrantParser)),
             Provider::X => Some(Box::new(super::providers::x::XWarrantParser)),
+            Provider::WhatsApp => Some(Box::new(super::providers::whatsapp::WhatsAppWarrantParser)),
         }
     }
 

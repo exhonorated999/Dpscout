@@ -13,6 +13,7 @@ pub mod discord;
 pub mod google;
 pub mod yahoo;
 pub mod x;
+pub mod whatsapp;
 
 // Shared utilities used by multiple providers.
 pub(crate) mod mbox_lib;
