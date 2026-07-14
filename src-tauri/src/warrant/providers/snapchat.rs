@@ -95,30 +95,42 @@ impl WarrantParser for SnapchatWarrantParser {
             Err(_) => return Ok(false),
         };
 
+        // Folder-agnostic detection.  Modern Snapchat productions may ship as
+        // a flat zip, a nested zip, or the legacy part-folder layout, and they
+        // moved the target-account identity out of `conversations.csv` into
+        // `conversation_list.csv`.  So we match on BASENAME only and treat the
+        // presence of either canonical file as a Snapchat signal.
+        let mut conv_indices: Vec<usize> = Vec::new();
         for i in 0..zip.len() {
-            let mut entry = zip.by_index(i)?;
-            let raw_name = entry.name().to_string();
-            let lower = raw_name.to_lowercase();
+            let entry = zip.by_index(i)?;
+            if entry.is_dir() {
+                continue;
+            }
+            let name = entry.name().to_string();
+            let base = name.rsplit('/').next().unwrap_or(&name).to_ascii_lowercase();
 
-            // Strongest signal: any conversations.csv with the Snapchat preamble.
-            if lower.ends_with("conversations.csv") {
-                let mut head = vec![0u8; 1024];
-                let read = entry.read(&mut head).unwrap_or(0);
-                let head_str = String::from_utf8_lossy(&head[..read]);
-                if head_str.contains("Target username") || head_str.contains("User ID") {
+            // `conversation_list.csv` is Snapchat-specific — accept outright.
+            if base == "conversation_list.csv" {
+                return Ok(true);
+            }
+            if base == "conversations.csv" {
+                conv_indices.push(i);
+            }
+            // Legacy signal: any path segment matching the part-folder pattern.
+            for seg in name.split('/') {
+                if extract_part_tokens(seg).is_some() {
                     return Ok(true);
                 }
             }
         }
 
-        // Fallback: the part-folder naming convention is distinctive enough.
-        let file = File::open(path)?;
-        let mut zip = ZipArchive::new(file)?;
-        for i in 0..zip.len() {
-            let entry = zip.by_index(i)?;
-            let name = entry.name().to_string();
-            let top = name.split('/').next().unwrap_or("");
-            if extract_part_tokens(top).is_some() {
+        // Sniff the head of any conversations.csv for Snapchat column markers.
+        for i in conv_indices {
+            let mut entry = zip.by_index(i)?;
+            let mut head = vec![0u8; 4096];
+            let read = entry.read(&mut head).unwrap_or(0);
+            let head_str = String::from_utf8_lossy(&head[..read]);
+            if head_looks_snapchat(&head_str) {
                 return Ok(true);
             }
         }
@@ -285,7 +297,24 @@ struct ParsedPart {
     snap_history: Vec<HashMap<String, String>>,
     ai_chats: Vec<HashMap<String, String>>,
     call_logs: Vec<HashMap<String, String>>,
+    /// Per-conversation metadata parsed from `conversation_list.csv`
+    /// (introduced in modern Snapchat productions), keyed by lowercased id.
+    conv_meta: HashMap<String, ConvMeta>,
+    /// Target identity parsed from the conversation_list.csv legend line.
+    cl_target_username: Option<String>,
+    cl_target_user_id: Option<String>,
     other_csvs: HashMap<String, (Vec<String>, Vec<HashMap<String, String>>)>,
+}
+
+/// Conversation-level metadata from `conversation_list.csv`.  Modern Snapchat
+/// productions moved `type` / `conversation_title` / group members out of
+/// `conversations.csv` into this separate file; we join on conversation_id.
+#[derive(Clone, Default)]
+struct ConvMeta {
+    ctype: String,
+    title: Option<String>,
+    members: Vec<String>,
+    member_ids: Vec<String>,
 }
 
 #[derive(Default, Clone)]
@@ -309,6 +338,9 @@ struct Merged {
     snap_history: Vec<HashMap<String, String>>,
     ai_chats: Vec<HashMap<String, String>>,
     call_logs: Vec<HashMap<String, String>>,
+    conv_meta: HashMap<String, ConvMeta>,
+    cl_target_username: Option<String>,
+    cl_target_user_id: Option<String>,
     #[allow(dead_code)]
     other_csvs: HashMap<String, (Vec<String>, Vec<HashMap<String, String>>)>,
 }
@@ -348,207 +380,153 @@ fn collect_parts_from_zip(
     let file = File::open(zip_path)?;
     let mut zip = ZipArchive::new(file)?;
 
-    // First pass: figure out which top-level segments are part folders.
-    // A part folder is one whose name matches the username-case-req-part-date
-    // pattern OR whose top dir contains a conversations.csv.
-    let mut top_has_conv: HashSet<String> = HashSet::new();
-    let mut names_by_top: HashMap<String, Vec<String>> = HashMap::new();
+    // Folder-agnostic: group every entry by its directory prefix.  Each
+    // directory that contains at least one CSV or media file becomes a
+    // RawPart.  This transparently handles:
+    //   * flat productions            (everything at the zip root, dir = "")
+    //   * legacy part folders         ({username}-{case}-{req}-{part}-{date}/)
+    //   * arbitrarily nested layouts  (Production-XXX/username-.../...)
+    // Multiple `conversations.csv` (one per part folder) are preserved
+    // because each lives under a distinct directory key.
+    let mut buckets: std::collections::BTreeMap<String, RawPart> = Default::default();
+
     for i in 0..zip.len() {
-        let entry = zip.by_index(i)?;
+        let mut entry = zip.by_index(i)?;
         if entry.is_dir() {
             continue;
         }
         let name = entry.name().to_string();
-        let segs: Vec<&str> = name.split('/').collect();
-        if segs.len() < 2 {
+        let (dir, base) = match name.rsplit_once('/') {
+            Some((d, b)) => (d.to_string(), b.to_string()),
+            None => (String::new(), name.clone()),
+        };
+        let base_lower = base.to_ascii_lowercase();
+        let is_csv = base_lower.ends_with(".csv");
+        let is_media = is_media_basename(&base_lower);
+        if !is_csv && !is_media {
             continue;
         }
-        let top = segs[0].to_string();
-        let lower = name.to_lowercase();
-        if lower.ends_with("/conversations.csv") {
-            top_has_conv.insert(top.clone());
-        }
-        names_by_top.entry(top).or_default().push(name);
-    }
 
-    // Strip an enclosing wrapper folder if present.  Some productions are
-    // zipped as `Production-XXX/{username-...-N-date}/...` where the top
-    // level is a single wrapper directory that contains the actual parts.
-    let wrapper = detect_wrapper_dir(&names_by_top, &top_has_conv);
+        let bucket = buckets.entry(dir.clone()).or_insert_with(|| RawPart {
+            folder: if dir.is_empty() {
+                "production".into()
+            } else {
+                dir.clone()
+            },
+            csvs: HashMap::new(),
+            media_files: Vec::new(),
+        });
 
-    let mut parts: Vec<RawPart> = Vec::new();
-    let target_tops: Vec<String> = if let Some(w) = &wrapper {
-        // Re-bucket using the SECOND segment as the "top".
-        let mut second_to_files: HashMap<String, Vec<String>> = HashMap::new();
-        for (_top, files) in &names_by_top {
-            for f in files {
-                let segs: Vec<&str> = f.split('/').collect();
-                if segs.len() >= 3 && segs[0] == w.as_str() {
-                    second_to_files
-                        .entry(segs[1].to_string())
-                        .or_default()
-                        .push(f.clone());
+        if is_csv {
+            let mut buf = String::new();
+            if entry.read_to_string(&mut buf).is_ok() {
+                // Last-writer-wins is fine within a single directory: Snapchat
+                // never ships two files of the same basename in one folder.
+                bucket.csvs.insert(base_lower, buf);
+            }
+        } else {
+            let out_name = format!("{}~~{}", dir_key_tag(&dir), base);
+            let out_path = media_extract_dir.join(&out_name);
+            if let Ok(mut out) = File::create(&out_path) {
+                if std::io::copy(&mut entry, &mut out).is_ok() {
+                    bucket.media_files.push(out_name);
                 }
             }
         }
-        let seconds: Vec<String> = second_to_files.keys().cloned().collect();
-        names_by_top = second_to_files;
-        top_has_conv.clear();
-        for (sec, files) in &names_by_top {
-            if files
-                .iter()
-                .any(|n| n.to_lowercase().ends_with("/conversations.csv"))
-            {
-                top_has_conv.insert(sec.clone());
+    }
+
+    Ok(buckets.into_values().collect())
+}
+
+/// Sanitize a directory prefix into a filesystem-safe, collision-resistant
+/// tag used to namespace extracted media filenames.  Empty (zip root) → "root".
+fn dir_key_tag(dir: &str) -> String {
+    if dir.is_empty() {
+        return "root".into();
+    }
+    let last = dir.rsplit('/').filter(|s| !s.is_empty()).next().unwrap_or(dir);
+    let tag: String = last
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
             }
-        }
-        seconds
+        })
+        .collect();
+    if tag.is_empty() {
+        "part".into()
     } else {
-        names_by_top.keys().cloned().collect()
-    };
-
-    let prefix_strip = wrapper.as_deref().map(|s| format!("{}/", s));
-
-    for top in target_tops {
-        if !top_has_conv.contains(&top) && extract_part_tokens(&top).is_none() {
-            continue;
-        }
-        let mut csvs: HashMap<String, String> = HashMap::new();
-        let mut media_files: Vec<String> = Vec::new();
-
-        for entry_name in names_by_top.get(&top).cloned().unwrap_or_default() {
-            // Re-prefix with wrapper if we stripped it.
-            let real_name = match &prefix_strip {
-                Some(p) => format!("{}{}", p, entry_name),
-                None => entry_name.clone(),
-            };
-            let mut entry = zip.by_name(&real_name)?;
-            let basename = entry_name
-                .rsplit('/')
-                .next()
-                .unwrap_or(&entry_name)
-                .to_string();
-            let lower_base = basename.to_lowercase();
-
-            if lower_base.ends_with(".csv") {
-                let mut buf = String::new();
-                if entry.read_to_string(&mut buf).is_ok() {
-                    csvs.insert(lower_base.clone(), buf);
-                }
-            } else if is_media_basename(&lower_base) {
-                // Prefix with part folder to avoid filename collisions across parts.
-                let out_name = format!("{}~~{}", top, basename);
-                let out_path = media_extract_dir.join(&out_name);
-                if let Ok(mut out) = File::create(&out_path) {
-                    if std::io::copy(&mut entry, &mut out).is_ok() {
-                        media_files.push(out_name);
-                    }
-                }
-            }
-        }
-
-        if !csvs.is_empty() || !media_files.is_empty() {
-            parts.push(RawPart {
-                folder: top,
-                csvs,
-                media_files,
-            });
-        }
+        tag
     }
-
-    Ok(parts)
 }
 
 fn collect_parts_from_dir(
     dir: &Path,
     media_extract_dir: &Path,
 ) -> Result<Vec<RawPart>, ParseError> {
-    // The user might point us at:
-    //   (a) the part folder itself (conversations.csv directly inside);
-    //   (b) a parent that contains multiple part subfolders;
-    //   (c) a "wrapper" parent that contains a single Production-* folder
-    //       which contains the parts (nested 2 deep).
-    let mut candidate_parts: Vec<PathBuf> = Vec::new();
-
-    let has_conv_here = dir.join("conversations.csv").exists();
-    if has_conv_here {
-        candidate_parts.push(dir.to_path_buf());
-        // Discover sibling parts in the parent dir (VIPER behaviour).
+    // Folder-agnostic mirror of the zip collector.  Walk the tree and group
+    // files by their parent directory; each directory holding a CSV or media
+    // file becomes a RawPart.  When the caller points us at a single part
+    // folder we also scan its parent so sibling parts are still discovered
+    // (legacy behaviour), regardless of the old token-naming convention.
+    let mut roots: Vec<PathBuf> = vec![dir.to_path_buf()];
+    if dir.join("conversations.csv").exists() || dir.join("conversation_list.csv").exists() {
+        // Caller pointed at a single part folder: add sibling part folders
+        // (immediate children of the parent that themselves hold a Snapchat
+        // CSV) so multi-part productions are still fully collected — without
+        // recursively walking the entire parent tree.
         if let Some(parent) = dir.parent() {
-            if let Some(my_tokens) = dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .and_then(extract_part_tokens)
-            {
-                if let Ok(read) = fs::read_dir(parent) {
-                    for ent in read.flatten() {
-                        if !ent
-                            .file_type()
-                            .map(|t| t.is_dir())
-                            .unwrap_or(false)
-                        {
-                            continue;
-                        }
-                        let p = ent.path();
-                        if p == dir {
-                            continue;
-                        }
-                        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
-                            if let Some(t) = extract_part_tokens(name) {
-                                if t.case_id == my_tokens.case_id
-                                    && t.request_id == my_tokens.request_id
-                                    && p.join("conversations.csv").exists()
-                                {
-                                    candidate_parts.push(p);
-                                }
-                            }
-                        }
+            if let Ok(read) = fs::read_dir(parent) {
+                for ent in read.flatten() {
+                    let p = ent.path();
+                    if p == dir || !p.is_dir() {
+                        continue;
+                    }
+                    if p.join("conversations.csv").exists()
+                        || p.join("conversation_list.csv").exists()
+                    {
+                        roots.push(p);
                     }
                 }
             }
         }
-    } else {
-        // Walk one level deep first; if nothing, walk two levels deep.
-        walk_for_part_dirs(dir, 0, 3, &mut candidate_parts);
     }
 
-    candidate_parts.sort();
-    candidate_parts.dedup();
+    let mut by_dir: std::collections::BTreeMap<PathBuf, Vec<PathBuf>> = Default::default();
+    let mut visited: HashSet<PathBuf> = HashSet::new();
+    for root in &roots {
+        collect_files_grouped(root, 0, 6, &mut by_dir, &mut visited);
+    }
 
     let mut parts: Vec<RawPart> = Vec::new();
-    for part_dir in candidate_parts {
-        let folder = part_dir
+    for (parent, files) in by_dir {
+        let folder = parent
             .file_name()
             .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "part".into());
+            .unwrap_or_else(|| "production".into());
 
         let mut csvs: HashMap<String, String> = HashMap::new();
         let mut media_files: Vec<String> = Vec::new();
 
-        if let Ok(read) = fs::read_dir(&part_dir) {
-            for ent in read.flatten() {
-                let p = ent.path();
-                if !p.is_file() {
-                    continue;
+        for p in files {
+            let basename = match p.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            let lower_base = basename.to_lowercase();
+            if lower_base.ends_with(".csv") {
+                if let Ok(text) = fs::read_to_string(&p) {
+                    csvs.insert(lower_base.clone(), text);
                 }
-                let basename = match p.file_name().and_then(|n| n.to_str()) {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                let lower_base = basename.to_lowercase();
-
-                if lower_base.ends_with(".csv") {
-                    if let Ok(text) = fs::read_to_string(&p) {
-                        csvs.insert(lower_base.clone(), text);
-                    }
-                } else if is_media_basename(&lower_base) {
-                    let out_name = format!("{}~~{}", folder, basename);
-                    let out_path = media_extract_dir.join(&out_name);
-                    if let Ok(mut src) = File::open(&p) {
-                        if let Ok(mut dst) = File::create(&out_path) {
-                            if std::io::copy(&mut src, &mut dst).is_ok() {
-                                media_files.push(out_name);
-                            }
+            } else if is_media_basename(&lower_base) {
+                let out_name = format!("{}~~{}", dir_key_tag(&folder), basename);
+                let out_path = media_extract_dir.join(&out_name);
+                if let Ok(mut src) = File::open(&p) {
+                    if let Ok(mut dst) = File::create(&out_path) {
+                        if std::io::copy(&mut src, &mut dst).is_ok() {
+                            media_files.push(out_name);
                         }
                     }
                 }
@@ -567,85 +545,104 @@ fn collect_parts_from_dir(
     Ok(parts)
 }
 
-fn walk_for_part_dirs(dir: &Path, depth: usize, max_depth: usize, out: &mut Vec<PathBuf>) {
+/// Recursively walk `dir`, grouping regular files under their parent
+/// directory.  `visited` tracks directories already processed so overlapping
+/// roots (a part folder and its parent) don't double-count.
+fn collect_files_grouped(
+    dir: &Path,
+    depth: usize,
+    max_depth: usize,
+    by_dir: &mut std::collections::BTreeMap<PathBuf, Vec<PathBuf>>,
+    visited: &mut HashSet<PathBuf>,
+) {
     if depth > max_depth {
         return;
     }
-    if dir.join("conversations.csv").exists() {
-        out.push(dir.to_path_buf());
-        // Don't recurse further once we've found a part folder.
+    let key = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if !visited.insert(key) {
         return;
     }
     if let Ok(read) = fs::read_dir(dir) {
         for ent in read.flatten() {
-            if ent.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                walk_for_part_dirs(&ent.path(), depth + 1, max_depth, out);
+            let p = ent.path();
+            if p.is_file() {
+                by_dir.entry(dir.to_path_buf()).or_default().push(p);
+            } else if p.is_dir() {
+                collect_files_grouped(&p, depth + 1, max_depth, by_dir, visited);
             }
         }
     }
-}
-
-/// Detect a single wrapper folder (e.g. `Production-XXX/`) whose immediate
-/// children look like Snapchat part folders.  Returns the wrapper name to
-/// strip, or None if no wrapper is present.
-fn detect_wrapper_dir(
-    names_by_top: &HashMap<String, Vec<String>>,
-    _top_has_conv: &HashSet<String>,
-) -> Option<String> {
-    if names_by_top.len() != 1 {
-        return None;
-    }
-    let top = names_by_top.keys().next()?;
-    // If THIS top is itself a part folder (matches the tokens pattern), don't strip.
-    if extract_part_tokens(top).is_some() {
-        return None;
-    }
-    // Check whether the second-level segments look like part folders.
-    let mut second_part_count = 0;
-    for n in names_by_top.get(top)? {
-        let segs: Vec<&str> = n.split('/').collect();
-        if segs.len() >= 3 && extract_part_tokens(segs[1]).is_some() {
-            second_part_count += 1;
-            if second_part_count >= 2 {
-                return Some(top.clone());
-            }
-        }
-    }
-    // Single inner part folder also counts.
-    if second_part_count >= 1 {
-        return Some(top.clone());
-    }
-    None
 }
 
 fn dir_has_snapchat_format(dir: &Path) -> bool {
     let check_conv_preamble = |p: &Path| -> bool {
-        let mut buf = vec![0u8; 1024];
+        let mut buf = vec![0u8; 4096];
         if let Ok(mut f) = File::open(p) {
             let n = f.read(&mut buf).unwrap_or(0);
             let s = String::from_utf8_lossy(&buf[..n]);
-            return s.contains("Target username") || s.contains("User ID");
+            return head_looks_snapchat(&s);
         }
         false
     };
 
-    let here = dir.join("conversations.csv");
-    if here.exists() && check_conv_preamble(&here) {
-        return true;
-    }
-
-    // Walk up to 3 levels deep looking for any conversations.csv with the
-    // Snapchat preamble.  Production layouts on USB drives often nest 2-3
-    // levels (USB → Production-XXX → username-... → conversations.csv).
+    // Folder-agnostic: walk up to 4 levels and accept on the first
+    // `conversation_list.csv` (Snapchat-specific) or a `conversations.csv`
+    // whose head carries Snapchat column markers.  Also accept the legacy
+    // part-folder naming convention on any directory name.
     let mut found = false;
-    walk_check(dir, 0, 3, &mut |p| {
-        if p.file_name().and_then(|n| n.to_str()) == Some("conversations.csv")
-            && check_conv_preamble(p)
-        {
+    walk_check(dir, 0, 4, &mut |p| {
+        if found {
+            return;
+        }
+        let base = p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|s| s.to_ascii_lowercase())
+            .unwrap_or_default();
+        if base == "conversation_list.csv" {
+            found = true;
+        } else if base == "conversations.csv" && check_conv_preamble(p) {
             found = true;
         }
     });
-    found
+    if found {
+        return true;
+    }
+
+    // Legacy part-folder naming anywhere in the tree.
+    let mut part_like = false;
+    walk_check_dirs(dir, 0, 4, &mut |p| {
+        if let Some(name) = p.file_name().and_then(|n| n.to_str()) {
+            if extract_part_tokens(name).is_some() {
+                part_like = true;
+            }
+        }
+    });
+    part_like
+}
+
+/// Snapchat CSV head signature: identity markers from the legend preamble OR
+/// the distinctive conversations.csv column header.
+fn head_looks_snapchat(s: &str) -> bool {
+    s.contains("Target username")
+        || s.contains("User ID")
+        || s.contains("conversation_id")
+        || (s.contains("content_type") && s.contains("message_type"))
+}
+
+fn walk_check_dirs(dir: &Path, depth: usize, max_depth: usize, cb: &mut impl FnMut(&Path)) {
+    if depth > max_depth {
+        return;
+    }
+    if let Ok(read) = fs::read_dir(dir) {
+        for ent in read.flatten() {
+            let p = ent.path();
+            if p.is_dir() {
+                cb(&p);
+                walk_check_dirs(&p, depth + 1, max_depth, cb);
+            }
+        }
+    }
 }
 
 fn walk_check(dir: &Path, depth: usize, max_depth: usize, cb: &mut impl FnMut(&Path)) {
@@ -662,6 +659,179 @@ fn walk_check(dir: &Path, depth: usize, max_depth: usize, cb: &mut impl FnMut(&P
             }
         }
     }
+}
+
+// ─── conversation_list.csv (modern productions) ─────────────────────────
+
+/// Parse Snapchat's `conversation_list.csv`.  The file has one or more blocks;
+/// each block begins with a header row starting `conversation_id,` (containing
+/// `type`), optionally preceded by a legend line and the target-identity line.
+/// Data rows are recognised by a UUID in the first column.  Returns the
+/// per-conversation metadata plus the target username / user id if present.
+fn parse_conversation_list(
+    text: &str,
+) -> (HashMap<String, ConvMeta>, Option<String>, Option<String>) {
+    let mut meta: HashMap<String, ConvMeta> = HashMap::new();
+    let mut target_user: Option<String> = None;
+    let mut target_uid: Option<String> = None;
+
+    if text.trim().is_empty() {
+        return (meta, target_user, target_uid);
+    }
+
+    let lines: Vec<&str> = text.lines().collect();
+    if let Some(first) = lines.first() {
+        target_user = extract_quoted_after(first, "Target username");
+        target_uid = extract_quoted_after(first, "User ID");
+    }
+
+    let mut i = 0usize;
+    while i < lines.len() {
+        let st = lines[i].trim();
+        if !(st.starts_with("conversation_id,") && st.contains("type")) {
+            i += 1;
+            continue;
+        }
+        // Header row.
+        let header: Vec<String> = parse_csv(lines[i])
+            .into_iter()
+            .next()
+            .unwrap_or_default()
+            .iter()
+            .map(|s| s.trim().to_string())
+            .collect();
+        i += 1;
+
+        while i < lines.len() {
+            let raw = lines[i];
+            let s = raw.trim();
+            if s.is_empty() {
+                i += 1;
+                continue;
+            }
+            if s.starts_with("---") || s.starts_with("===") {
+                break;
+            }
+            if s.starts_with("conversation_id,") && s.contains("type") {
+                break; // next block's header
+            }
+            if s.starts_with('"') && s.contains("Legend") {
+                i += 1;
+                continue;
+            }
+
+            let row = parse_csv(raw).into_iter().next().unwrap_or_default();
+            let cid = cell(&header, &row, "conversation_id");
+            if !is_uuid(&cid) {
+                i += 1;
+                continue;
+            }
+
+            let m = ConvMeta {
+                ctype: cell(&header, &row, "type"),
+                title: {
+                    let t = cell(&header, &row, "conversation_title");
+                    if t.is_empty() {
+                        None
+                    } else {
+                        Some(t)
+                    }
+                },
+                members: split_semi(&cell(&header, &row, "group_member_usernames")),
+                member_ids: split_semi(&cell(&header, &row, "group_member_user_ids")),
+            };
+
+            let key = cid.to_lowercase();
+            match meta.get(&key) {
+                Some(prev) if !conv_meta_incoming_is_richer(prev, &m) => {}
+                _ => {
+                    meta.insert(key, m);
+                }
+            }
+            i += 1;
+        }
+    }
+
+    (meta, target_user, target_uid)
+}
+
+/// Prefer the conversation_list row with more real members / detail so nested
+/// zips shipping sparse duplicate rows don't overwrite good metadata.
+fn conv_meta_incoming_is_richer(existing: &ConvMeta, incoming: &ConvMeta) -> bool {
+    let count = |m: &ConvMeta| m.members.iter().filter(|s| !s.trim().is_empty()).count();
+    let ic = count(incoming);
+    let ec = count(existing);
+    if ic != ec {
+        return ic > ec;
+    }
+    let detail = |m: &ConvMeta| (m.title.is_some() as usize) + m.member_ids.len();
+    detail(incoming) > detail(existing)
+}
+
+/// Fetch a named column's trimmed value from a parsed CSV row.
+fn cell(header: &[String], row: &[String], name: &str) -> String {
+    header
+        .iter()
+        .position(|h| h == name)
+        .and_then(|idx| row.get(idx))
+        .map(|v| v.trim().to_string())
+        .unwrap_or_default()
+}
+
+/// Split a semicolon-separated list, trimming and dropping empties.
+fn split_semi(s: &str) -> Vec<String> {
+    s.split(';')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
+/// Case-insensitive canonical-UUID check (8-4-4-4-12 hex).
+fn is_uuid(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() != 36 {
+        return false;
+    }
+    for (i, c) in s.chars().enumerate() {
+        match i {
+            8 | 13 | 18 | 23 => {
+                if c != '-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !c.is_ascii_hexdigit() {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
+/// Extract a quoted value following `key`, tolerating both Snapchat's doubled
+/// (`""value""`) and single (`"value"`) quoting styles.
+fn extract_quoted_after(line: &str, key: &str) -> Option<String> {
+    let idx = line.find(key)?;
+    let after = &line[idx + key.len()..];
+    if let Some(s) = between(after, "\"\"", "\"\"") {
+        if !s.trim().is_empty() {
+            return Some(s.trim().to_string());
+        }
+    }
+    if let Some(s) = between(after, "\"", "\"") {
+        if !s.trim().is_empty() {
+            return Some(s.trim().to_string());
+        }
+    }
+    None
+}
+
+fn between(s: &str, open: &str, close: &str) -> Option<String> {
+    let a = s.find(open)? + open.len();
+    let rest = &s[a..];
+    let b = rest.find(close)?;
+    Some(rest[..b].to_string())
 }
 
 // ─── CSV Parsing ────────────────────────────────────────────────────────
@@ -865,6 +1035,27 @@ fn parse_one_part(part: &RawPart) -> ParsedPart {
     let mut out = ParsedPart::default();
 
     for (basename, text) in &part.csvs {
+        // conversation_list.csv has a bespoke two-block layout (no `====`
+        // preamble) — parse it with its own reader, not parse_snapchat_csv.
+        if basename == "conversation_list.csv" {
+            let (cm, tgt_user, tgt_uid) = parse_conversation_list(text);
+            for (k, v) in cm {
+                match out.conv_meta.get(&k) {
+                    Some(prev) if !conv_meta_incoming_is_richer(prev, &v) => {}
+                    _ => {
+                        out.conv_meta.insert(k, v);
+                    }
+                }
+            }
+            if out.cl_target_username.is_none() {
+                out.cl_target_username = tgt_user;
+            }
+            if out.cl_target_user_id.is_none() {
+                out.cl_target_user_id = tgt_uid;
+            }
+            continue;
+        }
+
         let (hdr, headers, rows) = parse_snapchat_csv(text);
         if out.header.is_none() {
             if let Some(h) = hdr {
@@ -922,6 +1113,33 @@ fn merge_parts(parts: &[ParsedPart]) -> Merged {
                 .entry(k.clone())
                 .or_insert_with(|| (v.0.clone(), Vec::new()));
             entry.1.extend(v.1.iter().cloned());
+        }
+        // Merge conversation_list metadata, preferring the richer row.
+        for (k, v) in &p.conv_meta {
+            match m.conv_meta.get(k) {
+                Some(prev) if !conv_meta_incoming_is_richer(prev, v) => {}
+                _ => {
+                    m.conv_meta.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if m.cl_target_username.is_none() {
+            m.cl_target_username = p.cl_target_username.clone();
+        }
+        if m.cl_target_user_id.is_none() {
+            m.cl_target_user_id = p.cl_target_user_id.clone();
+        }
+    }
+
+    // Backfill target identity from conversation_list.csv when the
+    // conversations.csv legend didn't carry it (modern productions).
+    if m.cl_target_username.is_some() || m.cl_target_user_id.is_some() {
+        let h = m.header.get_or_insert_with(HeaderInfo::default);
+        if h.target_username.is_none() {
+            h.target_username = m.cl_target_username.clone();
+        }
+        if h.user_id.is_none() {
+            h.user_id = m.cl_target_user_id.clone();
         }
     }
 
@@ -1091,23 +1309,48 @@ fn emit_messages(
         let content_type = row.get("content_type").cloned().unwrap_or_default();
         let message_type = row.get("message_type").cloned().unwrap_or_default();
         let conv_id = row.get("conversation_id").cloned().unwrap_or_default();
-        let msg_id = row.get("message_id").cloned().unwrap_or_default();
-        let title = row.get("conversation_title").cloned().unwrap_or_default();
-        let sender = row.get("sender_username").cloned().unwrap_or_default();
-        let sender_uid = row.get("sender_user_id").cloned().unwrap_or_default();
-        let recipient = row.get("recipient_username").cloned().unwrap_or_default();
-        let recipient_uid = row.get("recipient_user_id").cloned().unwrap_or_default();
-        let text = row.get("text").cloned().unwrap_or_default();
-        let media_id = row.get("media_id").cloned().unwrap_or_default();
-        let is_saved = row.get("is_saved").cloned().unwrap_or_default();
+        let msg_id = field(row, &["message_id"]);
+        let mut title = row.get("conversation_title").cloned().unwrap_or_default();
+        // Tolerate modern column aliases (sender/receiver/message/content_id).
+        let sender = field(row, &["sender_username", "sender"]);
+        let sender_uid = field(row, &["sender_user_id"]);
+        let recipient = field(row, &["recipient_username", "receiver"]);
+        let recipient_uid = field(row, &["recipient_user_id"]);
+        let text = field(row, &["text", "message", "body"]);
+        let media_id = field(row, &["media_id", "content_id"]);
+        let is_saved = field(row, &["is_saved", "saved_by"]);
         let is_one = row.get("is_one_on_one").cloned().unwrap_or_default();
         let timestamp = row.get("timestamp").cloned().unwrap_or_default();
-        let group_members = row.get("group_member_usernames").cloned().unwrap_or_default();
+        let mut group_members = row.get("group_member_usernames").cloned().unwrap_or_default();
         let reactions = row.get("reactions").cloned().unwrap_or_default();
 
+        // Join conversation_list.csv metadata (modern productions moved
+        // type/title/members out of conversations.csv).
+        let meta = merged.conv_meta.get(&conv_id.to_lowercase());
+        if title.trim().is_empty() {
+            if let Some(t) = meta.and_then(|m| m.title.clone()) {
+                title = t;
+            }
+        }
+        if group_members.trim().is_empty() {
+            if let Some(m) = meta {
+                if !m.members.is_empty() {
+                    group_members = m.members.join(", ");
+                }
+            }
+        }
+
         // Determine the conversation thread label.  For group chats use the
-        // title (if any) or sorted member list; for 1:1 use the non-owner.
-        let is_group = !matches!(is_one.to_ascii_lowercase().as_str(), "true" | "1" | "yes");
+        // title (if any) or member list; for 1:1 use the non-owner.
+        let is_group = if !is_one.trim().is_empty() {
+            !matches!(is_one.to_ascii_lowercase().as_str(), "true" | "1" | "yes")
+        } else if let Some(m) = meta {
+            m.ctype.eq_ignore_ascii_case("group")
+        } else {
+            // Unknown: default to a direct message unless members imply a group.
+            meta.map(|m| m.members.len() > 2).unwrap_or(false)
+        };
+        let me = owner.clone().unwrap_or_default().to_lowercase();
         let thread_label: String = if is_group {
             if !title.trim().is_empty() {
                 title.clone()
@@ -1116,15 +1359,21 @@ fn emit_messages(
             } else {
                 format!("Group {}", short_id(&conv_id))
             }
+        } else if !recipient.is_empty() && recipient.to_lowercase() != me {
+            recipient.clone()
+        } else if !sender.is_empty() && sender.to_lowercase() != me {
+            sender.clone()
+        } else if let Some(other) = meta.and_then(|m| {
+            m.members
+                .iter()
+                .find(|x| !x.trim().is_empty() && x.to_lowercase() != me)
+                .cloned()
+        }) {
+            other
+        } else if !recipient.is_empty() {
+            recipient.clone()
         } else {
-            let me = owner.clone().unwrap_or_default().to_lowercase();
-            if !recipient.is_empty() && recipient.to_lowercase() != me {
-                recipient.clone()
-            } else if !sender.is_empty() && sender.to_lowercase() != me {
-                sender.clone()
-            } else {
-                recipient.clone()
-            }
+            format!("DM {}", short_id(&conv_id))
         };
 
         // Build the bubble body.  Empty text + media → "📎 photo/video".
@@ -1616,6 +1865,13 @@ fn build_media_index(filenames: &[String]) -> HashMap<String, String> {
                 idx.insert(tok[tok.len() - 24..].to_string(), f.clone());
             }
         }
+        // Also index every long token in the filename so we can match modern
+        // media_id values (UUIDs, hex, base64) that don't follow the legacy
+        // `chat~...~b~{token}~v4.ext` shape.  Don't clobber precise entries.
+        let base = f.rsplit("~~").next().unwrap_or(f);
+        for tok in media_tokens(base) {
+            idx.entry(tok).or_insert_with(|| f.clone());
+        }
     }
     idx
 }
@@ -1635,7 +1891,35 @@ fn link_media(media_id: &str, idx: &HashMap<String, String>) -> Option<String> {
             return Some(name.clone());
         }
     }
+    // Token-based fallback: media_id cells can pack several ids joined by `~`.
+    for tok in media_tokens(media_id) {
+        if let Some(name) = idx.get(&tok) {
+            return Some(name.clone());
+        }
+    }
     None
+}
+
+/// Extract candidate matching tokens (UUIDs, hex, base64-ish runs) from a
+/// media_id cell or a media filename.  Delimiters are anything that isn't a
+/// letter, digit, underscore or hyphen so UUIDs stay intact.
+fn media_tokens(s: &str) -> Vec<String> {
+    s.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .filter(|t| t.len() >= 16)
+        .map(|t| t.to_ascii_lowercase())
+        .collect()
+}
+
+/// Return the first non-empty trimmed value among `keys` for a CSV row.
+fn field(row: &HashMap<String, String>, keys: &[&str]) -> String {
+    for k in keys {
+        if let Some(v) = row.get(*k) {
+            if !v.trim().is_empty() {
+                return v.clone();
+            }
+        }
+    }
+    String::new()
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -1878,5 +2162,134 @@ mod tests {
         assert!(linked_msgs >= 1, "expected at least one chat row linked to media");
         assert_eq!(res.case.provider_display, "Snapchat");
         assert!(res.case.target_account.is_some());
+    }
+
+    fn write(p: &Path, name: &str, content: &[u8]) {
+        fs::write(p.join(name), content).unwrap();
+    }
+
+    /// End-to-end: modern flat production (no part folders) with a separate
+    /// conversation_list.csv.  Exercises folder-agnostic collection, the
+    /// conversation_list join (DM vs group + target identity) and media token
+    /// linking.  This is the layout that broke the legacy parser.
+    #[test]
+    fn accepts_and_parses_modern_flat_production() {
+        let base = std::env::temp_dir().join("scout_snap_modern_test");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+
+        let conv_list = "\"Target username \"\"johndoe\"\" is associated with User ID \"\"11111111-1111-1111-1111-111111111111\"\"\"\n\
+conversation_id,type,creator_user_id,creation_time\n\
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,oneonone,11111111-1111-1111-1111-111111111111,Tue Dec 13 15:00:00 UTC 2022\n\
+---\n\
+conversation_id,type,conversation_title,group_member_usernames,group_member_user_ids\n\
+bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,group,Squad Chat,johndoe;alice;bob,111;222;333\n";
+        write(&base, "conversation_list.csv", conv_list.as_bytes());
+
+        let conversations = "\"Snapchat law enforcement response legend.\"\n\
+============================================\n\
+conversation_id,message_id,content_type,message_type,timestamp,sender_username,recipient_username,text,media_id\n\
+aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa,m1,TEXT,text,Tue Dec 13 15:46:22 UTC 2022,alice,johndoe,hey there,\n\
+bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb,m2,MEDIA,media,Tue Dec 13 15:47:00 UTC 2022,johndoe,,,b~TESTMEDIATOKEN1234567890\n";
+        write(&base, "conversations.csv", conversations.as_bytes());
+
+        write(
+            &base,
+            "chat~media_v4~2022-12-13~johndoe~~saved~b~TESTMEDIATOKEN1234567890~v4.jpg",
+            b"jpegdata",
+        );
+
+        let parser = SnapchatWarrantParser;
+        assert!(
+            parser.accepts(&base).unwrap(),
+            "should accept modern flat production dir"
+        );
+
+        let media = std::env::temp_dir().join("scout_snap_modern_media");
+        let _ = fs::remove_dir_all(&media);
+        let res = parser.parse(&base, &media).expect("parse modern production");
+
+        // Target identity comes from conversation_list.csv legend line.
+        assert_eq!(res.case.target_account.as_deref(), Some("johndoe"));
+
+        let msgs: Vec<_> = res
+            .items
+            .iter()
+            .filter(|i| i.section == "unified_messages")
+            .collect();
+        assert_eq!(msgs.len(), 2, "expected two messages");
+
+        let conv_of = |i: &&WarrantItem| {
+            i.raw_fields
+                .get("conversationId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        let dm = msgs
+            .iter()
+            .find(|i| conv_of(i).starts_with("aaaa"))
+            .expect("dm present");
+        // DM must NOT be mislabeled as a group.
+        assert_eq!(
+            dm.recipient.as_deref(),
+            Some("alice"),
+            "1:1 thread should resolve to the non-owner, not a group"
+        );
+
+        let grp = msgs
+            .iter()
+            .find(|i| conv_of(i).starts_with("bbbb"))
+            .expect("group present");
+        assert_eq!(grp.recipient.as_deref(), Some("Squad Chat"));
+        assert!(
+            !grp.attachments.is_empty(),
+            "group media message should link its photo"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+        let _ = fs::remove_dir_all(&media);
+    }
+
+    #[test]
+    fn conversation_list_parse_target_and_types() {
+        let text = "\"Target username \"\"neo\"\" is associated with User ID \"\"22222222-2222-2222-2222-222222222222\"\"\"\n\
+conversation_id,type\n\
+cccccccc-cccc-cccc-cccc-cccccccccccc,oneonone\n\
+---\n\
+conversation_id,type,conversation_title,group_member_usernames\n\
+dddddddd-dddd-dddd-dddd-dddddddddddd,group,Trinity Crew,neo;trinity;morpheus\n";
+        let (meta, user, uid) = parse_conversation_list(text);
+        assert_eq!(user.as_deref(), Some("neo"));
+        assert_eq!(uid.as_deref(), Some("22222222-2222-2222-2222-222222222222"));
+        assert_eq!(
+            meta.get("cccccccc-cccc-cccc-cccc-cccccccccccc")
+                .map(|m| m.ctype.as_str()),
+            Some("oneonone")
+        );
+        let g = meta.get("dddddddd-dddd-dddd-dddd-dddddddddddd").unwrap();
+        assert_eq!(g.ctype, "group");
+        assert_eq!(g.title.as_deref(), Some("Trinity Crew"));
+        assert_eq!(g.members, vec!["neo", "trinity", "morpheus"]);
+    }
+
+    #[test]
+    fn helpers_uuid_tokens_quotes() {
+        assert!(is_uuid("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
+        assert!(!is_uuid("not-a-uuid"));
+        assert!(!is_uuid("aaaaaaaaaaaa"));
+
+        // Token extraction keeps UUIDs whole and drops short noise.
+        let toks = media_tokens("b~AbCdEf0123456789XYZ~more");
+        assert!(toks.contains(&"abcdef0123456789xyz".to_string()));
+
+        assert_eq!(
+            extract_quoted_after("x Target username \"\"kilo\"\" y", "Target username").as_deref(),
+            Some("kilo")
+        );
+        assert_eq!(
+            extract_quoted_after("Target username \"solo\"", "Target username").as_deref(),
+            Some("solo")
+        );
     }
 }
