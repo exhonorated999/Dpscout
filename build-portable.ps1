@@ -22,6 +22,16 @@ if (-Not $version) {
 }
 Write-Host "Target version: $version" -ForegroundColor Cyan
 
+# Ensure the bundled, self-contained Python runtime (iOS features) exists.
+# Idempotent: exits fast if external\python already imports pymobiledevice3.
+# Portable builds share the same source tree, so they need this too.
+Write-Host "[0/4] Ensuring bundled Python runtime..." -ForegroundColor Yellow
+powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\setup_bundled_python.ps1"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: Failed to prepare bundled Python runtime (iOS features)." -ForegroundColor Red
+    exit 1
+}
+
 # Set signing env vars
 $env:TAURI_SIGNING_PRIVATE_KEY = Get-Content $keyPath -Raw
 $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "scout"
