@@ -275,6 +275,108 @@ pub async fn generate_thumbnail(file_path: String, media_type: String) -> Result
     get_or_generate_thumbnail(path, &media_type)
 }
 
+/// Tauri command: read an already-generated (cached) thumbnail off disk and
+/// return it as a `data:image/jpeg;base64,...` URL.
+///
+/// WHY THIS EXISTS: rendering 250 cached thumbnails per page through Tauri's
+/// asset:// protocol saturates WebView2's ~6-connections-per-origin pool, so
+/// most tiles stall at opacity:0 (blank). Cached thumbnails are tiny (~10KB),
+/// so serving them as inline data URLs sidesteps the connection pool entirely
+/// and they render instantly. Lean on purpose: no logging (called at scale),
+/// assumes JPEG (all cached thumbs are saved as .jpg by save_thumbnail_to_cache).
+#[tauri::command]
+pub async fn get_thumbnail_data_url(path: String) -> Result<String, String> {
+    use base64::Engine;
+    let p = Path::new(&path);
+    // Guard against oversized reads — a real thumbnail is a few KB. Anything
+    // over 8MB is not one of ours; refuse rather than inline a huge payload.
+    let meta = fs::metadata(p).map_err(|e| format!("thumb stat failed: {}", e))?;
+    if meta.len() > 8 * 1024 * 1024 {
+        return Err("thumbnail too large to inline".to_string());
+    }
+    let bytes = fs::read(p).map_err(|e| format!("thumb read failed: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// Read a cached thumbnail file off disk and return it as a data URL.
+/// Shared by the single and batch commands.
+fn read_thumb_as_data_url(path: &Path) -> Result<String, String> {
+    use base64::Engine;
+    let meta = fs::metadata(path).map_err(|e| format!("thumb stat failed: {}", e))?;
+    if meta.len() > 8 * 1024 * 1024 {
+        return Err("thumbnail too large to inline".to_string());
+    }
+    let bytes = fs::read(path).map_err(|e| format!("thumb read failed: {}", e))?;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(format!("data:image/jpeg;base64,{}", b64))
+}
+
+/// One tile's request in a batch read.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbBatchReq {
+    /// Opaque id echoed back so the frontend can match responses (filePath).
+    pub key: String,
+    /// Previously-generated cached thumbnail path, if the frontend has one.
+    pub thumb_path: Option<String>,
+    /// Original media file — used to regenerate the thumbnail if the cached
+    /// one is missing (self-healing after a %TEMP% clear or a failed scan).
+    pub source_path: Option<String>,
+    /// "image" or "video" — required to regenerate from source.
+    pub media_type: Option<String>,
+}
+
+/// One tile's result in a batch read.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThumbBatchResp {
+    pub key: String,
+    /// data:image/jpeg;base64,... or null if it could not be produced.
+    pub data_url: Option<String>,
+    /// The resolved/generated cached path, so the frontend can persist it.
+    pub thumb_path: Option<String>,
+}
+
+/// Tauri command: resolve + read many thumbnails in ONE IPC round-trip.
+///
+/// For each item: if a cached thumbnail exists it is read and inlined as a
+/// data URL; otherwise, when a source path + media type are supplied, the
+/// thumbnail is regenerated from the original file first (self-healing).
+/// Work is parallelized with rayon. Batching collapses the per-tile invoke
+/// overhead that made large galleries fill in slowly, and the viewport-aware
+/// caller ensures only on-screen tiles are requested.
+#[tauri::command]
+pub async fn get_thumbnails_batch(
+    items: Vec<ThumbBatchReq>,
+) -> Result<Vec<ThumbBatchResp>, String> {
+    let results = items
+        .par_iter()
+        .map(|it| {
+            // 1. Resolve a usable thumbnail path (regenerate from source if needed).
+            let resolved: Option<String> = match &it.thumb_path {
+                Some(tp) if !tp.is_empty() && Path::new(tp).exists() => Some(tp.clone()),
+                _ => match (&it.source_path, &it.media_type) {
+                    (Some(sp), Some(mt)) if !sp.is_empty() && Path::new(sp).exists() => {
+                        get_or_generate_thumbnail(Path::new(sp), mt).ok()
+                    }
+                    _ => None,
+                },
+            };
+            // 2. Read it as a data URL.
+            let data_url = resolved
+                .as_ref()
+                .and_then(|p| read_thumb_as_data_url(Path::new(p)).ok());
+            ThumbBatchResp {
+                key: it.key.clone(),
+                data_url,
+                thumb_path: resolved,
+            }
+        })
+        .collect();
+    Ok(results)
+}
+
 /// Tauri command to batch generate thumbnails
 #[tauri::command]
 pub async fn batch_generate_thumbnails_command(

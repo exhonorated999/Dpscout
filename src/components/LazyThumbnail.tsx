@@ -1,9 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { convertToMediaProtocol } from '../utils/mediaProtocol';
+import { loadThumbnail } from '../utils/thumbnailLoader';
 import './LazyThumbnail.css';
 
 interface LazyThumbnailProps {
+  /** Cached thumbnail path (may be empty/stale — the loader will self-heal). */
   src: string;
+  /** Original media file, so a missing thumbnail can be regenerated. */
+  sourcePath?: string;
   alt: string;
   mediaType: 'image' | 'video';
   className?: string;
@@ -11,15 +14,18 @@ interface LazyThumbnailProps {
 }
 
 /**
- * Lazy-loading thumbnail component with intersection observer
- * Only loads images when they're about to enter the viewport
+ * Lazy-loading thumbnail. Loads only when near the viewport, resolves the
+ * image through the batching/self-healing thumbnail loader (base64 data URLs),
+ * shows a spinner while pending, and a clear "No preview" state if the tile
+ * genuinely can't be rendered (e.g. corrupt image or source no longer present).
  */
 export const LazyThumbnail: React.FC<LazyThumbnailProps> = ({
   src,
+  sourcePath,
   alt,
   mediaType,
   className = '',
-  onError
+  onError,
 }) => {
   const [isLoaded, setIsLoaded] = useState(false);
   const [isInView, setIsInView] = useState(false);
@@ -27,10 +33,9 @@ export const LazyThumbnail: React.FC<LazyThumbnailProps> = ({
   const [imageSrc, setImageSrc] = useState<string>('');
   const imgRef = useRef<HTMLDivElement>(null);
 
-  // Intersection Observer for lazy loading
+  // Intersection Observer — flip to in-view shortly before entering viewport.
   useEffect(() => {
     if (!imgRef.current) return;
-
     const observer = new IntersectionObserver(
       (entries) => {
         entries.forEach((entry) => {
@@ -40,42 +45,68 @@ export const LazyThumbnail: React.FC<LazyThumbnailProps> = ({
           }
         });
       },
-      {
-        rootMargin: '50px', // Start loading 50px before entering viewport
-        threshold: 0.01
-      }
+      { rootMargin: '150px', threshold: 0.01 }
     );
-
     observer.observe(imgRef.current);
-
     return () => observer.disconnect();
   }, []);
 
-  // Load image source when in view
+  // Resolve the image once in view.
   useEffect(() => {
-    if (isInView && src) {
-      // Data URLs and blob URLs don't need protocol conversion
-      if (src.startsWith('data:') || src.startsWith('blob:')) {
-        setImageSrc(src);
-      } else {
-        const mediaUrl = convertToMediaProtocol(src);
-        setImageSrc(mediaUrl);
-      }
-    }
-  }, [isInView, src]);
+    if (!isInView) return;
 
-  const handleLoad = () => {
-    setIsLoaded(true);
-  };
+    // Direct data/blob URLs (e.g. iOS AFC daemon thumbnails) need no loader.
+    if (src && (src.startsWith('data:') || src.startsWith('blob:'))) {
+      setImageSrc(src);
+      return;
+    }
+
+    const key = sourcePath || src;
+    if (!key) {
+      // Nothing to load from — surface the no-preview state, don't spin.
+      setHasError(true);
+      onError?.();
+      return;
+    }
+
+    let cancelled = false;
+    setHasError(false);
+    loadThumbnail({
+      key,
+      thumbPath: src || undefined,
+      sourcePath: sourcePath || undefined,
+      mediaType,
+    })
+      .then((dataUrl) => {
+        if (cancelled) return;
+        if (dataUrl) {
+          setImageSrc(dataUrl);
+        } else {
+          setHasError(true);
+          onError?.();
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setHasError(true);
+          onError?.();
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isInView, src, sourcePath, mediaType]);
+
+  const handleLoad = () => setIsLoaded(true);
 
   const handleError = () => {
-    console.error('Failed to load thumbnail:', src);
     setHasError(true);
-    if (onError) onError();
+    onError?.();
   };
 
   return (
-    <div 
+    <div
       ref={imgRef}
       className={`lazy-thumbnail ${className} ${isLoaded ? 'loaded' : ''} ${hasError ? 'error' : ''}`}
     >
@@ -86,7 +117,7 @@ export const LazyThumbnail: React.FC<LazyThumbnailProps> = ({
           </div>
         </div>
       )}
-      
+
       {isInView && !hasError && (
         <>
           {!isLoaded && (
@@ -106,33 +137,10 @@ export const LazyThumbnail: React.FC<LazyThumbnailProps> = ({
 
       {hasError && (
         <div className="thumbnail-error-state">
-          <span className="error-icon">⚠️</span>
-          <span className="error-text">Load failed</span>
+          <span className="error-icon">{mediaType === 'video' ? '🎥' : '🖼️'}</span>
+          <span className="error-text">No preview</span>
         </div>
       )}
     </div>
   );
-};
-
-/**
- * Preload thumbnails in batches for smoother scrolling
- */
-export const preloadThumbnails = async (thumbnailPaths: string[], batchSize: number = 10) => {
-  const batches = [];
-  for (let i = 0; i < thumbnailPaths.length; i += batchSize) {
-    batches.push(thumbnailPaths.slice(i, i + batchSize));
-  }
-
-  for (const batch of batches) {
-    await Promise.all(
-      batch.map(path => {
-        return new Promise((resolve) => {
-          const img = new Image();
-          img.onload = resolve;
-          img.onerror = resolve; // Continue even if one fails
-          img.src = convertToMediaProtocol(path);
-        });
-      })
-    );
-  }
 };

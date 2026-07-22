@@ -170,29 +170,16 @@ pub fn detect_live_ios_devices() -> Result<Vec<LiveIosDevice>, String> {
     Ok(devices)
 }
 
-/// Verify trust / pairing for a device.
-/// With pymobiledevice3, pairing happens when creating a lockdown client.
-pub fn request_device_trust(udid: &str) -> Result<bool, String> {
-    eprintln!("[iOS] Verifying trust for device {}...", udid);
-    match ios_python::get_ios_device_info_python(udid) {
-        Ok(info) => {
-            if info.is_trusted {
-                eprintln!("[iOS] Device {} is trusted", udid);
-                Ok(true)
-            } else {
-                Err(
-                    "Device not trusted. Please unlock your iPhone and tap 'Trust' when prompted."
-                        .to_string(),
-                )
-            }
-        }
-        Err(e) => Err(format!(
-            "Cannot verify trust for device {}.\n\
-             Please ensure the device is unlocked and connected via USB.\n\
-             Details: {}",
-            udid, e
-        )),
-    }
+/// Actively initiate trust / pairing for a device.
+///
+/// This is what makes the iPhone display the "Trust This Computer" dialog.
+/// The old implementation only *read* device info and inferred trust, which is
+/// why the prompt appeared inconsistently. We now explicitly call
+/// `lockdown.pair()` via scripts/ios_pair.py and return a structured result
+/// describing exactly what happened so the UI can guide the examiner.
+pub fn request_device_trust(udid: &str) -> Result<ios_python::IosPairResult, String> {
+    eprintln!("[iOS] Requesting pairing/trust for device {}...", udid);
+    ios_python::pair_ios_device(udid)
 }
 
 /// List installed apps on a live device.

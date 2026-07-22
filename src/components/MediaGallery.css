@@ -126,6 +126,11 @@
   padding: var(--spacing-lg) var(--spacing-xl);
   background-color: var(--color-bg-secondary);
   border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-lg);
+  flex-wrap: wrap;
 }
 
 .category-info h2 {
@@ -249,6 +254,21 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+/* When a LazyThumbnail is used inside the aspect-ratio container it must fill
+   the box absolutely. Its own base rule is `position: relative`, which would
+   otherwise drop it into normal flow: the <img height:100%> would then render
+   at the image's natural height (breaking uniform tile sizing) and the
+   absolutely-positioned spinner / "No preview" overlays would collapse to 0
+   and become invisible. Higher specificity here wins over `.lazy-thumbnail`. */
+.thumbnail-image-container > .lazy-thumbnail {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border-radius: 0;
+  background-color: transparent;
 }
 
 .thumbnail-placeholder {
@@ -1018,4 +1038,114 @@
 .modal-body::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.4);
   box-shadow: 0 0 8px rgba(255, 255, 255, 0.5);
+}
+
+/* ─── Pagination controls ──────────────────────────────────────────────── */
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-sm);
+  flex-wrap: wrap;
+  margin: var(--spacing-lg) auto var(--spacing-xl);
+  padding: var(--spacing-sm);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  width: fit-content;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.35);
+}
+
+.pagination-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px 16px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease,
+    border-color 0.15s ease, transform 0.1s ease;
+  user-select: none;
+}
+
+.pagination-button:hover:not(:disabled) {
+  color: #fff;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue-bright);
+  box-shadow: 0 0 12px rgba(108, 138, 237, 0.45);
+}
+
+.pagination-button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.pagination-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Compact top pagination — sits inline in the category header, no big margins */
+.pagination-controls.top {
+  margin: 0;
+  flex-wrap: nowrap;
+  flex-shrink: 0;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.pagination-controls.top .pagination-button {
+  padding: 5px 12px;
+  font-size: 0.78rem;
+}
+
+.pagination-controls.top .pagination-info {
+  font-size: 0.78rem;
+}
+
+.pagination-controls.top .pagination-info .page-input {
+  width: 2.8rem;
+  padding: 4px 6px;
+  font-size: 0.82rem;
+}
+
+.pagination-info {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: 0 var(--spacing-sm);
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.pagination-info .page-input {
+  width: 3.5rem;
+  padding: 6px 8px;
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: #fff;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  -moz-appearance: textfield;
+}
+
+.pagination-info .page-input:focus {
+  outline: none;
+  border-color: var(--accent-blue-bright);
+  box-shadow: 0 0 0 3px rgba(108, 138, 237, 0.25);
+}
+
+/* Trim the ugly native number spinners */
+.pagination-info .page-input::-webkit-outer-spin-button,
+.pagination-info .page-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
 }

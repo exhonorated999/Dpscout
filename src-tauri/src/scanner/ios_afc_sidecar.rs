@@ -697,6 +697,10 @@ fn get_scripts_dir() -> PathBuf {
     let candidates = [
         exe_dir.join("..").join("..").join("..").join("scripts"),
         exe_dir.join("..").join("..").join("scripts"),
+        // Production (Tauri v2 NSIS): resources with a `../` prefix are placed
+        // under an `_up_` directory next to the exe. `../scripts/**` therefore
+        // lands at <install>/_up_/scripts.
+        exe_dir.join("_up_").join("scripts"),
         exe_dir.join("scripts"),
         PathBuf::from("scripts"),
     ];
@@ -805,7 +809,37 @@ fn resolve_ffmpeg_path() -> Option<PathBuf> {
 }
 
 /// Find a working Python executable.
+/// Locate the bundled self-contained Python runtime (external/python). See
+/// scripts/setup_bundled_python.ps1. Installed builds place `../external/**`
+/// under `_up_/external`; dev uses `<workspace>/external/python`.
+fn bundled_python_path() -> Option<PathBuf> {
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
+    let rel = if cfg!(target_os = "windows") {
+        "python.exe"
+    } else {
+        "bin/python3"
+    };
+    let candidates = [
+        exe_dir.join("_up_").join("external").join("python").join(rel),
+        exe_dir.join("external").join("python").join(rel),
+        exe_dir.join("..").join("..").join("..").join("external").join("python").join(rel),
+        exe_dir.join("..").join("..").join("external").join("python").join(rel),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
 fn get_python_cmd() -> String {
+    // Prefer the bundled self-contained runtime (works with no system Python).
+    // PYTHONNOUSERSITE=1 keeps the embeddable from picking up stray user-site
+    // packages instead of our vendored pymobiledevice3.
+    if let Some(bundled) = bundled_python_path() {
+        std::env::set_var("PYTHONNOUSERSITE", "1");
+        eprintln!("[iOS AFC] Using bundled Python: {}", bundled.display());
+        return bundled.to_string_lossy().to_string();
+    }
+    eprintln!("[iOS AFC] Bundled Python not found; falling back to system Python.");
     let candidates = if cfg!(target_os = "windows") {
         vec!["py", "python3", "python"]
     } else {

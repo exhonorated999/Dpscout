@@ -62,7 +62,13 @@
       "icons/icon.ico"
     ],
     "resources": [
-      "../external/**/*"
+      "../external/**/*",
+      "../scripts/ios_afc_daemon.py",
+      "../scripts/ios_device_info.py",
+      "../scripts/ios_pair.py",
+      "../scripts/ios_backup_arsenic.py",
+      "../scripts/ios_decrypt_backup.py",
+      "../scripts/requirements-ios.txt"
     ]
   },
   "plugins": {

@@ -107,6 +107,8 @@ pub fn detect_mtp_ios_devices() -> Result<Vec<MtpIosDevice>, String> {
 /// Copies files from iPhone to temp directory for scanning
 pub fn scan_iphone_media_via_mtp(device_name: &str) -> Result<Vec<IosMediaFile>, String> {
     let mut media_files = Vec::new();
+    #[allow(unused_mut, unused_assignments)]
+    let mut mtp_diag = String::from("Diagnostic unavailable (MTP walk did not report status).");
     
     #[cfg(target_os = "windows")]
     {
@@ -129,7 +131,35 @@ $shell = New-Object -ComObject Shell.Application
 $computer = $shell.Namespace(17)
 
 $found = $false
+$foundStorage = $false
+$foundDcim = $false
 $totalCopied = 0
+
+# CopyHere on MTP devices is ASYNCHRONOUS — it queues the copy and returns
+# immediately. Without waiting, the temp dir is listed before copies finish,
+# producing an empty/partial result. This helper blocks until the destination
+# file exists and its size stops changing (copy finished), or a timeout hits.
+function Wait-ForCopy($destFolder, $fileName, $timeoutSec) {{
+    $target = Join-Path $destFolder $fileName
+    $elapsedMs = 0
+    $lastSize = -1
+    $stableCount = 0
+    while ($elapsedMs -lt ($timeoutSec * 1000)) {{
+        if (Test-Path -LiteralPath $target) {{
+            $size = (Get-Item -LiteralPath $target -ErrorAction SilentlyContinue).Length
+            if ($size -ne $null -and $size -gt 0 -and $size -eq $lastSize) {{
+                $stableCount++
+                if ($stableCount -ge 2) {{ return $true }}
+            }} else {{
+                $stableCount = 0
+            }}
+            $lastSize = $size
+        }}
+        Start-Sleep -Milliseconds 150
+        $elapsedMs += 150
+    }}
+    return (Test-Path -LiteralPath $target)
+}}
 
 # Helper function to copy media files from a Shell folder
 # NOTE: MTP devices often strip file extensions from Shell.Application Name property,
@@ -162,10 +192,14 @@ function Copy-MediaFromFolder($shellFolder, $destBase) {{
                     if ($isMedia -or $hasMediaExt -or $noInfo) {{
                         try {{
                             $shell.Namespace($subDest).CopyHere($file, 0x14)
-                            $subCopied++
-                            $script:totalCopied++
-                            if ($subCopied % 50 -eq 0) {{
-                                Write-Host "  Copied $subCopied files from $subName ($($script:totalCopied) total)..."
+                            if (Wait-ForCopy $subDest $fileName 30) {{
+                                $subCopied++
+                                $script:totalCopied++
+                                if ($subCopied % 50 -eq 0) {{
+                                    Write-Host "  Copied $subCopied files from $subName ($($script:totalCopied) total)..."
+                                }}
+                            }} else {{
+                                Write-Host "  Timed out copying $fileName"
                             }}
                         }} catch {{
                             Write-Host "Error copying $fileName : $_"
@@ -179,8 +213,12 @@ function Copy-MediaFromFolder($shellFolder, $destBase) {{
             $fileName = $item.Name
             try {{
                 $shell.Namespace($destBase).CopyHere($item, 0x14)
-                $copied++
-                $script:totalCopied++
+                if (Wait-ForCopy $destBase $fileName 30) {{
+                    $copied++
+                    $script:totalCopied++
+                }} else {{
+                    Write-Host "Timed out copying $fileName"
+                }}
             }} catch {{
                 Write-Host "Error copying $fileName : $_"
             }}
@@ -198,6 +236,7 @@ foreach ($item in $computer.Items()) {{
         foreach ($storage in $device.Items()) {{
             if ($storage.Name -eq 'Internal Storage') {{
                 Write-Host "Found Internal Storage"
+                $script:foundStorage = $true
                 $storageFolder = $storage.GetFolder()
                 
                 # Check if DCIM folder exists
@@ -206,6 +245,7 @@ foreach ($item in $computer.Items()) {{
                     if ($folder.Name -eq 'DCIM') {{
                         Write-Host "Found DCIM folder — scanning subfolders"
                         $dcimFound = $true
+                        $script:foundDcim = $true
                         $dcimFolder = $folder.GetFolder()
                         Copy-MediaFromFolder $dcimFolder $tempDir
                         break
@@ -223,6 +263,7 @@ foreach ($item in $computer.Items()) {{
 }}
 
 Write-Host "Total files copied: $totalCopied"
+Write-Host ("DIAG|found=" + $found + "|storage=" + $foundStorage + "|dcim=" + $foundDcim + "|copied=" + $totalCopied)
 
 if (-not $found) {{
     Write-Error "No iPhone/iPad found in This PC"
@@ -250,6 +291,33 @@ Get-ChildItem -Path $tempDir -Recurse -File | ForEach-Object {{
                 eprintln!("[iOS MTP] PowerShell output:\n{}", stdout);
                 if !stderr.is_empty() {
                     eprintln!("[iOS MTP] PowerShell errors:\n{}", stderr);
+                }
+
+                // Parse the DIAG marker line for an actionable failure message.
+                if let Some(diag_line) = stdout.lines().find(|l| l.trim_start().starts_with("DIAG|")) {
+                    let get = |key: &str| -> String {
+                        diag_line
+                            .split('|')
+                            .find_map(|kv| kv.strip_prefix(key).map(|v| v.to_string()))
+                            .unwrap_or_else(|| "?".to_string())
+                    };
+                    let found = get("found=");
+                    let storage = get("storage=");
+                    let dcim = get("dcim=");
+                    let copied = get("copied=");
+                    mtp_diag = if found != "True" {
+                        "iPhone was not detected under 'This PC'. Reconnect the cable and unlock the device.".to_string()
+                    } else if storage != "True" {
+                        "iPhone was detected but its 'Internal Storage' is not accessible yet — unlock the phone and tap 'Trust This Computer', then wait a few seconds and retry.".to_string()
+                    } else if copied == "0" {
+                        if dcim == "True" {
+                            "iPhone storage opened but no photos/videos could be copied. If photos are stored in iCloud (Optimize Storage), they are not on the device. Otherwise unlock the phone and retry.".to_string()
+                        } else {
+                            "iPhone storage opened but no DCIM/media folder was found. If photos are stored in iCloud (Optimize Storage), they are not on the device.".to_string()
+                        }
+                    } else {
+                        format!("MTP copied {} file(s) but none were readable for scanning.", copied)
+                    };
                 }
                 
                 // Check if PowerShell script succeeded
@@ -296,7 +364,10 @@ Get-ChildItem -Path $tempDir -Recurse -File | ForEach-Object {{
     }
     
     if media_files.is_empty() {
-        return Err("Unable to access iOS media files.\n\nEnsure:\n1. Device is unlocked and appears in File Explorer under 'This PC'\n2. Tap 'Trust This Computer' if prompted\n3. Media files (photos/videos) exist on the device".to_string());
+        return Err(format!(
+            "Unable to access iOS media files.\n\n{}\n\nEnsure:\n1. Device is unlocked and appears in File Explorer under 'This PC'\n2. Tap 'Trust This Computer' if prompted\n3. Media files (photos/videos) exist on the device",
+            mtp_diag
+        ));
     }
     
     Ok(media_files)

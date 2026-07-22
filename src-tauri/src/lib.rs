@@ -1351,7 +1351,7 @@ fn detect_ios_mtp_devices() -> Result<Vec<serde_json::Value>, String> {
 }
 
 #[tauri::command]
-fn request_ios_device_trust(udid: String) -> Result<bool, String> {
+fn request_ios_device_trust(udid: String) -> Result<scanner::ios_python::IosPairResult, String> {
     ios_live::request_device_trust(&udid)
 }
 
@@ -2571,6 +2571,8 @@ pub fn run() {
             media_server::get_media_file_info,
             // Thumbnail generator commands
             thumbnail_generator::generate_thumbnail,
+            thumbnail_generator::get_thumbnail_data_url,
+            thumbnail_generator::get_thumbnails_batch,
             thumbnail_generator::batch_generate_thumbnails_command,
             thumbnail_generator::clear_thumbnail_cache_command,
             thumbnail_generator::get_thumbnail_cache_stats,

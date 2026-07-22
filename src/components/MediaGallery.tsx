@@ -273,16 +273,28 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
 
   // Get filtered media based on active category
   const getFilteredMedia = (): MediaFile[] => {
+    // "Rendered-first": tiles that already have a cached thumbnail (or are
+    // local videos that render their own first frame) sort ahead of tiles with
+    // no preview, so the early pages fill instantly and blank/self-healing
+    // tiles drift toward the back.
+    const hasPreview = (m: MediaFile): number => {
+      if (m.thumbnailPath && m.thumbnailPath.length > 0) return 1;
+      // Local videos render a first frame via the <video> element even without
+      // a cached thumbnail path.
+      if (m.mediaType === 'video' && m.filePath && !m.isAndroidFile && !m.iosUdid) return 1;
+      return 0;
+    };
+    const byPreview = (a: MediaFile, b: MediaFile) => hasPreview(b) - hasPreview(a);
+
     switch (activeCategory) {
-      case 'images': return images;
-      case 'videos': return videos;
-      case 'flagged': return flaggedMedia;
+      case 'images': return [...images].sort(byPreview);
+      case 'videos': return [...videos].sort(byPreview);
+      case 'flagged': return [...flaggedMedia].sort(byPreview);
       default: {
-        // ALL MEDIA: sort images first, then videos, to avoid intermixing
+        // ALL MEDIA: images first, then videos; within each group, previews first.
         return [...media].sort((a, b) => {
-          if (a.mediaType === b.mediaType) return 0;
-          if (a.mediaType === 'image') return -1;
-          return 1;
+          if (a.mediaType !== b.mediaType) return a.mediaType === 'image' ? -1 : 1;
+          return byPreview(a, b);
         });
       }
     }
@@ -533,6 +545,55 @@ export const MediaGallery: React.FC<MediaGalleryProps> = ({
             )}
           </p>
         </div>
+
+        {/* Top pagination (mirrors the bottom bar, compact) */}
+        {totalPages > 1 && (
+          <div className="pagination-controls top">
+            <button
+              className="pagination-button"
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+            >
+              « First
+            </button>
+            <button
+              className="pagination-button"
+              onClick={() => setCurrentPage(prev => Math.max(1, prev - 1))}
+              disabled={currentPage === 1}
+            >
+              ‹ Prev
+            </button>
+            <div className="pagination-info">
+              Page <input
+                type="number"
+                min="1"
+                max={totalPages}
+                value={currentPage}
+                onChange={(e) => {
+                  const page = parseInt(e.target.value);
+                  if (page >= 1 && page <= totalPages) {
+                    setCurrentPage(page);
+                  }
+                }}
+                className="page-input"
+              /> of {totalPages}
+            </div>
+            <button
+              className="pagination-button"
+              onClick={() => setCurrentPage(prev => Math.min(totalPages, prev + 1))}
+              disabled={currentPage === totalPages}
+            >
+              Next ›
+            </button>
+            <button
+              className="pagination-button"
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+            >
+              Last »
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Gallery Grid */}
@@ -886,6 +947,17 @@ const MediaThumbnail: React.FC<{
             alt={media.fileName}
             className="thumbnail-image"
             style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+          />
+        ) : (!isVideo && !isAndroid && !isIosAfc) ? (
+          /* Local image tile: always render through LazyThumbnail, passing the
+             source file. If the cached thumbnail is missing/stale the loader
+             regenerates it from source, so these tiles no longer stay blank. */
+          <LazyThumbnail
+            src={thumbnailPath || ''}
+            sourcePath={media.localCachePath || media.filePath}
+            alt={media.fileName}
+            mediaType={'image'}
+            className="thumbnail-image"
           />
         ) : thumbnailPath ? (
           <LazyThumbnail

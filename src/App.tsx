@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { clearThumbnailDataUrlCache } from "./utils/thumbnailLoader";
 import { listen } from "@tauri-apps/api/event";
 import { StartScreen, DeviceType } from "./components/StartScreen";
 import { ScanView } from "./components/ScanView";
@@ -1521,6 +1522,7 @@ function App() {
   async function clearThumbnailCache() {
     try {
       await invoke("clear_thumbnails");
+      clearThumbnailDataUrlCache();
       alert("Thumbnail cache cleared");
     } catch (error) {
       console.error("Failed to clear cache:", error);

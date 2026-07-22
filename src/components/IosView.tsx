@@ -209,17 +209,22 @@ export const IosView: React.FC<IosViewProps> = ({ onBack, onScanComplete }) => {
 
     try {
       setError('');
-      setScanProgress('Requesting device trust...');
-      const trusted = await invoke<boolean>('request_ios_device_trust', { 
-        udid: selectedDevice.udid 
-      });
-      
-      if (trusted) {
-        setScanProgress('Device trusted! You can now scan.');
-        // Refresh device info
+      setScanProgress('Requesting device trust — check your iPhone…');
+      const result = await invoke<{ paired: boolean; state: string; message: string }>(
+        'request_ios_device_trust',
+        { udid: selectedDevice.udid }
+      );
+
+      if (result.paired) {
+        // already_paired | paired
+        setScanProgress(result.message || 'Device trusted! You can now scan.');
+        // Refresh device info now that we're paired.
         await detectDevices();
       } else {
-        setError('Failed to establish trust. Please unlock your device and tap "Trust" when prompted.');
+        // prompt_shown | locked | denied | stale_record | no_device | error.
+        // These are actionable states, not hard failures — surface the guidance
+        // the backend produced verbatim so the examiner knows what to do next.
+        setError(result.message || 'Could not establish trust. Unlock the iPhone and tap "Trust".');
       }
     } catch (err) {
       console.error('Failed to request trust:', err);

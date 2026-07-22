@@ -31,6 +31,17 @@ pub struct PythonIosDevice {
     pub error: Option<String>,
 }
 
+/// Result of an explicit pairing attempt (from ios_pair.py).
+///
+/// `state` is one of: already_paired | paired | prompt_shown | locked |
+/// denied | stale_record | no_device | error. `message` is examiner-facing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IosPairResult {
+    pub paired: bool,
+    pub state: String,
+    pub message: String,
+}
+
 /// Backup progress update from Python script
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -86,7 +97,10 @@ fn get_scripts_dir() -> PathBuf {
         exe_dir.join("..").join("..").join("..").join("scripts"),
         // Dev: target/debug/../.. -> src-tauri (in case scripts were copied here)
         exe_dir.join("..").join("..").join("scripts"),
-        // Production: scripts bundled next to executable
+        // Production (Tauri v2 NSIS): `../scripts/**` resources land under
+        // an `_up_` directory next to the exe (<install>/_up_/scripts).
+        exe_dir.join("_up_").join("scripts"),
+        // Production (fallback): scripts bundled directly next to executable
         exe_dir.join("scripts"),
         // Fallback: current working directory
         PathBuf::from("scripts"),
@@ -107,8 +121,45 @@ fn get_scripts_dir() -> PathBuf {
     fallback
 }
 
+/// Locate the bundled, self-contained Python runtime shipped in
+/// `external/python` (see scripts/setup_bundled_python.ps1). In an installed
+/// build Tauri places `../external/**` under `_up_/external`; in dev the
+/// runtime lives at `<workspace>/external/python`. Returns the interpreter
+/// path only if it exists.
+fn bundled_python_path() -> Option<PathBuf> {
+    let exe_dir = env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
+    let rel = if cfg!(target_os = "windows") {
+        "python.exe"
+    } else {
+        "bin/python3"
+    };
+    let candidates = [
+        // Production (NSIS): resources with `../` land under _up_.
+        exe_dir.join("_up_").join("external").join("python").join(rel),
+        // Production (flat layout, just in case).
+        exe_dir.join("external").join("python").join(rel),
+        // Dev: target/debug -> workspace/external/python
+        exe_dir.join("..").join("..").join("..").join("external").join("python").join(rel),
+        exe_dir.join("..").join("..").join("external").join("python").join(rel),
+    ];
+    candidates.into_iter().find(|p| p.exists())
+}
+
 /// Find Python executable
 fn get_python_cmd() -> String {
+    // Prefer the bundled, self-contained runtime so iOS features work on
+    // machines with no system Python. Disable per-user site-packages so the
+    // embeddable can never accidentally pick up a customer's stray
+    // %APPDATA%\Python packages instead of our vendored ones.
+    if let Some(bundled) = bundled_python_path() {
+        std::env::set_var("PYTHONNOUSERSITE", "1");
+        eprintln!("[iOS Python] Using bundled Python: {:?}", bundled);
+        return bundled.to_string_lossy().to_string();
+    }
+    eprintln!("[iOS Python] Bundled Python not found; falling back to system Python.");
+
     // On Windows, 'python' might be an app execution alias that opens Microsoft Store
     // We need to actually test if Python can execute code
     // Priority: py (Windows launcher) > python3 > python
@@ -230,6 +281,56 @@ pub fn get_ios_device_info_python(udid: &str) -> Result<PythonIosDevice, String>
         .map_err(|e| format!("Failed to parse JSON output: {}", e))?;
     
     Ok(device_info)
+}
+
+/// Explicitly initiate pairing with a device (runs scripts/ios_pair.py).
+///
+/// Unlike the old "detect and assume trust" flow, this actively calls
+/// `lockdown.pair()`, which is what makes the iPhone show the
+/// "Trust This Computer" dialog. The returned `IosPairResult.state` tells the
+/// UI exactly what happened (prompt shown / locked / denied / stale record /
+/// already paired / paired) so the examiner gets actionable guidance.
+pub fn pair_ios_device(udid: &str) -> Result<IosPairResult, String> {
+    eprintln!("[iOS Python] Initiating explicit pairing for UDID: {}", udid);
+
+    let scripts_dir = get_scripts_dir();
+    let script_path = scripts_dir.join("ios_pair.py");
+
+    if !script_path.exists() {
+        return Err(format!(
+            "iOS pairing script not found at: {:?}\n\
+            Please ensure scripts/ios_pair.py exists.",
+            script_path
+        ));
+    }
+
+    let python_cmd = get_python_cmd();
+
+    let output = Command::new(&python_cmd)
+        .arg(&script_path)
+        .arg(udid)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(|e| format!("Failed to execute pairing script: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    eprintln!("[iOS Python] Pair script stdout: {}", stdout.trim());
+    if !stderr.trim().is_empty() {
+        eprintln!("[iOS Python] Pair script stderr: {}", stderr.trim());
+    }
+
+    // The script always prints a single JSON object to stdout (even on
+    // handled failures). Parse it; fall back to a generic error otherwise.
+    let result: IosPairResult = serde_json::from_str(stdout.trim()).map_err(|e| {
+        format!(
+            "Failed to parse pairing result: {}\nOutput: {}\nStderr: {}",
+            e, stdout.trim(), stderr.trim()
+        )
+    })?;
+
+    Ok(result)
 }
 
 /// Start iOS backup with progress tracking (Arsenic method)
