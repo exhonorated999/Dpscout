@@ -68,7 +68,9 @@ pub const MAX_NODES_PER_FILE: usize = 100_000;
 
 /// Total envelope size soft cap (bytes).  Walker stops adding rich
 /// `structure` objects past this — falls back to file-summary entries.
-pub const ENVELOPE_SOFT_CAP_BYTES: usize = 8 * 1024 * 1024; // 8 MB
+/// Kept below the server's 64 MB hard reject so a full envelope always
+/// makes it through even for very large returns (e.g. a 101 GB export).
+pub const ENVELOPE_SOFT_CAP_BYTES: usize = 32 * 1024 * 1024; // 32 MB
 
 // ─── Errors ──────────────────────────────────────────────────────────────
 
@@ -434,6 +436,37 @@ pub fn build_envelope(
     Ok(envelope)
 }
 
+// ─── Media classification ──────────────────────────────────────────────────
+
+/// True for high-volume, low-signal media (images / video / audio).
+///
+/// When a warrant return exceeds `MAX_FILES`, these are the entries we drop
+/// FIRST.  Everything else — json, csv, html, xml, pdf, office docs, plain
+/// text, logs, db — is treated as *structural* and always captured, because
+/// those are the files that identify a provider's format and that a parser
+/// author needs to see.  Without this, a media-heavy return (e.g. a 75k-file
+/// / 78 GB Discord export) fills the entire tree budget with attachments and
+/// silently truncates the subscriber records, message logs, and cover pages.
+fn is_bulk_media(rel: &Path) -> bool {
+    let ext = rel
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        // images
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "tiff" | "tif"
+        | "bmp" | "heic" | "heif" | "ico" | "avif" | "jfif"
+        // video
+        | "mp4" | "m4v" | "mov" | "mkv" | "avi" | "wmv" | "webm"
+        | "flv" | "3gp" | "3g2" | "mpg" | "mpeg"
+        // audio
+        | "mp3" | "m4a" | "wav" | "aac" | "ogg" | "opus" | "flac"
+        | "wma" | "amr"
+    )
+}
+
 // ─── Directory walker ────────────────────────────────────────────────────
 
 fn walk_dir(
@@ -445,6 +478,10 @@ fn walk_dir(
 ) -> Result<(), SampleError> {
     use walkdir::WalkDir;
 
+    // ── Pass 1: enumerate every file (path + size only — no content reads).
+    // Record max_depth / total_bytes here so the summary reflects the *entire*
+    // return even when the tree is later truncated.
+    let mut files: Vec<(PathBuf, PathBuf, u64)> = Vec::new(); // (abs, rel, size)
     for de in WalkDir::new(root).follow_links(false) {
         let de = match de {
             Ok(d) => d,
@@ -453,25 +490,30 @@ fn walk_dir(
         if !de.file_type().is_file() {
             continue;
         }
-        if entries.len() >= MAX_FILES {
-            summary.truncated_files += 1;
-            continue;
-        }
-
-        let abs = de.path();
-        let rel = abs.strip_prefix(root).unwrap_or(abs).to_path_buf();
+        let abs = de.path().to_path_buf();
+        let rel = abs.strip_prefix(root).unwrap_or(&abs).to_path_buf();
         let depth = rel.components().count();
         if depth > summary.max_depth {
             summary.max_depth = depth;
         }
-
         let size = de.metadata().map(|m| m.len()).unwrap_or(0);
         summary.total_bytes = summary.total_bytes.saturating_add(size);
+        files.push((abs, rel, size));
+    }
 
-        let entry = inspect_file_from_disk(&rel, abs, size, *envelope_bytes, sanitizer)?;
+    // ── Pass 2: structural files first, bulk media last.  A media flood must
+    // never evict the structural files a parser author needs.
+    let (media, structural): (Vec<_>, Vec<_>) =
+        files.into_iter().partition(|(_, rel, _)| is_bulk_media(rel));
+
+    for (abs, rel, size) in structural.into_iter().chain(media.into_iter()) {
+        if entries.len() >= MAX_FILES {
+            summary.truncated_files += 1;
+            continue;
+        }
+        let entry = inspect_file_from_disk(&rel, &abs, size, *envelope_bytes, sanitizer)?;
         *summary.format_counts.entry(entry.format.clone()).or_insert(0) += 1;
-        *envelope_bytes = envelope_bytes
-            .saturating_add(approx_entry_size(&entry));
+        *envelope_bytes = envelope_bytes.saturating_add(approx_entry_size(&entry));
         entries.push(entry);
     }
     summary.total_files = entries.len() + summary.truncated_files;
@@ -490,29 +532,37 @@ fn walk_zip(
     let file = File::open(zip_path)?;
     let mut zr = zip::ZipArchive::new(file)?;
 
+    // ── Pass 1: enumerate (index, rel, size); record summary totals.
+    let mut items: Vec<(usize, PathBuf, u64)> = Vec::new();
     for i in 0..zr.len() {
-        let mut zf = zr.by_index(i)?;
+        let zf = zr.by_index(i)?;
         if zf.is_dir() {
-            continue;
-        }
-        if entries.len() >= MAX_FILES {
-            summary.truncated_files += 1;
             continue;
         }
         let name = zf.name().to_string();
         let size = zf.size();
         summary.total_bytes = summary.total_bytes.saturating_add(size);
-
         let rel = PathBuf::from(&name);
         let depth = rel.components().count();
         if depth > summary.max_depth {
             summary.max_depth = depth;
         }
+        items.push((i, rel, size));
+    }
 
+    // ── Pass 2: structural first, bulk media last (see walk_dir rationale).
+    let (media, structural): (Vec<_>, Vec<_>) =
+        items.into_iter().partition(|(_, rel, _)| is_bulk_media(rel));
+
+    for (i, rel, size) in structural.into_iter().chain(media.into_iter()) {
+        if entries.len() >= MAX_FILES {
+            summary.truncated_files += 1;
+            continue;
+        }
+        let mut zf = zr.by_index(i)?;
         let entry = inspect_zip_entry(&rel, size, &mut zf, *envelope_bytes, sanitizer)?;
         *summary.format_counts.entry(entry.format.clone()).or_insert(0) += 1;
-        *envelope_bytes = envelope_bytes
-            .saturating_add(approx_entry_size(&entry));
+        *envelope_bytes = envelope_bytes.saturating_add(approx_entry_size(&entry));
         entries.push(entry);
     }
     summary.total_files = entries.len() + summary.truncated_files;
@@ -942,6 +992,23 @@ mod tests {
         let p = Path::new("blob");
         let bytes: Vec<u8> = (0u8..=255).collect();
         assert_eq!(detect_format(p, &bytes), DetectedFormat::Binary);
+    }
+
+    // ─── Walker prioritization: media vs structural ────────────────────
+    #[test]
+    fn bulk_media_classification() {
+        // Bulk media — truncated first when a return exceeds MAX_FILES.
+        for m in ["a.png", "b.JPG", "c.mp4", "d.mov", "e.mp3", "f.ogg", "g.webp", "h.heic"] {
+            assert!(is_bulk_media(Path::new(m)), "{m} should be bulk media");
+        }
+        // Structural — always captured (parser-identifying files).
+        for s in [
+            "user.json", "messages.json", "index.json", "results.html",
+            "subscriber.pdf", "report.docx", "log.csv", "data.xml",
+            "readme.txt", "notes.log", "graphic.svg",
+        ] {
+            assert!(!is_bulk_media(Path::new(s)), "{s} should be structural");
+        }
     }
 
     // ─── X / Twitter: PGP-wrapped JSON in .txt files ───────────────────

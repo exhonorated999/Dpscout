@@ -340,6 +340,34 @@ const RECORD_STEMS: &[&str] = &[
     "readme",
     "index",
     "manifest",
+    // ── Discord data package ──
+    "user",
+    "channel",
+    "guild",
+    "server",
+    "audit-log",
+    "billing_profile",
+    "payment_sources",
+    "payments",
+    "entitlements",
+    "quests_reward_codes",
+    "drops_reward_codes",
+    "wishlist_items",
+    "coin_accounts",
+    "coin_transactions",
+    "data_subject_access_requests",
+    // ── Generic structural record types (provider-agnostic) ──
+    "channels",
+    "servers",
+    "activity",
+    "profile",
+    "settings",
+    "metadata",
+    "sessions",
+    "connections",
+    "devices",
+    "logins",
+    "events",
 ];
 
 /// Return a cleaned, structural leaf *stem* (no extension) when the leaf
@@ -500,6 +528,18 @@ mod tests {
         assert_eq!(s("direct-messages.txt"), "direct-messages.txt");
         assert_eq!(s("follower.txt"), "follower.txt");
         assert_eq!(s("ad-impressions.txt"), "ad-impressions.txt");
+    }
+
+    #[test]
+    fn preserves_discord_record_type_leaf() {
+        // Discord data-package filenames carry the record type — a parser
+        // author needs them, and they contain no PII.  Locks in GAP-2 fix.
+        assert_eq!(s("user.json"), "user.json");
+        assert_eq!(s("channel.json"), "channel.json");
+        assert_eq!(s("guild.json"), "guild.json");
+        assert_eq!(s("audit-log.json"), "audit-log.json");
+        assert_eq!(s("billing_profile.json"), "billing_profile.json");
+        assert_eq!(s("coin_transactions.json"), "coin_transactions.json");
     }
 
     #[test]

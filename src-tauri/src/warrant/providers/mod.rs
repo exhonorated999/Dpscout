@@ -15,5 +15,9 @@ pub mod yahoo;
 pub mod x;
 pub mod whatsapp;
 
+/// Generic catalog fallback used when a provider parser rejects a return and
+/// the operator consents to a degraded import.  Not a `Provider` variant.
+pub mod generic;
+
 // Shared utilities used by multiple providers.
 pub(crate) mod mbox_lib;

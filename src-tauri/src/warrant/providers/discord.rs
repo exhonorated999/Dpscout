@@ -105,7 +105,11 @@ impl WarrantParser for DiscordWarrantParser {
             }
         }
 
-        Ok(readme_matches || (has_user_json && (has_messages_index || has_activity)))
+        // Accept on EITHER strong anchor.  A massive return that Discord
+        // splits into part folders may carry the subscriber file and the
+        // message index in different parts; each part is still recognisably
+        // Discord and worth parsing for what it holds.
+        Ok(readme_matches || has_user_json || has_messages_index || has_activity)
     }
 
     fn parse(
@@ -1550,34 +1554,58 @@ fn walk_dir(
 }
 
 fn dir_has_discord_format(dir: &Path) -> bool {
-    // Cheap check: look for Account/user.json with optional wrapper folder.
-    fn has_user_json(d: &Path, depth: u8) -> bool {
-        if depth > 2 {
+    // Anchor files that uniquely identify a Discord data package / warrant
+    // return.  We accept EITHER anchor: a split/partial return may ship the
+    // subscriber (`Account/user.json`) and message (`Messages/index.json`)
+    // data in different part folders.
+    const CONTENT_DIRS: &[&str] = &[
+        "Account",
+        "Activities",
+        "Activity",
+        "Ads",
+        "Messages",
+        "Servers",
+        "Support_Tickets",
+        "attachments",
+    ];
+    fn probe(d: &Path, depth: u8) -> bool {
+        if depth > 3 {
             return false;
         }
-        let candidate = d.join("Account").join("user.json");
-        if candidate.is_file() {
+        if d.join("Account").join("user.json").is_file()
+            || d.join("Messages").join("index.json").is_file()
+        {
             return true;
         }
-        // Recurse into one level of subdirs.
+        // Recurse into wrapper subdirs only.  Never descend into content dirs
+        // — the package root is never nested inside them, and `attachments/`
+        // on a large return can hold tens of thousands of subfolders.
         if let Ok(entries) = fs::read_dir(d) {
             for e in entries.flatten() {
                 let p = e.path();
-                if p.is_dir() && has_user_json(&p, depth + 1) {
+                if !p.is_dir() {
+                    continue;
+                }
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if CONTENT_DIRS.iter().any(|c| c.eq_ignore_ascii_case(name)) {
+                    continue;
+                }
+                if probe(&p, depth + 1) {
                     return true;
                 }
             }
         }
         false
     }
-    has_user_json(dir, 0)
+    probe(dir, 0)
 }
 
 fn strip_zip_wrapper(raw: &str) -> String {
     let cleaned = raw.replace('\\', "/");
     let parts: Vec<&str> = cleaned.split('/').collect();
-    // If first segment doesn't match Discord's top-level dirs, treat it as
-    // a wrapper folder and drop it.  Discord's TLDs are deterministic.
+    // Discord's top-level dirs are deterministic.  Any leading segment that
+    // isn't one of these (nor the package README, nor the bulk `attachments`
+    // content dir) is a wrapper folder.
     const TLDS: &[&str] = &[
         "Account",
         "Activities",
@@ -1587,14 +1615,18 @@ fn strip_zip_wrapper(raw: &str) -> String {
         "Servers",
         "Support_Tickets",
     ];
-    if parts.len() > 1 {
-        let first = parts[0];
-        let second = parts[1];
-        if !TLDS.contains(&first)
-            && first != "README.txt"
-            && (TLDS.contains(&second) || second == "README.txt")
+    // Drop EVERY leading segment before the first real anchor.  Historically
+    // we only stripped a single wrapper folder, which broke on massive warrant
+    // returns that Discord splits/nests inside two or more part folders
+    // (e.g. `Return_1234/DiscordDataPackage/Account/user.json`).  The
+    // `attachments` anchor keeps bulk-media paths intact even when they sit
+    // under a wrapper.
+    for (i, seg) in parts.iter().enumerate() {
+        if TLDS.contains(seg)
+            || *seg == "README.txt"
+            || seg.eq_ignore_ascii_case("attachments")
         {
-            return parts[1..].join("/");
+            return if i == 0 { cleaned } else { parts[i..].join("/") };
         }
     }
     cleaned
@@ -1684,6 +1716,53 @@ fn url_signed_expired(url: &str) -> bool {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn strip_wrapper_no_wrapper() {
+        // TLD already first — unchanged.
+        assert_eq!(strip_zip_wrapper("Account/user.json"), "Account/user.json");
+        assert_eq!(
+            strip_zip_wrapper("Messages/c123/messages.json"),
+            "Messages/c123/messages.json"
+        );
+    }
+
+    #[test]
+    fn strip_wrapper_single_and_multi() {
+        // One wrapper folder (legacy behavior).
+        assert_eq!(
+            strip_zip_wrapper("package/Account/user.json"),
+            "Account/user.json"
+        );
+        // Two or more wrapper folders — the case massive split returns hit.
+        assert_eq!(
+            strip_zip_wrapper("Return_1234/DiscordDataPackage/Account/user.json"),
+            "Account/user.json"
+        );
+        assert_eq!(
+            strip_zip_wrapper("a/b/c/Messages/index.json"),
+            "Messages/index.json"
+        );
+        // Backslashes normalise too.
+        assert_eq!(
+            strip_zip_wrapper(r"wrap\Account\user.json"),
+            "Account/user.json"
+        );
+    }
+
+    #[test]
+    fn strip_wrapper_attachments_anchor() {
+        // Bulk media at root stays intact.
+        assert_eq!(
+            strip_zip_wrapper("attachments/111/222/file.png"),
+            "attachments/111/222/file.png"
+        );
+        // Bulk media under a wrapper normalises to the attachments anchor.
+        assert_eq!(
+            strip_zip_wrapper("wrapper/attachments/111/222/file.png"),
+            "attachments/111/222/file.png"
+        );
+    }
 
     fn sample_zip() -> Option<PathBuf> {
         let p = PathBuf::from(

@@ -30,7 +30,11 @@ pub struct ImportResult {
 /// on-disk case, extract its linked_media to that case's media/ dir, and
 /// return a summary the UI can route to.
 #[tauri::command]
-pub fn warrant_import(provider: Provider, archive_path: String) -> Result<ImportResult, String> {
+pub fn warrant_import(
+    provider: Provider,
+    archive_path: String,
+    allow_generic: Option<bool>,
+) -> Result<ImportResult, String> {
     let archive = PathBuf::from(&archive_path);
     if !archive.exists() {
         return Err(format!("file not found: {}", archive_path));
@@ -46,16 +50,23 @@ pub fn warrant_import(provider: Provider, archive_path: String) -> Result<Import
     let parser = registry::for_provider(provider)
         .ok_or_else(|| "unknown provider".to_string())?;
 
-    if !parser.accepts(&archive).unwrap_or(false) {
-        // Clean up the empty media dir before bailing.
+    let mut parsed = if parser.accepts(&archive).unwrap_or(false) {
+        parser.parse(&archive, &media_dir).map_err(map_err)?
+    } else if allow_generic.unwrap_or(false) {
+        // Operator consented to a degraded import after being warned the
+        // format wasn't recognized — build a generic media/document/manifest
+        // catalog so the return is never a dead-end.
+        super::providers::generic::catalog(&archive, &media_dir, provider).map_err(map_err)?
+    } else {
+        // Not recognized and no consent yet.  Emit a machine-readable signal
+        // (prefix `UNSUPPORTED_FORMAT|`) so the UI can offer a generic import
+        // instead of treating this like a hard failure.  Clean up first.
         let _ = std::fs::remove_dir_all(cases_root().join(&case_id));
         return Err(format!(
-            "file does not match the {} warrant format",
+            "UNSUPPORTED_FORMAT|{}",
             parser.provider().display_name()
         ));
-    }
-
-    let mut parsed = parser.parse(&archive, &media_dir).map_err(map_err)?;
+    };
 
     // Force the case_id we already committed to on disk
     parsed.case.case_id = case_id.clone();

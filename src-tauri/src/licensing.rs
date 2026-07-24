@@ -353,6 +353,32 @@ pub fn check_is_registered_with_server() -> Result<bool, String> {
 }
 
 /// Register agency with the server (first-time setup)
+/// Turn a failed `ureq` request into a human-readable message.
+///
+/// On a non-2xx HTTP status, `ureq` returns `Error::Status(code, response)`
+/// and the server's JSON body carries the real reason in `{"detail": "..."}`.
+/// Surface that message so the user sees e.g. "This license key is not
+/// assigned to your agency." instead of a bare "status code 403".
+fn ureq_error_message(context: &str, err: ureq::Error) -> String {
+    match err {
+        ureq::Error::Status(code, response) => {
+            let body = response.into_string().unwrap_or_default();
+            let detail = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| {
+                    v.get("detail")
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string())
+                });
+            match detail {
+                Some(msg) if !msg.trim().is_empty() => msg,
+                _ => format!("{}: server returned status {}", context, code),
+            }
+        }
+        ureq::Error::Transport(t) => format!("{}: {}", context, t),
+    }
+}
+
 pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, String> {
     let machine_id = get_machine_id()?;
     let app_version = env!("CARGO_PKG_VERSION").to_string();
@@ -373,7 +399,7 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
     let resp = ureq::post(&format!("{}/api/register", SERVER_URL))
         .set("Content-Type", "application/json")
         .send_string(&body.to_string())
-        .map_err(|e| format!("Registration failed: {}", e))?;
+        .map_err(|e| ureq_error_message("Registration failed", e))?;
 
     let text = resp.into_string()
         .map_err(|e| format!("Failed to read response: {}", e))?;
@@ -454,7 +480,7 @@ pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, Str
     let resp = ureq::post(&format!("{}/api/license/activate", SERVER_URL))
         .set("Content-Type", "application/json")
         .send_string(&body.to_string())
-        .map_err(|e| format!("License activation failed: {}", e))?;
+        .map_err(|e| ureq_error_message("License activation failed", e))?;
 
     let text = resp.into_string()
         .map_err(|e| format!("Failed to read response: {}", e))?;

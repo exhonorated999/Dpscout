@@ -66,6 +66,9 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
   const [pendingLabel, setPendingLabel] = useState<{
     caseId: string; defaultLabel: string; providerDisplay: string;
   } | null>(null);
+  const [unsupported, setUnsupported] = useState<{
+    provider: WarrantProvider; archivePath: string; providerLabel: string;
+  } | null>(null);
   const [showEdit, setShowEdit] = useState(false);
   const [exporting, setExporting] = useState(false);
 
@@ -117,9 +120,23 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
       }
       if (!selected) return;
 
-      setImporting(true);
+      await runImport(provider, selected, false);
+    } catch (err) {
+      alert(`Import failed:\n${String(err)}`);
+      console.error('[warrant] import failed:', err);
+    }
+  }
+
+  // Runs the actual import.  On the backend's `UNSUPPORTED_FORMAT|<name>`
+  // signal we open the consent modal instead of failing; accepting re-runs
+  // this with `allowGeneric = true` to build a generic catalog.
+  async function runImport(
+    provider: WarrantProvider, archivePath: string, allowGeneric: boolean,
+  ) {
+    setImporting(true);
+    try {
       const result = await invoke<{ caseId: string; summary: CaseSummary }>('warrant_import', {
-        provider, archivePath: selected,
+        provider, archivePath, allowGeneric,
       });
       // Open the label modal seeded with target_account or source filename.
       const def =
@@ -131,11 +148,25 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
         providerDisplay: result.summary.providerDisplay,
       });
     } catch (err) {
-      alert(`Import failed:\n${String(err)}`);
-      console.error('[warrant] import failed:', err);
+      const msg = String(err);
+      if (msg.includes('UNSUPPORTED_FORMAT|')) {
+        const label =
+          msg.split('UNSUPPORTED_FORMAT|')[1]?.split(/[\r\n]/)[0]?.trim() || provider;
+        setUnsupported({ provider, archivePath, providerLabel: label });
+      } else {
+        alert(`Import failed:\n${msg}`);
+        console.error('[warrant] import failed:', err);
+      }
     } finally {
       setImporting(false);
     }
+  }
+
+  async function handleAcceptGeneric() {
+    if (!unsupported) return;
+    const { provider, archivePath } = unsupported;
+    setUnsupported(null);
+    await runImport(provider, archivePath, true);
   }
 
   async function handleLabelConfirmed(label: string) {
@@ -397,6 +428,15 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
         />
       )}
 
+      {/* Unsupported-format consent modal — offers a degraded generic import */}
+      {unsupported && (
+        <UnsupportedFormatModal
+          providerLabel={unsupported.providerLabel}
+          onAccept={handleAcceptGeneric}
+          onCancel={() => setUnsupported(null)}
+        />
+      )}
+
       {/* Edit investigation metadata */}
       {showEdit && (
         <EditInvestigationModal
@@ -447,6 +487,50 @@ const LabelReturnModal: React.FC<LabelProps> = ({
             disabled={!label.trim()}
           >
             Add to investigation
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ─── Unsupported-format consent modal ──────────────────────────────────────
+
+interface UnsupportedProps {
+  providerLabel: string;
+  onAccept: () => void;
+  onCancel: () => void;
+}
+
+const UnsupportedFormatModal: React.FC<UnsupportedProps> = ({
+  providerLabel, onAccept, onCancel,
+}) => {
+  return (
+    <div className="inv-modal-backdrop" onClick={onCancel}>
+      <div className="inv-modal" onClick={(e) => e.stopPropagation()}>
+        <h2 className="inv-modal-title">Format not recognized</h2>
+        <p className="inv-modal-subtitle">
+          This file doesn't match the expected <strong>{providerLabel}</strong> warrant
+          format. Scout can still import it as a <strong>generic catalog</strong> — it will
+          extract media (for Hash&nbsp;Scan, Media&nbsp;Scan, and Project&nbsp;VIC), surface
+          documents, and build a full file manifest so nothing is left invisible.
+        </p>
+        <div
+          style={{
+            margin: '4px 0 8px', padding: '12px 14px', borderRadius: 8,
+            background: 'rgba(74,122,255,0.10)',
+            border: '1px solid rgba(93,207,255,0.35)',
+            fontSize: 13, lineHeight: 1.5,
+          }}
+        >
+          <strong>Recommended:</strong> also send this return through{' '}
+          <strong>Submit&nbsp;Unsupported&nbsp;Format</strong> so we can add proper parsing
+          support for it in a future update.
+        </div>
+        <div className="inv-modal-actions">
+          <button className="inv-secondary-btn" onClick={onCancel}>Cancel</button>
+          <button className="inv-primary-btn" onClick={onAccept}>
+            Import as generic
           </button>
         </div>
       </div>
