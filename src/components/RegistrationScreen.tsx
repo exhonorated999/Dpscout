@@ -83,7 +83,7 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
         <div className="registration-card">
           <h2>Agency Registration</h2>
           <p className="registration-description">
-            Register your agency to begin your <strong>60-day free trial</strong>.<br/>
+            Register your agency to begin your <strong>30-day free trial</strong>.<br/>
             A license key can be entered in Settings after registration.
           </p>
 
@@ -199,7 +199,7 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
           <div className="security-notice">
             <strong>ℹ️ Trial Information:</strong>
             <ul>
-              <li><strong>60-Day Trial:</strong> Full access to all features for 60 days</li>
+              <li><strong>30-Day Trial:</strong> Full access to all features for 30 days</li>
               <li><strong>License Required:</strong> Purchase a license key to continue after trial</li>
               <li><strong>Enter Key in Settings:</strong> Go to Settings → License to activate</li>
               <li><strong>Machine Bound:</strong> License is tied to this computer</li>

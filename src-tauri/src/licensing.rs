@@ -418,7 +418,7 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
             plan: Some("trial".to_string()),
             status: Some("active".to_string()),
             expires_at: reg.trial_expires_at.clone(),
-            days_remaining: reg.trial_days.unwrap_or(60),
+            days_remaining: reg.trial_days.unwrap_or(30),
             is_expired: false,
         };
         cache_license(&info)?;

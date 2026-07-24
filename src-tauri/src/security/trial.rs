@@ -12,7 +12,7 @@ pub struct TrialStatus {
     pub days_remaining: i64,
 }
 
-const TRIAL_DAYS: i64 = 60;
+const TRIAL_DAYS: i64 = 30;
 
 /// Check if this is a demo/trial build
 pub fn is_trial_build() -> bool {
@@ -142,12 +142,13 @@ pub fn check_trial_access() -> Result<(), String> {
     if status.is_trial && status.is_expired {
         Err(format!(
             "TRIAL EXPIRED\n\n\
-            Your 60-day trial period has ended.\n\n\
+            Your {}-day trial period has ended.\n\n\
             Trial started: {}\n\
             Expired on: {}\n\n\
             To continue using Hindsight, please contact us for the full version:\n\
             Email: scout@datapilot.com\n\
             Website: https://datapilot.com",
+            TRIAL_DAYS,
             status.registered_at.unwrap_or_default(),
             status.expires_at.unwrap_or_default()
         ))
@@ -191,11 +192,11 @@ mod tests {
             is_trial: true,
             is_expired: false,
             registered_at: Some(Utc::now().to_rfc3339()),
-            expires_at: Some((Utc::now() + Duration::days(60)).to_rfc3339()),
-            days_remaining: 60,
+            expires_at: Some((Utc::now() + Duration::days(30)).to_rfc3339()),
+            days_remaining: 30,
         };
 
         assert!(!status.is_expired);
-        assert_eq!(status.days_remaining, 60);
+        assert_eq!(status.days_remaining, 30);
     }
 }
