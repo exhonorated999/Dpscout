@@ -1068,6 +1068,40 @@ fn check_adb_available(app_handle: tauri::AppHandle) -> Result<bool, String> {
     android::check_adb_available(&app_handle)
 }
 
+/// Release locks held by the bundled ADB daemon so the auto-updater can
+/// overwrite files under `_up_/external/platform-tools`.
+///
+/// The updater replaces the whole install directory. If `adb.exe` is still
+/// running in the background it keeps `AdbWinApi.dll` open, which makes the
+/// NSIS installer fail with "Error opening file for writing". We call this
+/// from the frontend immediately before `downloadAndInstall`.
+///
+/// Best-effort: a graceful `adb kill-server` first, then a hard
+/// `taskkill /F /IM adb.exe` on Windows to guarantee the DLL handle is gone.
+/// Errors are swallowed — if adb was never started there is nothing to kill.
+#[tauri::command]
+fn prepare_for_update(app_handle: tauri::AppHandle) -> Result<(), String> {
+    use crate::scanner::android::{get_bundled_adb_path, create_hidden_command};
+
+    let adb_path = get_bundled_adb_path(&app_handle);
+    // Graceful shutdown of the adb server (releases the socket + DLL cleanly).
+    let _ = create_hidden_command(&adb_path).arg("kill-server").output();
+
+    // Hard kill any lingering adb.exe that still holds AdbWinApi.dll open.
+    #[cfg(target_os = "windows")]
+    {
+        use std::path::Path;
+        let _ = create_hidden_command(Path::new("taskkill"))
+            .args(["/F", "/IM", "adb.exe", "/T"])
+            .output();
+    }
+
+    // Give Windows a moment to fully release the file handles before the
+    // installer starts writing.
+    std::thread::sleep(std::time::Duration::from_millis(600));
+    Ok(())
+}
+
 #[tauri::command]
 fn get_android_devices(app_handle: tauri::AppHandle) -> Result<Vec<AndroidDevice>, String> {
     android::get_connected_devices(&app_handle)
@@ -2461,6 +2495,7 @@ pub fn run() {
             get_usb_device_info,
             get_scan_paths_for_selected_drives,
             check_adb_available,
+            prepare_for_update,
             get_android_devices,
             get_android_apps,
             get_android_chrome_history,

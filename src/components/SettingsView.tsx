@@ -578,6 +578,13 @@ const LicensePanel: React.FC = () => {
         });
         setUpdateProgress({ phase: 'downloading', percent: 0, message: `Downloading v${update.version}...` });
 
+        // Release the bundled ADB daemon's lock on AdbWinApi.dll before the
+        // installer overwrites _up_/external/platform-tools. Otherwise the
+        // NSIS installer fails with "Error opening file for writing".
+        try {
+          await invoke('prepare_for_update');
+        } catch { /* adb may never have started — safe to ignore */ }
+
         let downloaded = 0;
         let contentLength = 0;
 
