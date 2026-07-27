@@ -70,10 +70,9 @@ pub fn save_encrypted_report(
 ) -> Result<i64, String> {
     let (encrypted_data, nonce) = encrypt_pdf(pdf_data, password)?;
 
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    let db_path = exe_dir.join("hindsight_secure.db");
+    // init_security_db() guarantees the encrypted_reports table exists,
+    // self-healing databases created by older builds that predate this table.
+    let db_path = super::init_security_db()?;
 
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;
@@ -98,14 +97,8 @@ pub fn save_encrypted_report(
 
 /// List all encrypted reports
 pub fn list_encrypted_reports() -> Result<Vec<EncryptedReport>, String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    let db_path = exe_dir.join("hindsight_secure.db");
-
-    if !db_path.exists() {
-        return Ok(vec![]);
-    }
+    // Ensure schema exists (self-heals older databases).
+    let db_path = super::init_security_db()?;
 
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;
@@ -131,10 +124,7 @@ pub fn list_encrypted_reports() -> Result<Vec<EncryptedReport>, String> {
 
 /// Load and decrypt a report
 pub fn load_encrypted_report(report_id: i64, password: String) -> Result<Vec<u8>, String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    let db_path = exe_dir.join("hindsight_secure.db");
+    let db_path = super::init_security_db()?;
 
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;
@@ -152,10 +142,7 @@ pub fn load_encrypted_report(report_id: i64, password: String) -> Result<Vec<u8>
 
 /// Delete encrypted report
 pub fn delete_encrypted_report(report_id: i64) -> Result<(), String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    let exe_dir = exe_path.parent().ok_or("Failed to get executable directory")?;
-    let db_path = exe_dir.join("hindsight_secure.db");
+    let db_path = super::init_security_db()?;
 
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open database: {}", e))?;

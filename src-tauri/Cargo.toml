@@ -1,6 +1,6 @@
 [package]
 name = "datapilot-scout"
-version = "1.0.1"
+version = "1.0.2"
 description = "Datapilot Scout - Digital Forensics Investigation Tool"
 authors = ["Datapilot"]
 edition = "2021"
