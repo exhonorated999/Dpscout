@@ -130,6 +130,10 @@ interface WarrantTriageViewProps {
 const SECTION_LABELS: Record<string, string> = {
   unified_messages: "Messages",
   photos: "Photos",
+  // Generic catalog (unrecognized-format fallback)
+  media: "Media",
+  documents: "Documents",
+  manifest: "File Manifest",
   status_updates: "Status Updates",
   wallposts: "Wall Posts",
   posts_to_other_walls: "Posts to Others",
@@ -479,7 +483,7 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
     const withImages = filteredItems.filter((it) => {
       if (it.attachments.length === 0) return false;
       const ext = (it.attachments[0].split(".").pop() || "").toLowerCase();
-      return ["jpg", "jpeg", "png", "gif", "bmp", "webp"].includes(ext);
+      return ["jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "ico"].includes(ext);
     }).length;
     return withImages / filteredItems.length >= 0.6 ? "grid" : "list";
   }, [filteredItems, sectionFilter]);

@@ -191,23 +191,44 @@ pub fn warrant_get_thumbnail(case_id: String, filename: String) -> Result<Option
         return Err("path traversal rejected".into());
     }
 
-    // Only attempt thumbnails for image extensions we know `image` can read.
+    // Decide whether to *attempt* a thumbnail. The decoder
+    // (`generate_thumb_data_url`) guesses the format from the file's magic
+    // bytes, so a correct extension is NOT required — this matters for the
+    // generic catalog, which extracts content-sniffed media that may have no
+    // extension (e.g. Discord `attachments/…/file_0007`) or an exotic one.
+    //
+    // Rather than allow-listing image extensions (which silently blanked
+    // those tiles), we *deny-list* the extensions that are clearly NOT
+    // decodable stills — video, audio, documents, archives. Everything else
+    // (known image extensions, unknown extensions, and no extension at all)
+    // gets a decode attempt; failures fall through to `Ok(None)` and the UI
+    // shows its placeholder. The image crate can't decode heic/heif/avif/svg,
+    // so those still return None gracefully.
     let ext = resolved
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    let is_image = matches!(
+    let is_non_image = matches!(
         ext.as_str(),
-        "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tif" | "tiff" | "ico"
+        // video
+        "mp4" | "m4v" | "mov" | "mkv" | "avi" | "wmv" | "webm" | "flv"
+        | "3gp" | "3g2" | "mpg" | "mpeg"
+        // audio
+        | "mp3" | "m4a" | "wav" | "aac" | "ogg" | "opus" | "flac" | "wma" | "amr"
+        // documents / data / archives
+        | "pdf" | "doc" | "docx" | "odt" | "rtf" | "xls" | "xlsx" | "xlsm"
+        | "xlsb" | "ods" | "ppt" | "pptx" | "odp" | "csv" | "tsv" | "json"
+        | "xml" | "html" | "htm" | "txt" | "log" | "md" | "eml" | "msg"
+        | "mbox" | "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "tgz"
     );
-    if !is_image {
+    if is_non_image {
         return Ok(None);
     }
 
     match super::report::generate_thumb_data_url(&resolved) {
         Ok(url) => Ok(Some(url)),
-        Err(_) => Ok(None), // decode failures shouldn't break the UI
+        Err(_) => Ok(None), // decode failures (non-image / unsupported codec) shouldn't break the UI
     }
 }
 
