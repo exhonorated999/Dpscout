@@ -1,0 +1,144 @@
+/* Update-available splash notification (upper-right corner).
+   Mounted globally in main.tsx so it overlays every app screen. */
+
+.update-splash {
+  position: fixed;
+  top: 18px;
+  right: 18px;
+  z-index: 99999;
+  width: 380px;
+  max-width: calc(100vw - 36px);
+  background: linear-gradient(160deg, #0d1730 0%, #070b17 100%);
+  border: 1px solid rgba(93, 207, 255, 0.35);
+  border-radius: 12px;
+  box-shadow:
+    0 10px 40px rgba(0, 0, 0, 0.55),
+    0 0 0 1px rgba(74, 122, 255, 0.15),
+    0 0 24px rgba(74, 122, 255, 0.25);
+  color: #e8eefc;
+  font-family: inherit;
+  overflow: hidden;
+  animation: update-splash-in 380ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes update-splash-in {
+  from { opacity: 0; transform: translateX(24px) translateY(-8px); }
+  to   { opacity: 1; transform: translateX(0) translateY(0); }
+}
+
+.update-splash.closing {
+  animation: update-splash-out 240ms ease forwards;
+}
+
+@keyframes update-splash-out {
+  to { opacity: 0; transform: translateX(24px); }
+}
+
+/* Accent bar */
+.update-splash__accent {
+  height: 3px;
+  width: 100%;
+  background: linear-gradient(90deg, #4A7AFF 0%, #5DCFFF 100%);
+}
+
+.update-splash__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 16px 10px;
+}
+
+.update-splash__icon {
+  font-size: 22px;
+  line-height: 1;
+  filter: drop-shadow(0 0 6px rgba(93, 207, 255, 0.6));
+}
+
+.update-splash__title {
+  flex: 1;
+  min-width: 0;
+}
+
+.update-splash__title h4 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #ffffff;
+}
+
+.update-splash__versions {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #9fb2d6;
+}
+
+.update-splash__versions b {
+  color: #5DCFFF;
+  font-weight: 700;
+}
+
+.update-splash__close {
+  background: transparent;
+  border: none;
+  color: #7f92b8;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: 6px;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.update-splash__close:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.update-splash__notes-label {
+  padding: 0 16px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 1.2px;
+  color: #6f83a8;
+  margin-bottom: 4px;
+}
+
+.update-splash__notes {
+  margin: 0 16px;
+  padding: 10px 12px;
+  max-height: 168px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: #cdd8ef;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.update-splash__notes::-webkit-scrollbar { width: 8px; }
+.update-splash__notes::-webkit-scrollbar-thumb {
+  background: rgba(93, 207, 255, 0.25);
+  border-radius: 4px;
+}
+
+.update-splash__hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 16px;
+  font-size: 12.5px;
+  color: #b9c6e4;
+}
+
+.update-splash__hint .gear {
+  font-size: 14px;
+}
+
+.update-splash__hint b {
+  color: #ffffff;
+  font-weight: 600;
+}
