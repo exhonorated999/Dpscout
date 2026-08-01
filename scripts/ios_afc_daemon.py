@@ -56,6 +56,11 @@ import hashlib
 import traceback
 from typing import Any, Dict, List, Optional
 
+# On Windows, console subprocesses (e.g. ffmpeg) pop a visible black window
+# unless CREATE_NO_WINDOW is passed. This daemon already runs windowless, so
+# keep any children it spawns windowless too. 0 on non-Windows = no-op.
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
 try:
     from pymobiledevice3.lockdown import create_using_usbmux
     from pymobiledevice3.services.afc import AfcService, AfcOpcode
@@ -996,6 +1001,7 @@ class Daemon:
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=_NO_WINDOW,
             )
         except FileNotFoundError:
             try:

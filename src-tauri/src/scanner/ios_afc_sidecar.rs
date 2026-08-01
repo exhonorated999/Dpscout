@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 use std::env;
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Stdio};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -160,7 +160,10 @@ impl PythonSidecar {
 
         // Unbuffered I/O on the daemon side so we get lines as they're
         // emitted. `-u` flag works for both `py.exe` and `python.exe`.
-        let mut cmd = Command::new(&python);
+        // Use the shared windowless spawner so this long-lived daemon never
+        // opens a visible console window (was confusing users, and closing
+        // that window took the whole app down).
+        let mut cmd = crate::scanner::ios_python::hidden_command(&python);
         cmd.arg("-u")
             .arg(&script)
             .stdin(Stdio::piped())
@@ -793,7 +796,7 @@ fn resolve_ffmpeg_path() -> Option<PathBuf> {
         // PATH resolves them at exec time.
         if c.components().count() == 1 {
             // Probe PATH by trying to run `ffmpeg -version`.
-            if Command::new(c)
+            if crate::scanner::ios_python::hidden_command(c)
                 .arg("-version")
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
@@ -846,7 +849,7 @@ fn get_python_cmd() -> String {
         vec!["python3", "python", "py"]
     };
     for c in candidates {
-        if Command::new(c)
+        if crate::scanner::ios_python::hidden_command(c)
             .arg("-c")
             .arg("print('OK')")
             .stdout(Stdio::piped())

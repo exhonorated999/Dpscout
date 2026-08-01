@@ -17,6 +17,9 @@ from datetime import datetime
 from threading import Thread
 from queue import Queue, Empty
 
+# Keep child console processes windowless on Windows (0 = no-op elsewhere).
+_NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
+
 try:
     from pymobiledevice3.lockdown import create_using_usbmux
 except ImportError as e:
@@ -166,7 +169,8 @@ def create_ios_backup(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            creationflags=_NO_WINDOW
         )
         
         # Track progress

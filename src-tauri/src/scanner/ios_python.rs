@@ -4,6 +4,25 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::env;
 
+/// Build a [`Command`] that never flashes a console window on Windows.
+///
+/// `python.exe` / `py.exe` are console-subsystem programs, so without the
+/// `CREATE_NO_WINDOW` creation flag every invocation pops a black console
+/// window. Short-lived probes flash it; the long-lived AFC daemon leaves one
+/// open for the whole session — users found it confusing and closing it took
+/// the whole app down. Centralize the flag here so every python spawn is
+/// windowless. No-op on non-Windows platforms.
+pub fn hidden_command<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// iOS device information from Python script
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -173,7 +192,7 @@ fn get_python_cmd() -> String {
         eprintln!("[iOS Python] Testing Python command: {}", cmd);
         
         // Test by running a simple Python command
-        match Command::new(cmd)
+        match hidden_command(cmd)
             .arg("-c")
             .arg("print('OK')")
             .stdout(Stdio::piped())
@@ -222,7 +241,7 @@ pub fn detect_ios_devices_python() -> Result<Vec<PythonIosDevice>, String> {
     
     let python_cmd = get_python_cmd();
     
-    let output = Command::new(&python_cmd)
+    let output = hidden_command(&python_cmd)
         .arg(script_path)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -262,7 +281,7 @@ pub fn get_ios_device_info_python(udid: &str) -> Result<PythonIosDevice, String>
     
     let python_cmd = get_python_cmd();
     
-    let output = Command::new(&python_cmd)
+    let output = hidden_command(&python_cmd)
         .arg(script_path)
         .arg(udid)
         .stdout(Stdio::piped())
@@ -306,7 +325,7 @@ pub fn pair_ios_device(udid: &str) -> Result<IosPairResult, String> {
 
     let python_cmd = get_python_cmd();
 
-    let output = Command::new(&python_cmd)
+    let output = hidden_command(&python_cmd)
         .arg(&script_path)
         .arg(udid)
         .stdout(Stdio::piped())
@@ -359,7 +378,7 @@ pub fn start_ios_backup_python(
     let python_cmd = get_python_cmd();
     
     // Build command arguments
-    let mut cmd = Command::new(&python_cmd);
+    let mut cmd = hidden_command(&python_cmd);
     cmd.arg(&script_path).arg(udid);
     
     // Python script expects: <udid> [output_dir] [password]
@@ -468,7 +487,7 @@ pub fn decrypt_ios_backup(
     
     let python_cmd = get_python_cmd();
     
-    let mut cmd = Command::new(&python_cmd);
+    let mut cmd = hidden_command(&python_cmd);
     cmd.arg(&script_path).arg(backup_path).arg(password);
     
     if let Some(dir) = output_dir {
@@ -535,7 +554,7 @@ pub fn check_ios_python_available() -> Result<bool, String> {
     let python_cmd = get_python_cmd();
     
     // Try to import pymobiledevice3 and verify the version
-    let output = Command::new(&python_cmd)
+    let output = hidden_command(&python_cmd)
         .arg("-c")
         .arg("import pymobiledevice3; print(pymobiledevice3.__version__)")
         .stdout(Stdio::piped())
