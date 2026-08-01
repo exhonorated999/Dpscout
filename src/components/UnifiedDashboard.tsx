@@ -6,7 +6,7 @@ import { MediaFile } from '../types/media';
 // Hot reload trigger
 import { KeywordMatch } from '../types/keyword';
 import { BrowserData } from '../types/browser';
-import { SystemInfo, UsbDeviceInfo } from '../types/system';
+import { SystemInfo, UsbDeviceInfo, DeletedMediaDriveResult } from '../types/system';
 import { IntrusionScanResults, defaultIntrusionScanOptions } from '../types/intrusion';
 import { ReportMetadata, ReportScope, ReportFormat, ReportPayload, ReportGenerationResult } from '../types/report';
 import { AppSettings } from '../types/settings';
@@ -16,6 +16,7 @@ import { IosTriageView } from './IosTriageView';
 import { MediaGallery } from './MediaGallery';
 import { DeviceType } from './StartScreen';
 import SmsConversationView from './SmsConversationView';
+import { DeletedMediaPanel } from './DeletedMediaPanel';
 import './UnifiedDashboard.css';
 
 // Clickable file path component
@@ -87,6 +88,8 @@ interface ScanModules {
   keywordSearch: boolean;
   hashMatching: boolean;
   intrusionDetection: boolean;
+  smsMessages?: boolean;
+  deletedMedia?: boolean;
 }
 
 interface UnifiedDashboardProps {
@@ -97,6 +100,7 @@ interface UnifiedDashboardProps {
   smsMessages?: any; // SMS extraction result (Android and iOS)
   systemInfo: SystemInfo | null;
   intrusionResults?: IntrusionScanResults | null; // Intrusion detection results
+  deletedMediaResults?: DeletedMediaDriveResult[]; // Deleted-media (unallocated space) triage per drive
   hashMatches?: any[]; // Hash match results (for Android or standalone hash scanning)
   isScanning: boolean;
   currentScanModule?: string;
@@ -114,7 +118,7 @@ interface UnifiedDashboardProps {
   scannedModules?: ScanModules | null; // NEW: Track which modules were scanned
 }
 
-type ViewType = 'device-info' | 'applications' | 'keywords' | 'media-files' | 'csam-hash' | 'browser-history' | 'sms-messages' | 'intrusion-artifacts' | 'ios-triage' | 'notes';
+type ViewType = 'device-info' | 'applications' | 'keywords' | 'media-files' | 'csam-hash' | 'browser-history' | 'sms-messages' | 'intrusion-artifacts' | 'ios-triage' | 'notes' | 'deleted-media';
 type BrowserTab = 'history' | 'downloads' | 'credentials';
 type IntrusionTab = 'event-logs' | 'persistence' | 'command-history';
 
@@ -126,6 +130,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
   smsMessages = null,
   systemInfo,
   intrusionResults: passedIntrusionResults = null,
+  deletedMediaResults = [],
   hashMatches = [],
   isScanning,
   currentScanModule = "",
@@ -227,6 +232,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
         hash_matching_performed: media.some(m => m.md5Hash || m.sha256Hash),
         media_scan_performed: media.length > 0,
         intrusion_detection_performed: intrusionResults !== null,
+        deleted_media_scan_performed: deletedMediaResults.length > 0,
       };
 
       // Get drive information from system info
@@ -280,6 +286,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
           })) as any,
           intrusion: intrusionResults as any,
           system_info: systemInfo as any,
+          deleted_media: deletedMediaResults as any,
         },
       };
 
@@ -394,7 +401,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
       if (scannedModules.mediaScan) {
         items.push({
           id: 'media-files' as ViewType,
-          label: 'MEDIA\nFILES',
+          label: 'MEDIA FILES\n(ACTIVE)',
           icon: '🖼️',
           count: media.length,
           expandable: false
@@ -413,6 +420,22 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
           label: 'CSAM HASH HITS',
           icon: '🛡️',
           count: hashCount,
+          expandable: false
+        });
+      }
+
+      // Deleted media in unallocated space (Windows/USB, if scanned)
+      if ((deviceType === 'windows' || deviceType === 'usb') && scannedModules.deletedMedia) {
+        // Headline count = estimated recoverable files across all scanned drives.
+        const dmCount = deletedMediaResults.reduce(
+          (sum, r) => sum + (r.summary?.estimatedTotal || 0),
+          0
+        );
+        items.push({
+          id: 'deleted-media' as ViewType,
+          label: 'DELETED\nMEDIA',
+          icon: '🗑️',
+          count: dmCount,
           expandable: false
         });
       }
@@ -479,7 +502,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
   const renderContent = () => {
     switch (activeView) {
       case 'device-info':
-        return <DeviceInfoView systemInfo={systemInfo} deviceType={deviceType} selectedDrives={selectedDrives} isScanning={isScanning} scanProgress={scanProgress} totalFilesScanned={totalFilesScanned} />;
+        return <DeviceInfoView systemInfo={systemInfo} deviceType={deviceType} selectedDrives={selectedDrives} isScanning={isScanning} scanProgress={scanProgress} totalFilesScanned={totalFilesScanned} liveMediaCount={media.length} mediaScanRan={!!scannedModules?.mediaScan} deletedMediaResults={deletedMediaResults} deletedMediaRan={!!scannedModules?.deletedMedia} />;
       case 'ios-triage':
         return <IosTriageView onToggleFlag={toggleFlag} isFlagged={isFlagged} />;
       case 'applications':
@@ -491,6 +514,14 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
         return <KeywordsView keywords={filteredKeywords} selectedKeyword={selectedKeyword} onToggleFlag={toggleFlag} isFlagged={isFlagged} onViewDetails={onViewKeywordDetails} />;
       case 'media-files':
         return <MediaFilesView media={media} onToggleFlag={toggleFlag} isFlagged={isFlagged} onOpenGallery={handleOpenMediaGallery} />;
+      case 'deleted-media':
+        return (
+          <DeletedMediaView
+            results={deletedMediaResults}
+            selectedDrives={selectedDrives}
+            isScanning={isScanning}
+          />
+        );
       case 'csam-hash':
         return <CSAMHashView media={media} hashMatches={hashMatches} onToggleFlag={toggleFlag} isFlagged={isFlagged} onViewDetails={onViewHashDetails} />;
       case 'browser-history':
@@ -771,7 +802,14 @@ const DeviceInfoView: React.FC<{
   isScanning?: boolean;
   scanProgress?: any[];
   totalFilesScanned?: number;
-}> = ({ systemInfo, deviceType, selectedDrives = [], isScanning = false, scanProgress = [], totalFilesScanned }) => {
+  /** Count of media files found on the LIVE filesystem by the media scanner. */
+  liveMediaCount?: number;
+  /** True if the Media File Scanner module actually ran. */
+  mediaScanRan?: boolean;
+  /** Deleted-media (unallocated space) results, if that module ran. */
+  deletedMediaResults?: DeletedMediaDriveResult[];
+  deletedMediaRan?: boolean;
+}> = ({ systemInfo, deviceType, selectedDrives = [], isScanning = false, scanProgress = [], totalFilesScanned, liveMediaCount = 0, mediaScanRan = false, deletedMediaResults = [], deletedMediaRan = false }) => {
   const [usbDeviceInfo, setUsbDeviceInfo] = React.useState<UsbDeviceInfo | null>(null);
   const [loadingUsbInfo, setLoadingUsbInfo] = React.useState(false);
 
@@ -859,7 +897,7 @@ const DeviceInfoView: React.FC<{
               <div className="info-value">{usbDeviceInfo.capacity_gb.toFixed(2)} GB</div>
             </div>
             <div className="info-card">
-              <div className="info-label">Media Files (Images/Video)</div>
+              <div className="info-label">Files Scanned (Live Filesystem)</div>
               <div className="info-value">
                 {(() => {
                   try {
@@ -887,6 +925,35 @@ const DeviceInfoView: React.FC<{
                 })()}
               </div>
             </div>
+
+            {/* Live media files — only meaningful if the media scanner ran. */}
+            {mediaScanRan && (
+              <div className="info-card">
+                <div className="info-label">Media Files — Active (Not Deleted)</div>
+                <div className="info-value">
+                  {isScanning && liveMediaCount === 0 ? 'Scanning...' : liveMediaCount.toLocaleString()}
+                </div>
+              </div>
+            )}
+
+            {/* Deleted media in unallocated space — separate, explicitly labelled. */}
+            {deletedMediaRan && (
+              <div className="info-card">
+                <div className="info-label">Media Files — Deleted (Unallocated Space)</div>
+                <div className="info-value">
+                  {(() => {
+                    const done = deletedMediaResults.filter(r => r.summary || r.error);
+                    if (done.length === 0) return isScanning ? 'Scanning...' : '—';
+                    if (!done.some(r => r.summary)) return 'Error';
+                    const est = deletedMediaResults.reduce(
+                      (sum, r) => sum + (r.summary?.estimatedTotal || 0),
+                      0
+                    );
+                    return est > 0 ? `~${est.toLocaleString()}` : '0';
+                  })()}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1863,6 +1930,84 @@ const CSAMHashView: React.FC<{
   );
 };
 
+// Deleted Media (unallocated space) View
+//
+// One DeletedMediaPanel per scanned drive. Panels render the pipeline result
+// when present, and fall back to their own on-demand scan button when the
+// pipeline hasn't produced a result for that drive yet.
+const DeletedMediaView: React.FC<{
+  results: DeletedMediaDriveResult[];
+  selectedDrives: string[];
+  isScanning: boolean;
+}> = ({ results, selectedDrives, isScanning }) => {
+  // Normalise "F:" / "F:\" / "F" to "F" so pipeline results line up with drives.
+  const normalise = (d: string) => d.replace(':', '').replace('\\', '').trim().toUpperCase();
+
+  // Show a panel for every drive the user selected, in order, plus any drive
+  // that produced a result but wasn't in the selection (defensive).
+  const driveLetters = Array.from(
+    new Set([
+      ...selectedDrives.map(normalise),
+      ...results.map(r => normalise(r.driveLetter)),
+    ])
+  ).filter(Boolean);
+
+  const totalEstimated = results.reduce((sum, r) => sum + (r.summary?.estimatedTotal || 0), 0);
+  const anyFound = results.some(r => r.summary?.deletedMediaFound);
+  const completed = results.filter(r => r.summary || r.error).length;
+
+  return (
+    <div className="content-view">
+      <h2 className="view-title">DELETED MEDIA — UNALLOCATED SPACE</h2>
+      <p className="view-description">
+        Detection only. Scout reports whether deleted photos and videos are still
+        physically present in unallocated space and estimates how many — it never
+        reconstructs or extracts file data. Use PhotoRec or an equivalent carver to
+        recover them.
+      </p>
+
+      {driveLetters.length > 1 && completed > 0 && (
+        <div className="media-stats" style={{ marginBottom: '16px' }}>
+          <div className="stat-card">
+            <div className="stat-icon">{anyFound ? '🗑️' : '✅'}</div>
+            <div className="stat-content">
+              <div className="stat-value">{totalEstimated.toLocaleString()}</div>
+              <div className="stat-label">Est. Recoverable (all drives)</div>
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-icon">💾</div>
+            <div className="stat-content">
+              <div className="stat-value">{completed} / {driveLetters.length}</div>
+              <div className="stat-label">Drives Analyzed</div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {driveLetters.length === 0 && (
+        <div className="no-data">
+          {isScanning ? 'Analyzing unallocated space...' : 'No drives were analyzed.'}
+        </div>
+      )}
+
+      {driveLetters.map(letter => {
+        const match = results.find(r => normalise(r.driveLetter) === letter);
+        return (
+          <DeletedMediaPanel
+            key={letter}
+            driveLetter={letter}
+            result={match?.summary ?? null}
+            resultError={match?.error ?? null}
+            hideHeading={true}
+            pipelineScanning={isScanning && !match}
+          />
+        );
+      })}
+    </div>
+  );
+};
+
 // Media Files View
 const MediaFilesView: React.FC<{
   media: MediaFile[];
@@ -1875,7 +2020,11 @@ const MediaFilesView: React.FC<{
   
   return (
     <div className="content-view">
-      <h2 className="view-title">MEDIA FILES - SCAN RESULTS</h2>
+      <h2 className="view-title">MEDIA FILES — ACTIVE (NOT DELETED)</h2>
+      <p className="view-description">
+        Files currently present on the filesystem. Deleted media recoverable from
+        unallocated space is reported separately under <strong>DELETED MEDIA</strong>.
+      </p>
       
       <div className="media-stats">
         <div className="stat-card">

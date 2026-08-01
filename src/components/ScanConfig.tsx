@@ -14,6 +14,7 @@ export interface ScanModules {
   hashMatching: boolean;
   intrusionDetection: boolean;
   smsMessages?: boolean; // Android and iOS only
+  deletedMedia?: boolean; // Windows/USB only — unallocated-space deleted media detection (needs admin)
 }
 
 export interface KeywordScanConfig {
@@ -51,6 +52,7 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       keywordSearch: true,
       hashMatching: true,
       intrusionDetection: true,
+      deletedMedia: true,
     },
     usb: {
       questionableApps: false,
@@ -59,6 +61,7 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       keywordSearch: true,
       hashMatching: true,
       intrusionDetection: false,
+      deletedMedia: true,
     },
     android: {
       questionableApps: true,  // Apps supported
@@ -91,6 +94,7 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     hashMatching: deviceType === 'ios',      // iOS MTP: hash matching on by default
     intrusionDetection: false,
     smsMessages: false,
+    deletedMedia: false,
   });
 
   const [keywordConfig, setKeywordConfig] = useState<KeywordScanConfig>({
@@ -110,6 +114,8 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
   const [selectedBackup, setSelectedBackup] = useState<string | null>(null);
   const [iosBackend, setIosBackend] = useState<'afc' | 'mtp'>('afc');
   const [androidDevices, setAndroidDevices] = useState<string[]>([]);
+  // Deleted-media (unallocated space) scanning needs raw volume reads → Administrator.
+  const [isElevated, setIsElevated] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (deviceType === 'windows' || deviceType === 'usb') {
@@ -251,6 +257,22 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     if (key === 'hashMatching' && !modules.hashMatching && !hashListsLoaded) {
       loadHashLists();
     }
+
+    // Check for Administrator rights when deleted-media detection is enabled —
+    // raw volume reads (\\.\X:) fail without an elevated token.
+    if (key === 'deletedMedia' && !modules.deletedMedia) {
+      invoke<boolean>('is_elevated')
+        .then(setIsElevated)
+        .catch(() => setIsElevated(null));
+    }
+  };
+
+  const relaunchElevated = async () => {
+    try {
+      await invoke('relaunch_elevated');
+    } catch (error) {
+      alert(`Could not relaunch as Administrator: ${error}`);
+    }
   };
 
   const toggleDrive = (driveLetter: string) => {
@@ -347,12 +369,18 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
 
   const selectAll = () => {
     setModules({
-      questionableApps: true,
-      browserHistory: true,
-      mediaScan: true,
-      keywordSearch: true,
-      hashMatching: true,
+      questionableApps: isModuleSupported('questionableApps'),
+      browserHistory: isModuleSupported('browserHistory'),
+      mediaScan: isModuleSupported('mediaScan'),
+      keywordSearch: isModuleSupported('keywordSearch'),
+      hashMatching: isModuleSupported('hashMatching'),
+      intrusionDetection: isModuleSupported('intrusionDetection'),
+      smsMessages: isModuleSupported('smsMessages'),
+      deletedMedia: isModuleSupported('deletedMedia'),
     });
+    if (isModuleSupported('deletedMedia')) {
+      invoke<boolean>('is_elevated').then(setIsElevated).catch(() => setIsElevated(null));
+    }
   };
 
   const selectNone = () => {
@@ -362,6 +390,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       mediaScan: false,
       keywordSearch: false,
       hashMatching: false,
+      intrusionDetection: false,
+      smsMessages: false,
+      deletedMedia: false,
     });
   };
 
@@ -1021,7 +1052,50 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               </div>
             </div>
           )}
+
+          {/* Deleted Media Detection (unallocated space) — Windows / USB */}
+          {isModuleSupported('deletedMedia') && (
+            <div
+              className={`module-card ${modules.deletedMedia ? 'selected' : ''}`}
+              onClick={() => toggleModule('deletedMedia')}
+            >
+              <input
+                type="checkbox"
+                checked={modules.deletedMedia || false}
+                onChange={() => toggleModule('deletedMedia')}
+                onClick={(e) => e.stopPropagation()}
+              />
+              <div className="module-icon">🗑️</div>
+              <div className="module-content">
+                <h3>Deleted Media Detection</h3>
+                <p>
+                  Detect whether deleted photos and videos are still present in unallocated space —
+                  reports how many may be recoverable with a carving tool such as PhotoRec.
+                  Read-only; nothing is written to the drive and no files are extracted.
+                </p>
+                <div className="module-meta">
+                  <span className="meta-badge">⏱️ Moderate</span>
+                  <span className="meta-badge">🔐 Requires Admin</span>
+                  <span className="meta-badge">📊 Estimate</span>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
+
+        {modules.deletedMedia && isElevated === false && (
+          <div className="warning-box">
+            <strong>🔐 Administrator required</strong>
+            <p>
+              Deleted-media detection reads the raw volume (<code>\\.\X:</code>) and cannot run
+              without an elevated token. Relaunch SCOUT as Administrator, or this module will be
+              skipped with an error.
+            </p>
+            <Button variant="secondary" onClick={relaunchElevated} style={{ marginTop: '10px' }}>
+              🔐 Relaunch as Administrator
+            </Button>
+          </div>
+        )}
 
         <div className="config-footer">
           <div className="footer-info">

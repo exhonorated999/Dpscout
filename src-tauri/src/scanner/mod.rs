@@ -22,6 +22,7 @@ pub mod intrusion;
 pub mod app_classifier;
 pub mod simple_categorizer;
 pub mod usb_device;
+pub mod deleted_media;
 
 use serde::{Deserialize, Serialize};
 

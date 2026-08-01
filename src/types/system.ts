@@ -89,6 +89,71 @@ export interface UsbDeviceInfo {
   volume_id: string;
 }
 
+// ---------------------------------------------------------------------------
+// Deleted-media unallocated-space triage
+// Mirrors scanner::deleted_media in the Rust backend (serde camelCase).
+// ---------------------------------------------------------------------------
+
+export interface DeletedFile {
+  fileName: string;
+  extension: string;
+  sizeBytes: number;
+  mediaType: 'image' | 'video';
+  source: 'dir_entry' | 'mft';
+  startCluster: number;
+  likelyRecoverable: boolean;
+}
+
+export interface HeaderHitCount {
+  signature: string;
+  mediaType: 'image' | 'video';
+  count: number;
+}
+
+export interface DeletedMediaSummary {
+  driveLetter: string;
+  fsType: string;
+  scanCompleted: boolean;
+  cancelled: boolean;
+  deletedMediaFound: boolean;
+  namedFiles: DeletedFile[];
+  namedImageCount: number;
+  namedVideoCount: number;
+  headerHits: HeaderHitCount[];
+  unallocatedImageHeaders: number;
+  unallocatedVideoHeaders: number;
+  estimatedTotal: number;
+  freeBytes: number;
+  scannedBytes: number;
+  clusterSize: number;
+  durationMs: number;
+  notes: string[];
+}
+
+export interface DeletedMediaScanOptions {
+  scanMetadataResidue: boolean;
+  scanUnallocated: boolean;
+  maxBytesToScan: number;
+  maxNamedFiles: number;
+}
+
+export interface DeletedMediaProgress {
+  percent: number;
+  scannedBytes: number;
+  freeBytes: number;
+  phase: string;
+}
+
+/**
+ * Per-drive outcome of a pipeline deleted-media scan. Exactly one of
+ * `summary` / `error` is populated.
+ */
+export interface DeletedMediaDriveResult {
+  driveLetter: string;
+  summary: DeletedMediaSummary | null;
+  error: string | null;
+}
+
 // Helper function to format bytes
 export function formatBytes(bytes: number): string {
   if (bytes === 0) return '0 Bytes';

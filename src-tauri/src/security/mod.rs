@@ -2,6 +2,7 @@ pub mod auth;
 pub mod encryption;
 pub mod usb_fingerprint;
 pub mod trial;
+pub mod elevation;
 
 pub use auth::{is_registered, register_user, login, User, init_security_db};
 pub use encryption::{

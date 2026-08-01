@@ -229,6 +229,9 @@ fn draw_face_page(ctx: &mut PdfContext, payload: &ReportPayload) -> Result<(), B
         if params.intrusion_detection_performed {
             scan_types.push("Intrusion Detection");
         }
+        if params.deleted_media_scan_performed {
+            scan_types.push("Deleted Media Detection");
+        }
         
         y = draw_info_field(&layer, "Scan Categories:", &scan_types.join(", "), left_margin, y, ctx.font_bold, ctx.font);
     }
@@ -420,6 +423,18 @@ fn draw_flagged_evidence_sections(ctx: &mut PdfContext, payload: &ReportPayload)
         if has_events {
             add_new_page(ctx);
             draw_flagged_intrusion(ctx, intrusion, payload)?;
+        }
+    }
+    
+    // Deleted Media (Unallocated Space) - show if a deleted-media scan ran on any drive
+    if let Some(drives) = payload.all_data.deleted_media.as_array() {
+        let has_results = drives.iter().any(|d| {
+            d.get("summary").map(|s| !s.is_null()).unwrap_or(false)
+                || d.get("error").and_then(|e| e.as_str()).map(|s| !s.is_empty()).unwrap_or(false)
+        });
+        if has_results {
+            add_new_page(ctx);
+            draw_deleted_media(ctx, drives, payload)?;
         }
     }
     
@@ -1283,6 +1298,192 @@ fn draw_info_field(layer: &PdfLayerReference, label: &str, value: &str, x: Mm, m
     layer.use_text(&format!(" {}", value), FONT_SIZE_LABEL, x + Mm(45.0), y, font);
     y -= Mm(LINE_HEIGHT_BODY);
     y
+}
+
+/// Format a byte count into a human-readable string (KB/MB/GB).
+fn format_bytes_human(bytes: u64) -> String {
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    const GB: f64 = MB * 1024.0;
+    let b = bytes as f64;
+    if b >= GB {
+        format!("{:.2} GB", b / GB)
+    } else if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.1} KB", b / KB)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
+/// Deleted Media (Unallocated Space) triage section.
+/// Renders one block per scanned drive: filesystem, estimate, named/header
+/// counts, signature breakdown, recoverable file names, and the
+/// detection-only disclaimer.
+fn draw_deleted_media(ctx: &mut PdfContext, drives: &[serde_json::Value], _payload: &ReportPayload) -> Result<(), Box<dyn Error>> {
+    ctx.check_page_break(40.0);
+    let left_margin = Mm(PAGE_MARGIN);
+
+    // Section header
+    {
+        let layer = ctx.current_layer();
+        draw_left_border(&layer, left_margin, ctx.y_position, Mm(6.0), color_warning());
+        layer.set_fill_color(color_primary());
+        layer.use_text("DELETED MEDIA (UNALLOCATED SPACE)", FONT_SIZE_SUBHEADING, left_margin + Mm(5.0), ctx.y_position, ctx.font_bold);
+        ctx.y_position -= Mm(8.0);
+
+        layer.set_fill_color(color_gray());
+        draw_wrapped_text(
+            &layer,
+            "Detection only. Scout reports whether deleted photos/videos remain physically present in unallocated space and estimates how many may be recoverable. It does not reconstruct or extract file data.",
+            FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY,
+        );
+        ctx.y_position -= Mm(4.0);
+    }
+
+    for drive in drives {
+        let drive_letter = drive.get("driveLetter").and_then(|v| v.as_str()).unwrap_or("?");
+        let error = drive.get("error").and_then(|v| v.as_str()).filter(|s| !s.is_empty());
+        let summary = drive.get("summary").filter(|s| !s.is_null());
+
+        ctx.check_page_break(50.0);
+        let layer = ctx.current_layer();
+
+        // Per-drive sub-header
+        layer.set_fill_color(color_primary());
+        layer.use_text(&format!("Drive {}:", drive_letter.trim_end_matches(':')), FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
+        ctx.y_position -= Mm(LINE_HEIGHT_BODY + 1.0);
+
+        // Error case
+        if let Some(err) = error {
+            layer.set_fill_color(color_critical());
+            draw_wrapped_text(&layer, &format!("   Scan error: {}", err), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
+            ctx.y_position -= Mm(3.0);
+            continue;
+        }
+
+        let summary = match summary {
+            Some(s) => s,
+            None => {
+                layer.set_fill_color(color_gray());
+                layer.use_text("   No scan data for this drive.", FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+                ctx.y_position -= Mm(LINE_HEIGHT_BODY + 3.0);
+                continue;
+            }
+        };
+
+        let fs_type = summary.get("fsType").and_then(|v| v.as_str()).unwrap_or("Unknown");
+        let found = summary.get("deletedMediaFound").and_then(|v| v.as_bool()).unwrap_or(false);
+        let estimated = summary.get("estimatedTotal").and_then(|v| v.as_u64()).unwrap_or(0);
+        let named_img = summary.get("namedImageCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let named_vid = summary.get("namedVideoCount").and_then(|v| v.as_u64()).unwrap_or(0);
+        let hdr_img = summary.get("unallocatedImageHeaders").and_then(|v| v.as_u64()).unwrap_or(0);
+        let hdr_vid = summary.get("unallocatedVideoHeaders").and_then(|v| v.as_u64()).unwrap_or(0);
+        let free_bytes = summary.get("freeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let scanned_bytes = summary.get("scannedBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cluster_size = summary.get("clusterSize").and_then(|v| v.as_u64()).unwrap_or(0);
+
+        // Headline verdict
+        if found {
+            layer.set_fill_color(color_critical());
+            layer.use_text(&format!("   Deleted media detected - ~{} file(s) potentially recoverable", estimated), FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
+        } else {
+            layer.set_fill_color(color_success());
+            layer.use_text("   No deleted media detected in unallocated space", FONT_SIZE_BODY, left_margin, ctx.y_position, ctx.font_bold);
+        }
+        ctx.y_position -= Mm(LINE_HEIGHT_BODY + 1.0);
+
+        // Stat lines
+        layer.set_fill_color(color_text());
+        let stat_lines = [
+            format!("   Filesystem: {}   -   Cluster size: {} bytes", fs_type, format_number(cluster_size)),
+            format!("   Named deleted images: {}   -   Named deleted videos: {}", named_img, named_vid),
+            format!("   Image headers in free space: {}   -   Video headers in free space: {}", hdr_img, hdr_vid),
+            format!("   Free space: {}   -   Scanned: {}", format_bytes_human(free_bytes), format_bytes_human(scanned_bytes)),
+        ];
+        for line in &stat_lines {
+            ctx.check_page_break(12.0);
+            let layer = ctx.current_layer();
+            layer.set_fill_color(color_text());
+            layer.use_text(line, FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+            ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+        }
+
+        // Signature breakdown
+        if let Some(hits) = summary.get("headerHits").and_then(|v| v.as_array()) {
+            if !hits.is_empty() {
+                let parts: Vec<String> = hits.iter().map(|h| {
+                    let sig = h.get("signature").and_then(|v| v.as_str()).unwrap_or("?");
+                    let cnt = h.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
+                    format!("{} x{}", sig, cnt)
+                }).collect();
+                ctx.check_page_break(12.0);
+                let layer = ctx.current_layer();
+                layer.set_fill_color(color_gray());
+                draw_wrapped_text(&layer, &format!("   Signatures in free space: {}", parts.join(", ")), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
+            }
+        }
+
+        // Recoverable file names (metadata residue)
+        if let Some(files) = summary.get("namedFiles").and_then(|v| v.as_array()) {
+            if !files.is_empty() {
+                ctx.check_page_break(14.0);
+                let layer = ctx.current_layer();
+                layer.set_fill_color(color_primary());
+                layer.use_text(&format!("   Recoverable file names ({}):", files.len()), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font_bold);
+                ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+
+                let cap = 40usize;
+                for f in files.iter().take(cap) {
+                    let name = f.get("fileName").and_then(|v| v.as_str()).unwrap_or("(unknown)");
+                    let size = f.get("sizeBytes").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let mtype = f.get("mediaType").and_then(|v| v.as_str()).unwrap_or("");
+                    let recov = f.get("likelyRecoverable").and_then(|v| v.as_bool()).unwrap_or(false);
+                    ctx.check_page_break(10.0);
+                    let layer = ctx.current_layer();
+                    layer.set_fill_color(color_gray());
+                    let mark = if recov { "recoverable" } else { "fragmented" };
+                    draw_wrapped_text(
+                        &layer,
+                        &format!("      - {}  [{}, {}, {}]", name, mtype, format_bytes_human(size), mark),
+                        FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY,
+                    );
+                }
+                if files.len() > cap {
+                    ctx.check_page_break(10.0);
+                    let layer = ctx.current_layer();
+                    layer.set_fill_color(color_gray());
+                    layer.use_text(&format!("      ... and {} more", files.len() - cap), FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font);
+                    ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+                }
+            }
+        }
+
+        // Interpretation notes from the engine
+        if let Some(notes) = summary.get("notes").and_then(|v| v.as_array()) {
+            if !notes.is_empty() {
+                ctx.check_page_break(12.0);
+                let layer = ctx.current_layer();
+                layer.set_fill_color(color_gray());
+                layer.use_text("   Notes:", FONT_SIZE_SMALL, left_margin, ctx.y_position, ctx.font_bold);
+                ctx.y_position -= Mm(LINE_HEIGHT_BODY);
+                for note in notes {
+                    if let Some(n) = note.as_str() {
+                        ctx.check_page_break(10.0);
+                        let layer = ctx.current_layer();
+                        layer.set_fill_color(color_gray());
+                        draw_wrapped_text(&layer, &format!("      - {}", n), FONT_SIZE_SMALL, left_margin, &mut ctx.y_position, ctx.font, LINE_HEIGHT_BODY);
+                    }
+                }
+            }
+        }
+
+        ctx.y_position -= Mm(LINE_HEIGHT_SECTION);
+    }
+
+    ctx.y_position -= Mm(3.0);
+    Ok(())
 }
 
 /// Wrap long text into multiple lines that fit within the usable page width.

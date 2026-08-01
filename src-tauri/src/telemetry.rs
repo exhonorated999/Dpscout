@@ -43,6 +43,7 @@ pub const ALLOWED_EVENTS: &[&str] = &[
     "intrusion_scan_run",
     "ios_triage_opened",
     "android_triage_opened",
+    "deleted_media_scan_run",
 ];
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

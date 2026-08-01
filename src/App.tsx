@@ -21,7 +21,7 @@ import { MediaFile, MediaScanOptions, defaultMediaScanOptions } from "./types/me
 import { BrowserData } from "./types/browser";
 import { KeywordMatch, KeywordScanOptions, KeywordList } from "./types/keyword";
 import { ScanProgress as ScanProgressType, ReportFormat } from "./types/report";
-import { SystemInfo } from "./types/system";
+import { SystemInfo, DeletedMediaSummary, DeletedMediaDriveResult } from "./types/system";
 import { IntrusionScanResults, IntrusionScanOptions, defaultIntrusionScanOptions } from "./types/intrusion";
 import { useScanSession } from "./hooks/useScanSession";
 import { RegistrationScreen } from "./components/RegistrationScreen";
@@ -63,6 +63,8 @@ function App() {
   const [hashMatches, setHashMatches] = useState<any[]>([]);
   const [smsMessages, setSmsMessages] = useState<any>(null); // SMS extraction result
   const [intrusionResults, setIntrusionResults] = useState<IntrusionScanResults | null>(null);
+  // Deleted-media (unallocated space) triage — one entry per scanned drive.
+  const [deletedMediaResults, setDeletedMediaResults] = useState<DeletedMediaDriveResult[]>([]);
   // Active warrant triage case (set after import or "Open" from case list)
   const [warrantCaseId, setWarrantCaseId] = useState<string | null>(null);
   // Active investigation (parent of warrantCaseId, if any) — used for
@@ -877,6 +879,7 @@ function App() {
     setKeywordMatches([]);
     setHashMatches([]);
     setIntrusionResults(null);
+    setDeletedMediaResults([]);
     setSystemInfo(null);
     scanCancelledRef.current = false;
     setScanStopped(false);
@@ -1138,6 +1141,76 @@ function App() {
           console.error("Intrusion detection scan error:", error);
         }
         
+        setScanProgress([...progressList]);
+      }
+
+      // Deleted Media Detection (unallocated space) — read-only raw volume triage.
+      // Runs per selected drive and needs an elevated token.
+      if (modules.deletedMedia && !scanCancelledRef.current) {
+        trackEvent("deleted_media_scan_run");
+        setCurrentScanModule("Deleted Media Detection");
+
+        const drivesToScan = (keywordConfig?.selectedDrives && keywordConfig.selectedDrives.length > 0)
+          ? keywordConfig.selectedDrives
+          : selectedDrives;
+
+        const dmProgress: ScanProgressType = {
+          moduleId: "deleted_media",
+          moduleName: "Deleted Media Detection",
+          status: "scanning",
+          currentItem: "Reading filesystem metadata...",
+          itemsProcessed: 0,
+          totalItems: 100,
+          percentage: 0,
+          estimatedTimeRemaining: 0,
+          startTime: Date.now(),
+          itemsPerSecond: 0,
+        };
+        progressList.push(dmProgress);
+        setScanProgress([...progressList]);
+
+        const { listen } = await import("@tauri-apps/api/event");
+        const unlistenDm = await listen<any>("deleted-media:progress", (event) => {
+          const p = event.payload;
+          dmProgress.percentage = p.percent;
+          dmProgress.currentItem = p.phase;
+          dmProgress.itemsProcessed = p.percent;
+          setScanProgress([...progressList]);
+        });
+
+        try {
+          const results: DeletedMediaDriveResult[] = [];
+          for (const rawDrive of drivesToScan) {
+            if (scanCancelledRef.current) break;
+            const letter = rawDrive.replace(':', '').replace('\\', '').trim();
+            try {
+              const summary = await invoke<DeletedMediaSummary>("scan_deleted_media", {
+                driveLetter: letter,
+                options: {
+                  scanMetadataResidue: true,
+                  scanUnallocated: true,
+                  maxBytesToScan: 0,
+                  maxNamedFiles: 5000,
+                },
+              });
+              results.push({ driveLetter: letter, summary, error: null });
+            } catch (error) {
+              const msg = String(error);
+              console.error(`Deleted-media scan failed on ${letter}:`, msg);
+              results.push({ driveLetter: letter, summary: null, error: msg });
+            }
+            // Publish incrementally so the dashboard fills in per drive.
+            setDeletedMediaResults([...results]);
+          }
+          dmProgress.status = results.some(r => r.summary) ? "complete" : "error";
+          dmProgress.percentage = 100;
+        } catch (error) {
+          dmProgress.status = "error";
+          console.error("Deleted media detection error:", error);
+        } finally {
+          unlistenDm();
+        }
+
         setScanProgress([...progressList]);
       }
 
@@ -2069,6 +2142,7 @@ function App() {
           smsMessages={smsMessages}
           systemInfo={systemInfo}
           intrusionResults={intrusionResults}
+          deletedMediaResults={deletedMediaResults}
           hashMatches={hashMatches}
           isScanning={isScanning}
           currentScanModule={currentScanModule}

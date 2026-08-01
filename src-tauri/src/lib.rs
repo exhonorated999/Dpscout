@@ -1479,6 +1479,93 @@ fn get_usb_device_info(drive_letter: String) -> Result<scanner::usb_device::UsbD
     scanner::usb_device::get_usb_device_info(&drive_letter)
 }
 
+// ---------------------------------------------------------------------------
+// Deleted-media unallocated-space triage
+// ---------------------------------------------------------------------------
+
+/// Cancellation flag shared between the running scan and `cancel_deleted_media_scan`.
+static DELETED_MEDIA_CANCEL: std::sync::OnceLock<std::sync::Arc<std::sync::atomic::AtomicBool>> =
+    std::sync::OnceLock::new();
+
+fn deleted_media_cancel_flag() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    DELETED_MEDIA_CANCEL
+        .get_or_init(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        .clone()
+}
+
+/// True when the current process has an elevated (Administrator) token.
+/// Raw volume reads for unallocated-space scanning require this.
+#[tauri::command]
+fn is_elevated() -> bool {
+    security::elevation::is_elevated()
+}
+
+/// Relaunch Scout with a UAC elevation prompt, then exit this instance.
+#[tauri::command]
+fn relaunch_elevated(app: tauri::AppHandle) -> Result<(), String> {
+    security::elevation::relaunch_elevated()?;
+    // Give the IPC response time to reach the webview before we exit.
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        app.exit(0);
+    });
+    Ok(())
+}
+
+/// Request cancellation of an in-flight deleted-media scan.
+#[tauri::command]
+fn cancel_deleted_media_scan() {
+    deleted_media_cancel_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Detect (and estimate the count of) deleted media files still present in the
+/// unallocated space of a USB/SD/microSD volume.
+///
+/// Returns `Err("ELEVATION_REQUIRED")` when not running elevated — the frontend
+/// matches that exact string to show the UAC relaunch prompt.
+#[tauri::command]
+async fn scan_deleted_media(
+    app: tauri::AppHandle,
+    drive_letter: String,
+    options: Option<scanner::deleted_media::DeletedMediaScanOptions>,
+) -> Result<scanner::deleted_media::DeletedMediaSummary, String> {
+    use tauri::Emitter;
+
+    let opts = options.unwrap_or_else(|| scanner::deleted_media::DeletedMediaScanOptions {
+        scan_metadata_residue: true,
+        scan_unallocated: true,
+        max_bytes_to_scan: 0,
+        max_named_files: 5000,
+    });
+
+    // Reset the cancel flag for this run.
+    let cancel = deleted_media_cancel_flag();
+    cancel.store(false, std::sync::atomic::Ordering::Relaxed);
+
+    let app_for_progress = app.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        scanner::deleted_media::scan_deleted_media(
+            &drive_letter,
+            opts,
+            cancel,
+            move |percent, scanned_bytes, free_bytes, phase| {
+                let _ = app_for_progress.emit(
+                    "deleted-media:progress",
+                    serde_json::json!({
+                        "percent": percent,
+                        "scannedBytes": scanned_bytes,
+                        "freeBytes": free_bytes,
+                        "phase": phase,
+                    }),
+                );
+            },
+        )
+    })
+    .await
+    .map_err(|e| format!("Deleted-media scan task failed: {}", e))?
+}
+
 #[tauri::command]
 fn scan_ios_mtp_media() -> Result<scanner::ios_mtp::MtpScanResult, String> {
     scanner::ios_mtp::scan_iphone_media_mtp_full("iPhone")
@@ -2493,6 +2580,10 @@ pub fn run() {
             scan_intrusion_progressive,
             get_available_drives,
             get_usb_device_info,
+            scan_deleted_media,
+            cancel_deleted_media_scan,
+            is_elevated,
+            relaunch_elevated,
             get_scan_paths_for_selected_drives,
             check_adb_available,
             prepare_for_update,

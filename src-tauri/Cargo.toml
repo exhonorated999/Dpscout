@@ -61,7 +61,12 @@ zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.52"
-winapi = { version = "0.3", features = ["fileapi", "winbase", "minwindef", "winnt"] }
+winapi = { version = "0.3", features = [
+    "fileapi", "winbase", "minwindef", "winnt",
+    # Deleted-media unallocated scan: raw volume handles + admin/elevation check
+    "securitybaseapi", "processthreadsapi", "handleapi", "errhandlingapi", "ioapiset",
+    "winioctl", "std",
+] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.29", features = ["mount", "user"] }

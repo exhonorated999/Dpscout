@@ -9,7 +9,8 @@ export type TelemetryEvent =
   | "hash_scan_run"
   | "intrusion_scan_run"
   | "ios_triage_opened"
-  | "android_triage_opened";
+  | "android_triage_opened"
+  | "deleted_media_scan_run";
 
 const ALLOWED = new Set<TelemetryEvent>([
   "warrant_triage_opened",
@@ -17,6 +18,7 @@ const ALLOWED = new Set<TelemetryEvent>([
   "intrusion_scan_run",
   "ios_triage_opened",
   "android_triage_opened",
+  "deleted_media_scan_run",
 ]);
 
 export function trackEvent(name: TelemetryEvent): void {

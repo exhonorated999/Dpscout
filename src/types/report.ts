@@ -103,6 +103,7 @@ export interface ScanParameters {
   hash_matching_performed: boolean;
   media_scan_performed: boolean;
   intrusion_detection_performed: boolean;
+  deleted_media_scan_performed?: boolean;
 }
 
 export interface ReportConfiguration {
@@ -136,5 +137,7 @@ export interface ReportPayload {
     browsers: any[];
     intrusion: any;
     system_info: any;
+    hash_matches?: any[];
+    deleted_media?: any[];
   };
 }

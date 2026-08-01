@@ -42,6 +42,7 @@ pub fn create_forensic_report_payload(
             hash_matching_performed: true, // Always checked in forensic mode
             media_scan_performed: results.scan_statistics.media_files_found > 0,
             intrusion_detection_performed: false, // Not applicable in offline mode
+            deleted_media_scan_performed: false,
         }),
         scan_duration: Some(format!(
             "{} seconds",
@@ -134,6 +135,8 @@ pub fn create_forensic_report_payload(
             browsers: browsers_json,
             intrusion: intrusion_json,
             system_info: system_info_json,
+            hash_matches: json!([]),
+            deleted_media: json!([]),
         },
     }
 }

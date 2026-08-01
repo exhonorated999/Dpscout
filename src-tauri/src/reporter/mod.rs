@@ -36,6 +36,8 @@ pub struct ScanParameters {
     pub hash_matching_performed: bool,
     pub media_scan_performed: bool,
     pub intrusion_detection_performed: bool,
+    #[serde(default)]
+    pub deleted_media_scan_performed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -64,6 +66,10 @@ pub struct AllDataPayload {
     pub system_info: serde_json::Value,
     #[serde(default)]
     pub hash_matches: serde_json::Value,
+    /// Per-drive deleted-media (unallocated space) triage results.
+    /// Array of { driveLetter, summary, error }.
+    #[serde(default)]
+    pub deleted_media: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

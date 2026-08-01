@@ -27,6 +27,7 @@ mod tests {
                     hash_matching_performed: false,
                     media_scan_performed: false,
                     intrusion_detection_performed: false,
+                    deleted_media_scan_performed: false,
                 }),
                 scan_duration: Some("5m 30s".to_string()),
                 triage_start_time: None,
@@ -44,6 +45,7 @@ mod tests {
                 browsers: json!([]),
                 intrusion: json!(null),
                 hash_matches: json!([]),
+                deleted_media: json!([]),
                 system_info: json!({
                     "computer_name": "TEST-COMPUTER",
                     "os_version": "Windows 11 Pro (Build 22631)",
@@ -180,6 +182,7 @@ mod tests {
                 browsers: json!([]),
                 intrusion: json!(null),
                 hash_matches: json!([]),
+                deleted_media: json!([]),
                 system_info: json!(null),  // No device info
             },
         };
