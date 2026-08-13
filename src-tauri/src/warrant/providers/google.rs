@@ -84,6 +84,17 @@ pub struct GoogleWarrantParser;
 const IMAGE_EXTS: &[&str] = &[".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif", ".bmp"];
 const VIDEO_EXTS: &[&str] = &[".mp4", ".mov", ".webm", ".m4v", ".avi", ".mkv"];
 
+/// Largest single file we will read fully into memory during collection.
+/// Text/records/subscriber/mbox files are almost always well under this.
+/// Multi-GB volumes (bulk media, giant mbox spills) above this are skipped
+/// so a 300 GB+ return can never OOM the app.  Skipped files are recorded
+/// via `ctx.skipped_large` and surfaced in the bio.
+const MAX_INMEM_FILE_BYTES: u64 = 512 * 1024 * 1024; // 512 MiB
+
+/// Per-return cap on bulk media (photos/videos) we extract to the case dir.
+/// Beyond this we stop extracting media bytes but still count what was seen.
+const MAX_MEDIA_EXTRACT: usize = 5_000;
+
 // ─── WarrantParser impl ─────────────────────────────────────────────────
 
 impl WarrantParser for GoogleWarrantParser {
@@ -104,6 +115,8 @@ impl WarrantParser for GoogleWarrantParser {
 
         // Warrant: contains *.ExportSummary.txt OR per-service inner zips
         // whose name matches the {email}.{accountId}.{Service}.{Resource}_NNN.zip pattern.
+        // Large returns pack resources as DIRECTORIES inside master-bundle
+        // volumes ({internalNumber}-{YYYYMMDD}-{N}.zip); detect those too.
         // Takeout: contains a top-level "Takeout/" directory.
         let mut found = false;
         for i in 0..zip.len() {
@@ -120,6 +133,13 @@ impl WarrantParser for GoogleWarrantParser {
                 break;
             }
             if is_lers_inner_zip(&name) {
+                found = true;
+                break;
+            }
+            // Master-bundle volume nested inside the picked zip, or the
+            // resource-directory layout ({lers}_NNN/<files>).
+            let first_seg = name.split('/').next().unwrap_or(&name);
+            if is_master_bundle_filename(first_seg) || is_lers_dir_name(first_seg) {
                 found = true;
                 break;
             }
@@ -268,6 +288,15 @@ struct ParseCtx {
     /// nothing", which is forensically meaningful.
     no_records: Vec<String>,
 
+    /// Files skipped during collection because they exceeded
+    /// `MAX_INMEM_FILE_BYTES` (e.g. multi-GB media volumes on huge returns).
+    /// Surfaced in the bio so the investigator knows they exist on disk.
+    skipped_large: Vec<String>,
+
+    /// Count of bulk media (photos/videos) written to the case media dir.
+    /// Capped at `MAX_MEDIA_EXTRACT` so an enormous return can't fill disk.
+    media_written: usize,
+
     /// Subscriber-info struct, populated as we encounter SubscriberInfo.html.
     /// Bio is emitted at the end so it lists no-records categories too.
     subscriber: Option<SubscriberInfo>,
@@ -288,6 +317,8 @@ impl ParseCtx {
             export_generated_at: None,
             bundle_sources: Vec::new(),
             no_records: Vec::new(),
+            skipped_large: Vec::new(),
+            media_written: 0,
             subscriber: None,
             hangouts_user: None,
             chat_user: None,
@@ -302,6 +333,16 @@ impl ParseCtx {
 
     fn push(&mut self, item: WarrantItem) {
         self.items.push(item);
+    }
+
+    /// Reserve one slot in the bulk-media budget.  Returns true if we may
+    /// still write media to disk, false once the cap is reached.
+    fn media_budget_ok(&mut self) -> bool {
+        if self.media_written >= MAX_MEDIA_EXTRACT {
+            return false;
+        }
+        self.media_written += 1;
+        true
     }
 }
 
@@ -368,53 +409,30 @@ fn collect_from_zip(path: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
     let file = File::open(path)?;
     let mut zip = ZipArchive::new(file)?;
 
-    // First, snapshot the top-level entries.  Distinguish:
-    //   - per-service inner zips     ({email}.{id}.{svc}.{res}_NNN.zip)
-    //   - master-bundle wrapper zips ({digits}-{date}-{N}.zip)
-    //   - loose files (cover-letter PDF, mbox extracted out of band)
-    //   - Takeout/ directory tree    (Google Takeout, not warrant)
-    let mut inner_zip_names: Vec<String> = Vec::new();
+    // Snapshot the top-level entries to find master-bundle WRAPPER zips
+    // ({digits}-{date}-{N}.zip) that themselves contain the return.  All
+    // other layouts (root-level per-service inner zips, resource DIRECTORIES,
+    // Takeout tree) are handled by collect_bundle_archive below.
     let mut master_bundles: Vec<String> = Vec::new();
-    let mut takeout_files: Vec<String> = Vec::new();
-
     for i in 0..zip.len() {
         let entry = zip.by_index(i)?;
         if entry.is_dir() {
             continue;
         }
         let name = entry.name().to_string();
-        let lower = name.to_lowercase();
         let basename = name.rsplit('/').next().unwrap_or(&name).to_string();
-
-        if lower.ends_with(".zip") {
-            if is_master_bundle_filename(&basename) {
-                master_bundles.push(name);
-            } else if is_lers_inner_zip(&name) {
-                inner_zip_names.push(name);
-            } else {
-                // Some other nested archive — try as master bundle too.
-                master_bundles.push(name);
-            }
-        } else if name.contains("Takeout/") {
-            takeout_files.push(name);
+        if name.to_lowercase().ends_with(".zip") && is_master_bundle_filename(&basename) {
+            master_bundles.push(name);
         }
-        // PDFs (cover letters) and other loose files are ignored.
     }
 
     let mut seen_inner: HashSet<String> = HashSet::new();
 
-    // Walk outer-level inner zips first, then bundle contents (so
-    // bundle duplicates are skipped via `seen_inner`).
-    for nm in &inner_zip_names {
-        let basename = nm.rsplit('/').next().unwrap_or(nm).to_string();
-        if !seen_inner.insert(basename.clone()) {
-            continue;
-        }
-        if let Err(e) = process_inner_zip(&mut zip, nm, ctx) {
-            eprintln!("[google] inner zip error {}: {}", nm, e);
-        }
-    }
+    // Root-level content first (per-service inner zips + resource directories
+    // + Takeout tree), so it takes priority over duplicates inside bundles.
+    collect_bundle_archive(&mut zip, ctx, &mut seen_inner)?;
 
+    // Then any master-bundle wrapper zips.
     for nm in &master_bundles {
         let basename = nm.rsplit('/').next().unwrap_or(nm).to_string();
         ctx.bundle_sources
@@ -422,11 +440,6 @@ fn collect_from_zip(path: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
         if let Err(e) = process_master_bundle(&mut zip, nm, ctx, &mut seen_inner) {
             eprintln!("[google] master-bundle error {}: {}", nm, e);
         }
-    }
-
-    // Loose Takeout content (rare in warrant returns).
-    if !takeout_files.is_empty() {
-        process_takeout_in_zip(&mut zip, &takeout_files, ctx)?;
     }
 
     Ok(())
@@ -437,6 +450,15 @@ fn process_inner_zip<R: std::io::Read + std::io::Seek>(
     inner_name: &str,
     ctx: &mut ParseCtx,
 ) -> Result<(), ParseError> {
+    // Reading a nested zip requires Seek, so we must buffer it in memory.
+    // Guard against multi-GB volumes on huge returns — skip + record instead
+    // of OOMing.  (The directory-in-bundle layout used by large returns does
+    // not hit this path.)
+    let inner_size = outer.by_name(inner_name).map(|e| e.size()).unwrap_or(0);
+    if inner_size > MAX_INMEM_FILE_BYTES {
+        ctx.skipped_large.push(inner_name.to_string());
+        return Ok(());
+    }
     // Read inner zip bytes from outer.
     let mut buf: Vec<u8> = Vec::new();
     {
@@ -478,6 +500,14 @@ fn process_inner_zip<R: std::io::Read + std::io::Seek>(
             had_norecords = true;
             continue;
         }
+        if e.size() > MAX_INMEM_FILE_BYTES {
+            if lower.ends_with(".mbox") {
+                stream_mbox_reader(std::io::BufReader::new(e), ctx);
+            } else {
+                ctx.skipped_large.push(format!("{}/{}", basename, name));
+            }
+            continue;
+        }
         let mut bytes = Vec::new();
         e.read_to_end(&mut bytes)?;
 
@@ -512,7 +542,9 @@ fn process_master_bundle<R: std::io::Read + std::io::Seek>(
     ctx: &mut ParseCtx,
     seen: &mut HashSet<String>,
 ) -> Result<(), ParseError> {
-    // Read bundle bytes from outer.
+    // Read bundle bytes from outer.  (This variant only runs for a bundle
+    // NESTED inside another picked zip — rare.  The common case, a folder of
+    // bundle volumes on disk, is streamed from disk in collect_from_dir.)
     let mut buf: Vec<u8> = Vec::new();
     {
         let mut entry = outer.by_name(bundle_name)?;
@@ -522,36 +554,220 @@ fn process_master_bundle<R: std::io::Read + std::io::Seek>(
         Ok(z) => z,
         Err(_) => return Ok(()),
     };
+    collect_bundle_archive(&mut bundle, ctx, seen)
+}
 
-    // Process each entry inside the bundle that's a per-service inner zip
-    // we haven't already seen.
-    let mut names: Vec<String> = Vec::new();
+/// Commit a resource's collected files to ctx, applying NoRecords routing.
+fn commit_resource(
+    category: String,
+    files: Vec<CategoryFile>,
+    had_norecords: bool,
+    ctx: &mut ParseCtx,
+) {
+    if had_norecords && files.is_empty() {
+        if !ctx.no_records.contains(&category) {
+            ctx.no_records.push(category);
+        }
+    } else if !files.is_empty() {
+        ctx.categories.entry(category).or_default().extend(files);
+    }
+}
+
+/// Process every entry inside a master-bundle archive.  Handles all three
+/// on-the-wire layouts Google uses inside a `{num}-{date}-{N}.zip` volume:
+///   1. nested per-service LERS zips     ({lers}_NNN.zip)
+///   2. per-service resource DIRECTORIES  ({lers}_NNN/<service>/<files>)  ← large returns
+///   3. a Takeout/ tree
+/// Multi-GB leaf files (bulk media, giant mbox) above MAX_INMEM_FILE_BYTES
+/// are skipped (recorded in ctx.skipped_large) so a 300 GB+ return can't OOM.
+fn collect_bundle_archive<R: std::io::Read + std::io::Seek>(
+    bundle: &mut ZipArchive<R>,
+    ctx: &mut ParseCtx,
+    seen: &mut HashSet<String>,
+) -> Result<(), ParseError> {
+    // Snapshot entry names up-front so we can group before reading bytes.
+    let mut nested_zips: Vec<String> = Vec::new();
+    let mut dir_groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut takeout_files: Vec<String> = Vec::new();
+
     for i in 0..bundle.len() {
         let e = bundle.by_index(i)?;
         if e.is_dir() {
             continue;
         }
         let name = e.name().to_string();
-        if name.to_lowercase().ends_with(".zip") {
-            names.push(name);
+        let lower = name.to_lowercase();
+
+        if lower.ends_with(".zip") && is_lers_inner_zip(&name) {
+            nested_zips.push(name);
+            continue;
+        }
+        if name.contains("Takeout/") {
+            takeout_files.push(name);
+            continue;
+        }
+        let first_seg = name.split('/').next().unwrap_or(&name).to_string();
+        if name.contains('/') && is_lers_dir_name(&first_seg) {
+            dir_groups.entry(first_seg).or_default().push(name);
         }
     }
 
-    for nm in &names {
+    // Layout 1 — nested LERS zips.
+    for nm in &nested_zips {
         let basename = nm.rsplit('/').next().unwrap_or(nm).to_string();
         if !seen.insert(basename.clone()) {
             continue;
         }
-        if !is_lers_inner_zip(&basename) {
-            continue;
-        }
-        if let Err(e) = process_inner_zip(&mut bundle, nm, ctx) {
+        if let Err(e) = process_inner_zip(bundle, nm, ctx) {
             eprintln!("[google] bundle inner zip error {}: {}", nm, e);
         }
     }
 
+    // Layout 2 — resource directories.
+    for (seg, entries) in dir_groups {
+        if !seen.insert(seg.clone()) {
+            continue;
+        }
+        let (email, acct_id, category) = match parse_lers_name(&seg) {
+            Some(t) => t,
+            None => continue,
+        };
+        if ctx.account_email.is_none() {
+            ctx.account_email = Some(email);
+        }
+        if ctx.account_id.is_none() {
+            ctx.account_id = Some(acct_id);
+        }
+        let prefix = format!("{}/", seg);
+        let mut files: Vec<CategoryFile> = Vec::new();
+        let mut had_norecords = false;
+        for nm in &entries {
+            let rel = nm.strip_prefix(&prefix).unwrap_or(nm).to_string();
+            let lower = rel.to_lowercase();
+            if lower.ends_with("norecords.txt") {
+                had_norecords = true;
+                continue;
+            }
+            // Size-gate before reading so we never buffer a multi-GB volume.
+            let size = bundle.by_name(nm).map(|e| e.size()).unwrap_or(0);
+            if size > MAX_INMEM_FILE_BYTES {
+                // A giant mbox is still evidence — stream it one message at a
+                // time instead of skipping.  Other large binaries are skipped.
+                if lower.ends_with(".mbox") {
+                    if let Ok(entry) = bundle.by_name(nm) {
+                        stream_mbox_reader(std::io::BufReader::new(entry), ctx);
+                    }
+                } else {
+                    ctx.skipped_large.push(nm.clone());
+                }
+                continue;
+            }
+            let mut bytes = Vec::new();
+            {
+                let mut e = bundle.by_name(nm)?;
+                e.read_to_end(&mut bytes)?;
+            }
+            if lower.ends_with("exportsummary.txt") {
+                if let Ok(s) = std::str::from_utf8(&bytes) {
+                    ingest_export_summary(s, ctx);
+                }
+                continue;
+            }
+            files.push(CategoryFile { rel_path: rel, bytes });
+        }
+        commit_resource(category, files, had_norecords, ctx);
+    }
+
+    // Layout 3 — Takeout tree inside the bundle.
+    if !takeout_files.is_empty() {
+        process_takeout_in_zip(bundle, &takeout_files, ctx)?;
+    }
+
     Ok(())
 }
+
+/// Collect extracted resource directories ({lers}_NNN/) sitting directly
+/// under `root` — i.e. a return that was already unzipped to a folder.
+fn collect_extracted_resource_dirs(
+    root: &Path,
+    ctx: &mut ParseCtx,
+    seen: &mut HashSet<String>,
+) -> Result<(), ParseError> {
+    let rd = match fs::read_dir(root) {
+        Ok(r) => r,
+        Err(_) => return Ok(()),
+    };
+    for entry in rd.flatten() {
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let dname = p
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if !is_lers_dir_name(&dname) {
+            continue;
+        }
+        if !seen.insert(dname.clone()) {
+            continue;
+        }
+        let (email, acct_id, category) = match parse_lers_name(&dname) {
+            Some(t) => t,
+            None => continue,
+        };
+        if ctx.account_email.is_none() {
+            ctx.account_email = Some(email);
+        }
+        if ctx.account_id.is_none() {
+            ctx.account_id = Some(acct_id);
+        }
+        let mut files: Vec<CategoryFile> = Vec::new();
+        let mut had_norecords = false;
+        for f in walkdir_safe(&p, 8) {
+            if !f.is_file() {
+                continue;
+            }
+            let rel = f
+                .strip_prefix(&p)
+                .unwrap_or(&f)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let lower = rel.to_lowercase();
+            if lower.ends_with("norecords.txt") {
+                had_norecords = true;
+                continue;
+            }
+            let size = fs::metadata(&f).map(|m| m.len()).unwrap_or(0);
+            if size > MAX_INMEM_FILE_BYTES {
+                if lower.ends_with(".mbox") {
+                    if let Ok(fh) = File::open(&f) {
+                        stream_mbox_reader(std::io::BufReader::new(fh), ctx);
+                    }
+                } else {
+                    ctx.skipped_large.push(rel);
+                }
+                continue;
+            }
+            let bytes = match fs::read(&f) {
+                Ok(b) => b,
+                Err(_) => continue,
+            };
+            if lower.ends_with("exportsummary.txt") {
+                if let Ok(s) = std::str::from_utf8(&bytes) {
+                    ingest_export_summary(s, ctx);
+                }
+                continue;
+            }
+            files.push(CategoryFile { rel_path: rel, bytes });
+        }
+        commit_resource(category, files, had_norecords, ctx);
+    }
+    Ok(())
+}
+
+
 
 fn process_takeout_in_zip<R: std::io::Read + std::io::Seek>(
     outer: &mut ZipArchive<R>,
@@ -604,6 +820,12 @@ fn collect_from_dir(root: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
 
     // Else: walk for *.zip inner zips and process them like the in-zip case.
     let mut seen_inner: HashSet<String> = HashSet::new();
+
+    // First, pick up any resource directories that were already extracted
+    // directly under the folder ({lers}_NNN/<service>/<files>). This covers
+    // a return the agency unzipped to disk before importing.
+    collect_extracted_resource_dirs(root, ctx, &mut seen_inner)?;
+
     for entry in walkdir_safe(root, 4) {
         if !entry.is_file() {
             continue;
@@ -614,7 +836,7 @@ fn collect_from_dir(root: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
             continue;
         }
         if is_master_bundle_filename(&name) {
-            // Open and recurse through bundle on disk.
+            // Open and recurse through bundle on disk (streamed, not buffered).
             let f = match File::open(&entry) {
                 Ok(f) => f,
                 Err(_) => continue,
@@ -624,23 +846,8 @@ fn collect_from_dir(root: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
                 Err(_) => continue,
             };
             ctx.bundle_sources.push(name.trim_end_matches(".zip").to_string());
-            let mut names: Vec<String> = Vec::new();
-            for i in 0..bundle.len() {
-                if let Ok(e) = bundle.by_index(i) {
-                    if !e.is_dir() {
-                        names.push(e.name().to_string());
-                    }
-                }
-            }
-            for nm in &names {
-                let basename = nm.rsplit('/').next().unwrap_or(nm).to_string();
-                if !seen_inner.insert(basename.clone()) {
-                    continue;
-                }
-                if !is_lers_inner_zip(&basename) {
-                    continue;
-                }
-                let _ = process_inner_zip(&mut bundle, nm, ctx);
+            if let Err(e) = collect_bundle_archive(&mut bundle, ctx, &mut seen_inner) {
+                eprintln!("[google] bundle-on-disk error {}: {}", name, e);
             }
             continue;
         }
@@ -682,6 +889,14 @@ fn collect_from_dir(root: &Path, ctx: &mut ParseCtx) -> Result<(), ParseError> {
             let lower2 = rel.to_lowercase();
             if lower2.ends_with("norecords.txt") {
                 had_norecords = true;
+                continue;
+            }
+            if e.size() > MAX_INMEM_FILE_BYTES {
+                if lower2.ends_with(".mbox") {
+                    stream_mbox_reader(std::io::BufReader::new(e), ctx);
+                } else {
+                    ctx.skipped_large.push(format!("{}/{}", name, rel));
+                }
                 continue;
             }
             let mut bytes = Vec::new();
@@ -1061,6 +1276,38 @@ fn handle_mbox(files: &[CategoryFile], ctx: &mut ParseCtx) {
             let parsed = parse_email_message(&raw);
             emit_email_item(parsed, ctx);
         }
+    }
+}
+
+/// Stream an mbox from a reader, emitting one email item per message without
+/// ever holding the whole mailbox in memory.  Used for multi-GB mbox spills
+/// on very large returns where buffering the whole file would OOM.  Mirrors
+/// `mbox_lib::split_mbox` semantics (envelope `From ` lines delimit messages).
+fn stream_mbox_reader<R: std::io::BufRead>(reader: R, ctx: &mut ParseCtx) {
+    let mut current = String::new();
+    let mut started = false;
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => break,
+        };
+        if line.starts_with("From ") {
+            if started && !current.is_empty() {
+                let parsed = parse_email_message(&current);
+                emit_email_item(parsed, ctx);
+                current.clear();
+            }
+            started = true;
+            continue;
+        }
+        if started {
+            current.push_str(&line);
+            current.push('\n');
+        }
+    }
+    if started && !current.is_empty() {
+        let parsed = parse_email_message(&current);
+        emit_email_item(parsed, ctx);
     }
 }
 
@@ -1855,6 +2102,12 @@ fn handle_google_photos(category: &str, files: &[CategoryFile], ctx: &mut ParseC
         let id = ctx.next_id("photo");
         let safe = sanitize_filename(&leaf);
         let unique_name = format!("{}_{}", id, safe);
+        if !ctx.media_budget_ok() {
+            if !ctx.skipped_large.contains(&"(bulk media cap reached)".to_string()) {
+                ctx.skipped_large.push("(bulk media cap reached)".to_string());
+            }
+            continue;
+        }
         let out_path = ctx.media_dir.join(&unique_name);
         if let Ok(mut fh) = File::create(&out_path) {
             if fh.write_all(&f.bytes).is_err() {
@@ -2024,6 +2277,12 @@ fn handle_google_drive(category: &str, files: &[CategoryFile], ctx: &mut ParseCt
         };
         let id = ctx.next_id(id_prefix);
         let unique_name = format!("{}_{}", id, safe);
+        if (is_image || is_video) && !ctx.media_budget_ok() {
+            if !ctx.skipped_large.contains(&"(bulk media cap reached)".to_string()) {
+                ctx.skipped_large.push("(bulk media cap reached)".to_string());
+            }
+            continue;
+        }
         let out_path = ctx.media_dir.join(&unique_name);
         if let Ok(mut fh) = File::create(&out_path) {
             if fh.write_all(&f.bytes).is_err() {
@@ -2402,6 +2661,26 @@ fn emit_bio(ctx: &mut ParseCtx) {
         );
     }
 
+    if !ctx.skipped_large.is_empty() {
+        push_header(&mut fields, "Large Files Not Loaded");
+        let mut sl = ctx.skipped_large.clone();
+        sl.sort();
+        let shown: Vec<String> = sl.iter().take(50).cloned().collect();
+        let mut note = shown.join("\n");
+        if sl.len() > shown.len() {
+            note.push_str(&format!("\n… and {} more", sl.len() - shown.len()));
+        }
+        push_kv(
+            &mut fields,
+            &format!("{} file(s) over size limit", sl.len()),
+            &note,
+        );
+        raw.insert(
+            "skippedLarge".into(),
+            Value::Array(sl.into_iter().map(Value::String).collect()),
+        );
+    }
+
     if let Some(em) = &ctx.account_email {
         raw.insert("accountEmail".into(), Value::String(em.clone()));
     }
@@ -2469,8 +2748,38 @@ fn is_lers_inner_zip(name: &str) -> bool {
 }
 
 fn parse_lers_filename(basename: &str) -> Option<(String, String, String)> {
-    // Strip .zip extension
+    // Strip .zip extension, then parse the remaining stem.
     let stem = basename.strip_suffix(".zip").or_else(|| basename.strip_suffix(".ZIP"))?;
+    parse_lers_stem(stem)
+}
+
+/// True when `name` (a bare directory name, no `.zip`) matches the LERS
+/// per-service resource pattern `{email}.{accountId}.{Service}.{Resource}_NNN`.
+/// Large Google returns pack each resource as a DIRECTORY (not a nested zip)
+/// inside the master-bundle volumes.
+fn is_lers_dir_name(name: &str) -> bool {
+    let basename = name.trim_end_matches('/').rsplit('/').next().unwrap_or(name);
+    // A resource directory has no file extension; guard against matching a
+    // stray `.zip` (that path is handled by is_lers_inner_zip).
+    if basename.to_lowercase().ends_with(".zip") {
+        return false;
+    }
+    parse_lers_stem(basename).is_some()
+}
+
+/// Parse `{email}.{accountId}.{Service}.{Resource}[_NNN]` from a name that is
+/// either a `.zip` basename (already stripped) or a bare resource-directory
+/// name.  Returns (email, accountId, "Service.Resource").
+fn parse_lers_name(name: &str) -> Option<(String, String, String)> {
+    let basename = name.trim_end_matches('/').rsplit('/').next().unwrap_or(name);
+    let stem = basename
+        .strip_suffix(".zip")
+        .or_else(|| basename.strip_suffix(".ZIP"))
+        .unwrap_or(basename);
+    parse_lers_stem(stem)
+}
+
+fn parse_lers_stem(stem: &str) -> Option<(String, String, String)> {
     // Expect at least 4 dot-separated chunks: email . accountId . Service . Resource_NNN
     let parts: Vec<&str> = stem.split('.').collect();
     if parts.len() < 4 {
@@ -2708,13 +3017,17 @@ fn parse_csv(text: &str) -> Vec<Vec<String>> {
 }
 
 fn dir_has_google_format(path: &Path) -> bool {
-    // Look for a Takeout folder or LERS-style inner zips.
+    // Look for a Takeout folder, LERS-style inner zips, master-bundle volume
+    // zips ({internalNumber}-{YYYYMMDD}-{N}.zip), or extracted resource
+    // directories ({email}.{id}.{Service}.{Resource}_NNN/).
     for entry in walkdir_safe(path, 2) {
         let name = entry.file_name().unwrap_or_default().to_string_lossy().to_string();
-        if entry.is_dir() && name.to_lowercase() == "takeout" {
-            return true;
+        if entry.is_dir() {
+            if name.to_lowercase() == "takeout" || is_lers_dir_name(&name) {
+                return true;
+            }
         }
-        if entry.is_file() && is_lers_inner_zip(&name) {
+        if entry.is_file() && (is_lers_inner_zip(&name) || is_master_bundle_filename(&name)) {
             return true;
         }
     }
@@ -2843,5 +3156,262 @@ mod tests {
         assert!(apps >= 1, "should emit at least one app item");
         assert!(ips >= 1, "should emit at least one ip item");
         assert!(change >= 1, "should emit at least one change-history item");
+    }
+
+    // ── Large multi-volume return: master-bundle zip whose per-service
+    //    resources are DIRECTORIES (not nested zips).  This is the layout
+    //    Google delivers for very large (100s of GB) returns and is the case
+    //    that previously fell through to the generic catalog. ──────────────
+
+    fn write_master_bundle_with_dirs(dir: &Path) -> PathBuf {
+        use std::io::Write as _;
+        use zip::write::FileOptions;
+
+        let bundle_path = dir.join("26548003-20221112-1.zip");
+        let f = File::create(&bundle_path).unwrap();
+        let mut zw = zip::ZipWriter::new(f);
+        let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+        let base = "js7017987@gmail.com.838053527712";
+
+        // Subscriber info (directory layout: <res>_001/Google Account/<user>.SubscriberInfo.html)
+        let sub_html = "<html><body><ul>\
+            <li>Google Account ID: 838053527712</li>\
+            <li>Name: Joe Sample</li>\
+            <li>e-Mail: js7017987@gmail.com</li>\
+            <li>Status: Enabled</li>\
+            </ul></body></html>";
+        zw.start_file(
+            format!("{base}.GoogleAccount.SubscriberInfo_001/GoogleAccount.SubscriberInfo.ExportSummary.txt"),
+            opts,
+        ).unwrap();
+        zw.write_all(b"End of date range: 2022/11/12.\n").unwrap();
+        zw.start_file(
+            format!("{base}.GoogleAccount.SubscriberInfo_001/Google Account/js7017987.SubscriberInfo.html"),
+            opts,
+        ).unwrap();
+        zw.write_all(sub_html.as_bytes()).unwrap();
+
+        // Mail (small mbox) — directory layout.
+        let mbox = "From 1234@xxx Mon Jan 01 00:00:00 2022\r\n\
+            From: alice@example.com\r\n\
+            To: js7017987@gmail.com\r\n\
+            Subject: Hello\r\n\
+            Date: Mon, 01 Jan 2022 00:00:00 +0000\r\n\
+            \r\n\
+            Body text here.\r\n";
+        zw.start_file(
+            format!("{base}.Mail.MessageContent_001/Mail.MessageContent.ExportSummary.txt"),
+            opts,
+        ).unwrap();
+        zw.write_all(b"End of date range: 2022/11/12.\n").unwrap();
+        zw.start_file(
+            format!("{base}.Mail.MessageContent_001/Mail/All mail Including Spam and Trash.mbox"),
+            opts,
+        ).unwrap();
+        zw.write_all(mbox.as_bytes()).unwrap();
+
+        // A NoRecords resource — directory layout.
+        zw.start_file(
+            format!("{base}.AccessLogActivity.Activity_001/AccessLogActivity.Activity.ExportSummary.txt"),
+            opts,
+        ).unwrap();
+        zw.write_all(b"End of date range: 2022/11/12.\n").unwrap();
+        zw.start_file(
+            format!("{base}.AccessLogActivity.Activity_001/NoRecords.txt"),
+            opts,
+        ).unwrap();
+        zw.write_all(b"No records").unwrap();
+
+        zw.finish().unwrap();
+        bundle_path
+    }
+
+    #[test]
+    fn accepts_folder_of_master_bundles() {
+        let tmp = std::env::temp_dir().join(format!("scout_g_bundle_acc_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        write_master_bundle_with_dirs(&tmp);
+
+        let p = GoogleWarrantParser;
+        // Folder pick → must be recognised (previously returned false → generic).
+        assert!(
+            p.accepts(&tmp).unwrap_or(false),
+            "folder of master-bundle volumes must be accepted as Google"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn accepts_single_master_bundle_zip() {
+        let tmp = std::env::temp_dir().join(format!("scout_g_bundle_zip_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let bundle = write_master_bundle_with_dirs(&tmp);
+
+        let p = GoogleWarrantParser;
+        assert!(
+            p.accepts(&bundle).unwrap_or(false),
+            "a directly-picked master-bundle zip must be accepted"
+        );
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn parses_directory_layout_bundle() {
+        let tmp = std::env::temp_dir().join(format!("scout_g_bundle_parse_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        write_master_bundle_with_dirs(&tmp);
+        let media_dir = tmp.join("media");
+
+        let p = GoogleWarrantParser;
+        let result = p.parse(&tmp, &media_dir).expect("parse should succeed");
+
+        let bio = result.items.iter().filter(|i| i.section == "bio").count();
+        let emails = result.items.iter().filter(|i| i.section == "emails").count();
+        assert!(bio >= 1, "should emit a bio from SubscriberInfo directory");
+        assert!(emails >= 1, "should emit the mbox email from the directory layout");
+
+        // Subscriber identity must be recovered from the HTML.
+        assert_eq!(result.case.target_account.as_deref(), Some("js7017987@gmail.com"));
+
+        // NoRecords category must be captured (surfaced in bio raw fields).
+        let bio_item = result.items.iter().find(|i| i.section == "bio").unwrap();
+        let raw = &bio_item.raw_fields;
+        let nr = raw.get("noRecords").and_then(|v| v.as_array());
+        assert!(
+            nr.map(|a| a.iter().any(|x| x.as_str() == Some("AccessLogActivity.Activity"))).unwrap_or(false),
+            "AccessLogActivity.Activity should be recorded as no-records"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn stream_mbox_emits_each_message() {
+        let tmp = std::env::temp_dir().join(format!("scout_g_streammbox_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let mut ctx = ParseCtx::new(&tmp);
+        let mbox = "From 1@x Mon Jan 01 00:00:00 2022\r\n\
+            From: a@x\r\nTo: b@y\r\nSubject: One\r\n\r\nBody1\r\n\
+            From 2@x Mon Jan 01 00:00:00 2022\r\n\
+            From: c@x\r\nTo: d@y\r\nSubject: Two\r\n\r\nBody2\r\n";
+        stream_mbox_reader(std::io::BufReader::new(std::io::Cursor::new(mbox)), &mut ctx);
+        let emails = ctx.items.iter().filter(|i| i.section == "emails").count();
+        assert_eq!(emails, 2, "streamed mbox should emit one item per message");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn extracts_media_from_directory_bundle() {
+        use std::io::Write as _;
+        use zip::write::FileOptions;
+
+        let tmp = std::env::temp_dir().join(format!("scout_g_media_{}", Uuid::new_v4()));
+        fs::create_dir_all(&tmp).unwrap();
+        let base = "js7017987@gmail.com.838053527712";
+
+        // Master-bundle volume containing a GooglePhotos resource DIRECTORY
+        // with one image + its sidecar, plus a Mail resource with one email.
+        let bundle_path = tmp.join("26548003-20221112-2.zip");
+        {
+            let f = File::create(&bundle_path).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+
+            // A real-ish JPEG (magic bytes; handler keys off extension).
+            zw.start_file(
+                format!("{base}.GooglePhotos.Photos_001/Google Photos/evidence.jpg"),
+                opts,
+            ).unwrap();
+            zw.write_all(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, b'J', b'F', b'I', b'F', 0x00, 0x01, 0x02, 0x03]).unwrap();
+            zw.start_file(
+                format!("{base}.GooglePhotos.Photos_001/Google Photos/evidence.jpg.supplemental-metadata.json"),
+                opts,
+            ).unwrap();
+            zw.write_all(br#"{"photoTakenTime":{"timestamp":"1640995200"}}"#).unwrap();
+
+            // An email with a small inline image attachment (base64 JPEG).
+            let mbox = "From 1@x Mon Jan 01 00:00:00 2022\r\n\
+                From: alice@example.com\r\nTo: js7017987@gmail.com\r\n\
+                Subject: photo attached\r\n\
+                MIME-Version: 1.0\r\n\
+                Content-Type: multipart/mixed; boundary=\"BND\"\r\n\r\n\
+                --BND\r\nContent-Type: text/plain\r\n\r\nSee attached.\r\n\
+                --BND\r\nContent-Type: image/jpeg\r\n\
+                Content-Transfer-Encoding: base64\r\n\
+                Content-Disposition: attachment; filename=\"a.jpg\"\r\n\r\n\
+                /9j/4AAQSkZJRgAB\r\n--BND--\r\n";
+            zw.start_file(
+                format!("{base}.Mail.MessageContent_001/Mail/All mail Including Spam and Trash.mbox"),
+                opts,
+            ).unwrap();
+            zw.write_all(mbox.as_bytes()).unwrap();
+
+            zw.finish().unwrap();
+        }
+
+        let media_dir = tmp.join("media");
+        let p = GoogleWarrantParser;
+        let res = p.parse(&tmp, &media_dir).expect("parse");
+
+        let photos = res.items.iter().filter(|i| i.section == "photos").count();
+        let emails = res.items.iter().filter(|i| i.section == "emails").count();
+        let media_files = std::fs::read_dir(&media_dir)
+            .map(|rd| rd.flatten().count())
+            .unwrap_or(0);
+        eprintln!("media test: photos={} emails={} files_on_disk={}", photos, emails, media_files);
+
+        assert!(emails >= 1, "should parse the email");
+        assert!(photos >= 1, "should surface the GooglePhotos image as a photos item");
+        assert!(media_files >= 1, "at least one media file must be written to disk");
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    // ── Real-data smoke tests (gated on the operator's local sample, like
+    //    SAMPLE_ZIP above).  These reproduce the exact failing user actions:
+    //    picking the GOOGLE SW folder, and picking a master-bundle zip. ─────
+
+    const SAMPLE_DIR: &str = r"D:\GOOGLE SW\GOOGLE SW";
+    const SAMPLE_BUNDLE: &str = r"D:\GOOGLE SW\GOOGLE SW\26548003-20221112-1.zip";
+
+    #[test]
+    fn real_folder_pick_is_accepted_and_parses() {
+        let dir = std::path::Path::new(SAMPLE_DIR);
+        if !dir.exists() {
+            eprintln!("skip: {} not present", SAMPLE_DIR);
+            return;
+        }
+        let p = GoogleWarrantParser;
+        assert!(
+            p.accepts(dir).unwrap_or(false),
+            "folder pick of a real Google return must be accepted (was falling to generic)"
+        );
+        let media = std::env::temp_dir().join(format!("scout_g_realdir_{}", Uuid::new_v4()));
+        let res = p.parse(dir, &media).expect("folder parse must not error/OOM");
+        let bio = res.items.iter().filter(|i| i.section == "bio").count();
+        eprintln!("real folder: {} items, {} bio, target={:?}",
+            res.items.len(), bio, res.case.target_account);
+        assert!(res.items.len() > 0, "folder parse should yield items");
+        let _ = fs::remove_dir_all(&media);
+    }
+
+    #[test]
+    fn real_master_bundle_zip_is_accepted_and_parses() {
+        let z = std::path::Path::new(SAMPLE_BUNDLE);
+        if !z.exists() {
+            eprintln!("skip: {} not present", SAMPLE_BUNDLE);
+            return;
+        }
+        let p = GoogleWarrantParser;
+        assert!(
+            p.accepts(z).unwrap_or(false),
+            "a directly-picked master-bundle zip must be accepted"
+        );
+        let media = std::env::temp_dir().join(format!("scout_g_realbundle_{}", Uuid::new_v4()));
+        let res = p.parse(z, &media).expect("bundle parse must not error/OOM");
+        eprintln!("real bundle: {} items, target={:?}",
+            res.items.len(), res.case.target_account);
+        assert!(res.items.len() > 0, "bundle parse should yield items");
+        let _ = fs::remove_dir_all(&media);
     }
 }
