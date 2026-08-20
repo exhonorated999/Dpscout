@@ -137,14 +137,11 @@ impl Default for ScanOptions {
     }
 }
 
-/// Get the base Hindsight directory path
+/// Get the base Scout data directory path
+///
+/// Portable: `<usb>\ScoutData\`.  Desktop: `%APPDATA%\Hindsight\`.
 pub fn get_base_dir() -> Result<PathBuf, String> {
-    let app_data = std::env::var("APPDATA")
-        .map_err(|_| "Could not find APPDATA directory".to_string())?;
-    
-    let mut path = PathBuf::from(app_data);
-    path.push("Hindsight");
-    Ok(path)
+    crate::app_paths::data_root()
 }
 
 /// Initialize all required directories for Hindsight

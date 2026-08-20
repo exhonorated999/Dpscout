@@ -174,34 +174,17 @@ fn get_usb_drive_serial() -> Result<String, String> {
 // ---------------------------------------------------------------------------
 
 fn get_license_db_path() -> Result<PathBuf, String> {
-    // Portable: store next to the exe on the USB drive
+    // Portable: <usb>\ScoutData\scout_license.db — same root every other
+    // subsystem now resolves through, so the stick holds one self-contained
+    // data folder.
     #[cfg(feature = "portable")]
     {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Cannot find exe path: {}", e))?;
-        let exe_dir = exe_path.parent()
-            .ok_or_else(|| "Cannot find exe directory".to_string())?;
-        let data_dir = exe_dir.join("ScoutData");
-        if !data_dir.exists() {
-            std::fs::create_dir_all(&data_dir)
-                .map_err(|e| format!("Failed to create ScoutData directory: {}", e))?;
-        }
-        return Ok(data_dir.join("scout_license.db"));
+        return crate::app_paths::license_db_path();
     }
 
     // Desktop: store in %APPDATA%\Hindsight\ so it survives installer updates
     #[cfg(not(feature = "portable"))]
-    let app_data = std::env::var("APPDATA")
-        .map_err(|_| "Could not find APPDATA directory".to_string())?;
-    #[cfg(not(feature = "portable"))]
-    let hindsight_dir = PathBuf::from(&app_data).join("Hindsight");
-    #[cfg(not(feature = "portable"))]
-    if !hindsight_dir.exists() {
-        std::fs::create_dir_all(&hindsight_dir)
-            .map_err(|e| format!("Failed to create Hindsight directory: {}", e))?;
-    }
-    #[cfg(not(feature = "portable"))]
-    let new_path = hindsight_dir.join("scout_license.db");
+    let new_path = crate::app_paths::license_db_path()?;
 
     // Migrate from old location (next to exe) if new doesn't exist yet
     #[cfg(not(feature = "portable"))]

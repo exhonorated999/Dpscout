@@ -90,22 +90,13 @@ pub struct ReportListItem {
     pub file_size_mb: f64,
 }
 
-/// Get the reports directory path (stored in AppData for security)
+/// Get the reports directory path
+///
+/// Portable: `<usb>\ScoutData\reports\` so generated reports leave with the
+/// drive rather than sitting in a subject machine's user profile.
+/// Desktop: `%APPDATA%\Hindsight\reports\`.
 pub fn get_reports_dir() -> Result<PathBuf, Box<dyn Error>> {
-    // Use AppData for secure storage - only accessible through authenticated app
-    let app_data = std::env::var("APPDATA")
-        .map_err(|_| "Could not find APPDATA directory")?;
-    
-    // Create reports folder in AppData\Hindsight\reports
-    let reports_dir = PathBuf::from(app_data).join("Hindsight").join("reports");
-    
-    // Create the directory if it doesn't exist
-    if !reports_dir.exists() {
-        std::fs::create_dir_all(&reports_dir)?;
-        eprintln!("✓ Created reports directory: {}", reports_dir.display());
-    }
-    
-    Ok(reports_dir)
+    Ok(crate::app_paths::reports_dir()?)
 }
 
 /// Generate a report filename with timestamp

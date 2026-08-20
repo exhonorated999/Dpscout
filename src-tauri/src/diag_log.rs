@@ -18,13 +18,17 @@ use chrono::Local;
 static LOG_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
 
 /// Resolve the log file path. Always returns the same path for the
-/// life of the process: `<Desktop>\Scout-Diagnostic-Log.txt`.
+/// life of the process.
+///
+/// Desktop: `<Desktop>\Scout-Diagnostic-Log.txt` — easy for a customer to
+/// find when support asks for it.
+/// Portable: `<usb>\ScoutData\Scout-Diagnostic-Log.txt` — the log follows the
+/// drive, and Scout never drops files on a subject machine's Desktop.
 pub fn log_path() -> PathBuf {
-    if let Some(home) = dirs::home_dir() {
-        home.join("Desktop").join("Scout-Diagnostic-Log.txt")
-    } else {
-        std::env::temp_dir().join("Scout-Diagnostic-Log.txt")
+    if let Some(path) = crate::app_paths::diag_log_path() {
+        return path;
     }
+    std::env::temp_dir().join("Scout-Diagnostic-Log.txt")
 }
 
 /// Truncate the existing log and write a fresh header. Call this when

@@ -102,9 +102,9 @@ pub struct ReturnDetail {
 // ─── Path helpers ────────────────────────────────────────────────────────
 
 pub fn investigations_root() -> PathBuf {
-    // Sit beside `warrant_cases/` under DatapilotScout.
-    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
-    base.join("DatapilotScout").join("investigations")
+    // Sits beside `warrant_cases/` — under DatapilotScout on desktop,
+    // under ScoutData on the USB for portable builds.
+    crate::app_paths::investigations_root()
 }
 
 pub fn investigation_dir(id: &str) -> PathBuf {

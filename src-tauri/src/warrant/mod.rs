@@ -236,6 +236,5 @@ pub mod registry {
 /// Get the OS-temp / app-local "warrant_cases" root.  Each case lives in
 /// `<root>/<case_id>/media/`.  Pure path math — does not create dirs.
 pub fn cases_root() -> PathBuf {
-    let base = dirs::data_local_dir().unwrap_or_else(std::env::temp_dir);
-    base.join("DatapilotScout").join("warrant_cases")
+    crate::app_paths::cases_root()
 }

@@ -1,4 +1,5 @@
 mod scanner;
+mod app_paths;
 mod settings;
 mod system_info;
 mod events;
@@ -540,12 +541,10 @@ fn get_db_hash_lists() -> Result<Vec<hash_db::DbHashListInfo>, String> {
 fn clear_hash_database() -> Result<(), String> {
     use std::fs;
     
-    // The hash database lives at %APPDATA%\Hindsight\hash_database.db
-    let app_data = std::env::var("APPDATA")
-        .map_err(|_| "Could not find APPDATA directory".to_string())?;
-    let db_path = std::path::PathBuf::from(&app_data)
-        .join("Hindsight")
-        .join("hash_database.db");
+    // Resolve through app_paths so this agrees with HashDatabase::new().
+    // These used to be computed independently, so on the portable build one
+    // would open the USB copy while the other deleted the host's.
+    let db_path = app_paths::hash_db_path()?;
     
     eprintln!("Clearing hash database by removing file: {:?}", db_path);
     
@@ -919,23 +918,26 @@ async fn scan_browser_history(target_drives: Option<Vec<String>>) -> Result<Vec<
 }
 
 /// Get the keyword_lists directory path
-/// Stored in %APPDATA%\Hindsight\keyword_lists\ so it survives installer updates
+///
+/// Portable: `<usb>\ScoutData\keyword_lists\` so lists travel with the drive.
+/// Desktop:  `%APPDATA%\Hindsight\keyword_lists\` so they survive installer updates.
 pub fn get_keyword_lists_dir() -> Result<PathBuf, String> {
-    let app_data = std::env::var("APPDATA")
-        .map_err(|_| "Could not find APPDATA directory".to_string())?;
-    let keyword_dir = std::path::PathBuf::from(&app_data)
-        .join("Hindsight")
-        .join("keyword_lists");
+    let keyword_dir = app_paths::keyword_lists_dir()?;
 
-    // Create directory if it doesn't exist
-    if !keyword_dir.exists() {
-        std::fs::create_dir_all(&keyword_dir)
-            .map_err(|e| format!("Failed to create keyword_lists directory: {}", e))?;
-        eprintln!("✓ Created keyword_lists directory: {:?}", keyword_dir);
+    // Portable stops here. The desktop-only migration below moves lists from
+    // the exe folder into the data dir — on a USB stick the exe folder IS the
+    // drive, so running it would relocate the officer's lists for no reason,
+    // and the dev-mode fallback could point at a folder that isn't on the
+    // stick at all.
+    #[cfg(feature = "portable")]
+    {
+        return Ok(keyword_dir);
     }
 
-    // Migrate from old location (next to exe) if any .txt files exist there
-    if let Ok(exe_path) = std::env::current_exe() {
+    #[cfg(not(feature = "portable"))]
+    {
+        // Migrate from old location (next to exe) if any .txt files exist there
+        if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             let old_dir = exe_dir.join("keyword_lists");
             if old_dir.exists() && old_dir.is_dir() {
@@ -978,6 +980,7 @@ pub fn get_keyword_lists_dir() -> Result<PathBuf, String> {
     }
 
     Ok(keyword_dir)
+    }
 }
 
 #[tauri::command]
@@ -2472,6 +2475,16 @@ pub fn run() {
         // best-effort flush of any buffered counters. Both calls are gated
         // by the opt-out flag inside the telemetry module itself.
         .setup(|_app| {
+            // Portable: resolve the USB data folder up front so a
+            // write-protected stick is reported at launch instead of
+            // surfacing later as a confusing per-feature failure. The result
+            // is cached, so this costs nothing on the happy path.
+            #[cfg(feature = "portable")]
+            match app_paths::data_root() {
+                Ok(root) => eprintln!("[Scout Portable] Data folder: {:?}", root),
+                Err(e) => eprintln!("[Scout Portable] CANNOT STORE DATA\n{}", e),
+            }
+
             telemetry::record("app_launched");
             telemetry::flush_in_background();
             Ok(())

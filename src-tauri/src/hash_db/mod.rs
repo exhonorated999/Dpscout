@@ -49,16 +49,9 @@ pub struct HashDatabase {
 impl HashDatabase {
     /// Create or open the hash database
     pub fn new() -> Result<Self, String> {
-        let app_data = std::env::var("APPDATA")
-            .map_err(|_| "Could not find APPDATA directory".to_string())?;
-        
-        let db_dir = Path::new(&app_data).join("Hindsight");
-        if !db_dir.exists() {
-            std::fs::create_dir_all(&db_dir)
-                .map_err(|e| format!("Failed to create database directory: {}", e))?;
-        }
-        
-        let db_path = db_dir.join("hash_database.db");
+        // Portable builds resolve this onto the USB drive so imported hash
+        // lists travel with the stick; desktop keeps %APPDATA%\Hindsight.
+        let db_path = crate::app_paths::hash_db_path()?;
         let conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
         
