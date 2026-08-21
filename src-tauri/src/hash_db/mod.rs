@@ -5,6 +5,26 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashSet;
 use bloomfilter::Bloom;
 
+/// Every index that lives on the `hashes` table, as `(name, CREATE statement)`.
+///
+/// Kept in one place because these are created on open *and* dropped/rebuilt
+/// around bulk imports — the two lists must never drift apart, or an import
+/// would silently leave an index behind (killing the speed-up) or fail to
+/// restore one (killing scan performance).
+const HASH_TABLE_INDEXES: &[(&str, &str)] = &[
+    // Critical index for hash lookups — makes queries sub-millisecond.
+    ("idx_hash_lookup",
+     "CREATE INDEX IF NOT EXISTS idx_hash_lookup ON hashes(hash, hash_type)"),
+    // Case-insensitive index — hashes may be stored mixed-case but queried
+    // lowercase. Without this, `hash = ? COLLATE NOCASE` forces a full table
+    // scan over 14M+ rows.
+    ("idx_hash_nocase",
+     "CREATE INDEX IF NOT EXISTS idx_hash_nocase ON hashes(hash COLLATE NOCASE, hash_type)"),
+    // Index for list management (delete-by-list, counts).
+    ("idx_list_id",
+     "CREATE INDEX IF NOT EXISTS idx_list_id ON hashes(list_id)"),
+];
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HashMatch {
     pub hash: String,
@@ -132,27 +152,14 @@ impl HashDatabase {
     fn create_indexes(&self) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
         
-        // Critical index for hash lookups - this makes queries sub-millisecond
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_hash_lookup ON hashes(hash, hash_type)",
-            [],
-        ).map_err(|e| format!("Failed to create hash index: {}", e))?;
-        
-        // Case-insensitive index — hashes may be stored mixed-case but queried lowercase.
-        // Without this, LOWER(hash) queries force full table scans on 14M+ rows.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_hash_nocase ON hashes(hash COLLATE NOCASE, hash_type)",
-            [],
-        ).map_err(|e| {
-            eprintln!("[Hash DB] Warning: Could not create NOCASE index: {}", e);
-            format!("Failed to create NOCASE index: {}", e)
-        })?;
-        
-        // Index for list management
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_list_id ON hashes(list_id)",
-            [],
-        ).map_err(|e| format!("Failed to create list index: {}", e))?;
+        // The three indexes over `hashes` are also dropped and rebuilt around bulk
+        // imports (see `begin_bulk_import`), so their definitions live in one place.
+        for (name, sql) in HASH_TABLE_INDEXES {
+            conn.execute(sql, []).map_err(|e| {
+                eprintln!("[Hash DB] Warning: could not create {}: {}", name, e);
+                format!("Failed to create index {}: {}", name, e)
+            })?;
+        }
         
         // Index for exclusion lookups
         conn.execute(
@@ -160,6 +167,73 @@ impl HashDatabase {
             [],
         ).ok(); // Silently ignore if already exists
         
+        Ok(())
+    }
+    
+    /// Prepare the database for a bulk load of millions of rows.
+    ///
+    /// The `hashes` table carries two indexes keyed on the hash value itself.
+    /// Hash values are, by construction, uniformly random — so every INSERT lands
+    /// on a *random* page of each index B-tree.  Once those trees outgrow the page
+    /// cache (which happens a few hundred thousand rows in), each row costs several
+    /// random 4 KB read-modify-writes.  Measured on an NVMe SSD the insert rate
+    /// collapses from ~120K rows/sec at 400K rows to ~32K rows/sec at 3M rows and
+    /// keeps falling.  On the USB flash drive the portable edition now stores its
+    /// database on, random 4 KB writes are roughly two orders of magnitude slower
+    /// still, which is what turned a Project VIC import (~19M hashes) into an
+    /// apparent hang.
+    ///
+    /// Dropping the indexes first turns the load into an append-only sequential
+    /// write, then `finish_bulk_import` rebuilds each index once via SQLite's
+    /// external merge sort — also mostly sequential.  Same end state, ~10x faster
+    /// on an SSD and dramatically more than that on removable media.
+    ///
+    /// Durability note: the journal is disabled for the duration.  That is
+    /// deliberate — a bulk import is not a transaction anyone wants to half-keep,
+    /// and the previous code already ran with `synchronous = OFF`.  If the app dies
+    /// mid-import the recovery is to delete the partial list and import again;
+    /// `HashDatabase::new` recreates any missing index on the next open.
+    pub fn begin_bulk_import(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        
+        for (name, _) in HASH_TABLE_INDEXES {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS {};", name))
+                .map_err(|e| format!("Failed to drop index {} for bulk import: {}", name, e))?;
+        }
+        
+        // Set once for the whole import rather than once per 50K batch: switching
+        // journal_mode is itself a checkpointing operation and was being paid
+        // hundreds of times per file.
+        conn.execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = OFF;
+             PRAGMA cache_size = -262144;"
+        ).map_err(|e| format!("Failed to set bulk import PRAGMAs: {}", e))?;
+        
+        eprintln!("[Hash DB] Bulk import mode: indexes dropped, journal off");
+        Ok(())
+    }
+    
+    /// Rebuild everything `begin_bulk_import` tore down and return to safe settings.
+    ///
+    /// Always call this — including on the error path — or the database is left
+    /// unindexed and every scan degrades to a full table scan until the next open.
+    pub fn finish_bulk_import(&self) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        
+        for (name, sql) in HASH_TABLE_INDEXES {
+            let start = std::time::Instant::now();
+            conn.execute(sql, [])
+                .map_err(|e| format!("Failed to rebuild index {}: {}", name, e))?;
+            eprintln!("[Hash DB] Rebuilt {} in {:.1}s", name, start.elapsed().as_secs_f64());
+        }
+        
+        conn.execute_batch(
+            "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;"
+        ).ok();
+        
+        eprintln!("[Hash DB] Bulk import mode ended: indexes rebuilt");
         Ok(())
     }
     
@@ -203,14 +277,16 @@ impl HashDatabase {
             None => return Err("Could not find hash entries array in VIC JSON".to_string()),
         };
         
-        // Setup database for bulk import
+        // Setup database for bulk import.  Dropping the hash indexes for the
+        // duration is what keeps this viable on a USB drive — see
+        // `begin_bulk_import` for the full reasoning.
+        //
+        // Note: `temp_store` is deliberately left at the default (FILE).  The
+        // index rebuild in `finish_bulk_import` sorts ~19M keys externally;
+        // forcing that sort into RAM would cost gigabytes on machines that may
+        // only have 8 GB.  The spill files are transient scratch, not case data.
+        self.begin_bulk_import()?;
         let mut conn = self.conn.lock().unwrap();
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = OFF;
-             PRAGMA cache_size = -64000;
-             PRAGMA temp_store = MEMORY;"
-        ).map_err(|e| format!("Failed to set import PRAGMAs: {}", e))?;
         
         let list_id = self.create_hash_list_internal(&mut conn, list_name, "Project VIC")?;
         
@@ -282,12 +358,15 @@ impl HashDatabase {
         conn.execute_batch("COMMIT")
             .map_err(|e| format!("Final commit failed: {}", e))?;
         
-        conn.execute_batch("PRAGMA synchronous = NORMAL;").ok();
-        
         conn.execute(
             "UPDATE hash_lists SET hash_count = ?1 WHERE id = ?2",
             params![imported_count, list_id],
         ).ok();
+        
+        // Release the connection before rebuilding indexes — finish_bulk_import
+        // takes the same mutex.
+        drop(conn);
+        self.finish_bulk_import()?;
         
         if parse_errors > 0 {
             eprintln!("[VIC Import] Warning: {} parse errors out of {} objects", parse_errors, objects_seen);
@@ -394,11 +473,16 @@ impl HashDatabase {
         let fp_rate = 0.0001; // 0.01% false positive rate
         let mut bloom = Bloom::new_for_fp_rate(bloom_items, fp_rate);
         
-        // Build HashSet + populate bloom
+        // Build HashSet + populate bloom.
+        //
+        // The strings are *moved* out of the Vec rather than cloned.  Cloning kept
+        // two full copies alive simultaneously — at ~88 bytes per entry that is an
+        // extra 1.6 GB for a 19M-hash Project VIC list, enough to push an 8 GB
+        // machine into swap or an outright allocation failure.
         let mut hash_set = HashSet::with_capacity(count);
-        for h in &hash_strings {
-            bloom.set(h);
-            hash_set.insert(h.clone());
+        for h in hash_strings {
+            bloom.set(&h);
+            hash_set.insert(h);
         }
         
         let bloom_size_bytes = bloom.number_of_bits() / 8;
@@ -1009,26 +1093,53 @@ impl HashDatabase {
     }
     
     /// Add many hashes in a single transaction (fast bulk insert)
+    ///
+    /// Standalone version: sets and restores its own PRAGMAs, so it is safe to
+    /// call on its own for a handful of rows.  For a multi-million-row import
+    /// use `begin_bulk_import` + `add_hashes_batch_fast` + `finish_bulk_import`
+    /// instead — this variant renegotiates the journal mode on every call, which
+    /// is pure overhead when it is called hundreds of times in a row.
     pub fn add_hashes_batch(
+        &self,
+        list_id: i64,
+        hashes: &[(String, String, Option<String>, Option<String>)], // (hash, hash_type, category, description)
+    ) -> Result<u64, String> {
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute_batch(
+                "PRAGMA journal_mode = WAL;
+                 PRAGMA synchronous = OFF;
+                 PRAGMA cache_size = -32000;"
+            ).ok();
+        }
+        
+        let count = self.add_hashes_batch_fast(list_id, hashes)?;
+        
+        {
+            let conn = self.conn.lock().unwrap();
+            conn.execute_batch("PRAGMA synchronous = NORMAL;").ok();
+        }
+        
+        Ok(count)
+    }
+    
+    /// Insert a batch of hashes in one transaction, touching no PRAGMAs.
+    ///
+    /// Intended to be called in a loop between `begin_bulk_import` and
+    /// `finish_bulk_import`, which own the connection settings for the duration.
+    pub fn add_hashes_batch_fast(
         &self,
         list_id: i64,
         hashes: &[(String, String, Option<String>, Option<String>)], // (hash, hash_type, category, description)
     ) -> Result<u64, String> {
         let mut conn = self.conn.lock().unwrap();
         
-        // Performance PRAGMAs
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = OFF;
-             PRAGMA cache_size = -32000;"
-        ).ok();
-        
         let tx = conn.transaction()
             .map_err(|e| format!("Failed to begin transaction: {}", e))?;
         
         let mut count = 0u64;
         {
-            let mut stmt = tx.prepare(
+            let mut stmt = tx.prepare_cached(
                 "INSERT INTO hashes (hash, hash_type, list_id, category, description) VALUES (?1, ?2, ?3, ?4, ?5)"
             ).map_err(|e| format!("Failed to prepare statement: {}", e))?;
             
@@ -1046,9 +1157,6 @@ impl HashDatabase {
         
         tx.commit()
             .map_err(|e| format!("Batch commit failed: {}", e))?;
-        
-        // Restore safe PRAGMAs
-        conn.execute_batch("PRAGMA synchronous = NORMAL;").ok();
         
         Ok(count)
     }
@@ -1144,4 +1252,131 @@ pub struct DbHashListInfo {
     pub source: String,
     pub hash_count: u64,
     pub imported_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Minimal stand-in for the real `hashes` table so index DDL can be exercised
+    /// without touching the on-disk database (which resolves through app_paths).
+    fn scratch_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("in-memory db");
+        conn.execute_batch(
+            "CREATE TABLE hashes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hash TEXT NOT NULL,
+                hash_type TEXT NOT NULL,
+                list_id INTEGER NOT NULL,
+                category TEXT,
+                description TEXT,
+                file_size INTEGER
+            );",
+        )
+        .expect("create hashes table");
+        conn
+    }
+
+    fn index_names(conn: &Connection) -> Vec<String> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT name FROM sqlite_master \
+                 WHERE type = 'index' AND tbl_name = 'hashes' AND name NOT LIKE 'sqlite_%' \
+                 ORDER BY name",
+            )
+            .expect("prepare");
+        let names = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("query")
+            .filter_map(Result::ok)
+            .collect::<Vec<_>>();
+        names
+    }
+
+    /// The bulk importer drops indexes by the name in `.0` and recreates them
+    /// from the SQL in `.1`.  If those ever disagree, an import would either
+    /// leave an index in place (no speed-up — back to the USB hang) or fail to
+    /// restore one (silent full-table scan on every future match lookup).
+    #[test]
+    fn every_index_entry_creates_the_index_it_claims_to() {
+        for (name, sql) in HASH_TABLE_INDEXES {
+            let conn = scratch_db();
+            conn.execute(sql, [])
+                .unwrap_or_else(|e| panic!("{} failed to create: {}", name, e));
+            assert_eq!(
+                index_names(&conn),
+                vec![name.to_string()],
+                "{} created an index under a different name",
+                name
+            );
+        }
+    }
+
+    /// A full drop-and-rebuild cycle must land on exactly the schema it started
+    /// from — the invariant `begin_bulk_import` / `finish_bulk_import` rely on.
+    #[test]
+    fn bulk_import_cycle_restores_the_original_indexes() {
+        let conn = scratch_db();
+
+        for (_, sql) in HASH_TABLE_INDEXES {
+            conn.execute(sql, []).expect("initial create");
+        }
+        let before = index_names(&conn);
+        assert_eq!(before.len(), HASH_TABLE_INDEXES.len());
+
+        for (name, _) in HASH_TABLE_INDEXES {
+            conn.execute_batch(&format!("DROP INDEX IF EXISTS {};", name))
+                .expect("drop");
+        }
+        assert!(
+            index_names(&conn).is_empty(),
+            "bulk import left indexes behind: {:?}",
+            index_names(&conn)
+        );
+
+        for (_, sql) in HASH_TABLE_INDEXES {
+            conn.execute(sql, []).expect("rebuild");
+        }
+        assert_eq!(
+            index_names(&conn),
+            before,
+            "rebuild did not restore the original indexes"
+        );
+    }
+
+    /// Match lookups use `hash = ? COLLATE NOCASE`, which only hits an index
+    /// declared with the same collation.  Guards against someone "simplifying"
+    /// away the duplicate-looking pair of hash indexes.
+    ///
+    /// Proves it both ways: without the indexes the planner falls back to a full
+    /// scan, with them it does an indexed search.
+    #[test]
+    fn nocase_lookup_needs_the_hash_indexes_to_avoid_a_table_scan() {
+        const LOOKUP: &str = "EXPLAIN QUERY PLAN \
+             SELECT id FROM hashes WHERE hash = ?1 COLLATE NOCASE AND hash_type = ?2";
+
+        let explain = |conn: &Connection| -> String {
+            conn.query_row(LOOKUP, params!["abc", "SHA1"], |row| row.get::<_, String>(3))
+                .expect("explain")
+        };
+
+        let bare = scratch_db();
+        let without = explain(&bare);
+        assert!(
+            without.contains("SCAN"),
+            "expected a full scan with no indexes present, got: {}",
+            without
+        );
+
+        let indexed = scratch_db();
+        for (_, sql) in HASH_TABLE_INDEXES {
+            indexed.execute(sql, []).expect("create");
+        }
+        let with = explain(&indexed);
+        assert!(
+            with.contains("SEARCH") && with.contains("INDEX"),
+            "case-insensitive hash lookup fell back to a table scan: {}",
+            with
+        );
+    }
 }

@@ -213,11 +213,20 @@ async fn import_txt_hash_list(
         .map_err(|e| format!("Failed to open file: {}", e))?;
     let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
     
+    // Rough row estimate so the dialog can show "x of ~y" instead of an
+    // indeterminate bar.  One hash + newline per line; close enough for a
+    // progress bar and never used for anything but display.
+    let estimated_total = if expected_len > 0 {
+        (file_size / (expected_len as u64 + 2)).max(1) as usize
+    } else {
+        0
+    };
+    
     let _ = app.emit("hash-import-progress", HashImportProgress {
         stage: "importing".to_string(),
         message: format!("Streaming import of {:.1} MB file...", file_size as f64 / 1_048_576.0),
-        total: None,
-        progress: None,
+        total: Some(estimated_total),
+        progress: Some(0),
     });
     
     let hash_db = hash_db::HashDatabase::new()?;
@@ -227,12 +236,19 @@ async fn import_txt_hash_list(
         &hash_type,
     )?;
     
+    // Drop the hash indexes for the duration.  Without this, inserting ~19M
+    // random 40-char keys means several random 4 KB page writes per row once the
+    // index B-trees outgrow the page cache — tolerable on an SSD, effectively a
+    // hang on the USB drive the portable edition now stores its database on.
+    hash_db.begin_bulk_import()?;
+    
     // Stream: read lines, accumulate 50K batch, flush, repeat — peak RAM ~5MB
-    let reader = BufReader::with_capacity(256 * 1024, file);
+    let reader = BufReader::with_capacity(1024 * 1024, file);
     let mut batch: Vec<(String, String, Option<String>, Option<String>)> = Vec::with_capacity(50_000);
     let mut imported_count = 0u64;
     let mut skipped = 0u64;
     let batch_flush_size = 50_000;
+    let started = std::time::Instant::now();
     
     for line_result in reader.lines() {
         let line = match line_result {
@@ -258,14 +274,24 @@ async fn import_txt_hash_list(
         }
         
         if batch.len() >= batch_flush_size {
-            hash_db.add_hashes_batch(list_id, &batch).ok();
+            if let Err(e) = hash_db.add_hashes_batch_fast(list_id, &batch) {
+                // Always put the indexes back, even on failure, or every
+                // subsequent scan degrades to a full table scan.
+                let _ = hash_db.finish_bulk_import();
+                return Err(format!("Import failed after {} hashes: {}", imported_count, e));
+            }
             imported_count += batch.len() as u64;
             batch.clear();
             
             let _ = app.emit("hash-import-progress", HashImportProgress {
                 stage: "importing".to_string(),
-                message: format!("Imported {} hashes...", imported_count),
-                total: None,
+                message: format!(
+                    "Imported {} of ~{} hashes ({:.0}K/sec)...",
+                    imported_count,
+                    estimated_total,
+                    imported_count as f64 / started.elapsed().as_secs_f64().max(0.001) / 1000.0,
+                ),
+                total: Some(estimated_total.max(imported_count as usize)),
                 progress: Some(imported_count as usize),
             });
             eprintln!("[Hash Import] {} hashes imported...", imported_count);
@@ -274,10 +300,30 @@ async fn import_txt_hash_list(
     
     // Flush remaining
     if !batch.is_empty() {
-        hash_db.add_hashes_batch(list_id, &batch).ok();
+        if let Err(e) = hash_db.add_hashes_batch_fast(list_id, &batch) {
+            let _ = hash_db.finish_bulk_import();
+            return Err(format!("Import failed after {} hashes: {}", imported_count, e));
+        }
         imported_count += batch.len() as u64;
         batch.clear();
     }
+    
+    eprintln!(
+        "[Hash Import] {} rows written in {:.1}s — rebuilding indexes",
+        imported_count,
+        started.elapsed().as_secs_f64()
+    );
+    
+    // Rebuilding the two hash indexes over ~19M rows takes a while and produces
+    // no row-level progress, so tell the user what is happening rather than
+    // letting the bar sit still at 100%.
+    let _ = app.emit("hash-import-progress", HashImportProgress {
+        stage: "indexing".to_string(),
+        message: format!("Building search index for {} hashes...", imported_count),
+        total: Some(imported_count as usize),
+        progress: Some(imported_count as usize),
+    });
+    hash_db.finish_bulk_import()?;
     
     if imported_count == 0 {
         return Err("No valid hashes found in file".to_string());
@@ -447,7 +493,8 @@ async fn import_and_load_hash_list(
             default_hash_type,
         )?;
         
-        let batch_size = 5000;
+        let batch_size = 50_000;
+        hash_db.begin_bulk_import()?;
         for (batch_idx, chunk) in hash_list.hashes.chunks(batch_size).enumerate() {
             let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
                 let hash_type_str = match entry.hash.len() {
@@ -459,7 +506,10 @@ async fn import_and_load_hash_list(
                 (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
             }).collect();
             
-            hash_db.add_hashes_batch(list_id, &batch_data).ok();
+            if let Err(e) = hash_db.add_hashes_batch_fast(list_id, &batch_data) {
+                let _ = hash_db.finish_bulk_import();
+                return Err(format!("Import failed: {}", e));
+            }
             
             let processed = ((batch_idx + 1) * batch_size).min(hash_list.hashes.len());
             let _ = app.emit("hash-import-progress", HashImportProgress {
@@ -469,6 +519,14 @@ async fn import_and_load_hash_list(
                 progress: Some(processed),
             });
         }
+        
+        let _ = app.emit("hash-import-progress", HashImportProgress {
+            stage: "indexing".to_string(),
+            message: format!("Building search index for {} hashes...", total_hashes),
+            total: Some(total_hashes),
+            progress: Some(total_hashes),
+        });
+        hash_db.finish_bulk_import()?;
         
         // Reload in-memory cache
         let _ = hash_db.load_hashes_into_memory();
@@ -506,7 +564,8 @@ fn load_hash_list_into_db(hash_list: settings::HashList) -> Result<(), String> {
     )?;
     
     // Import all hashes in batches, auto-detecting hash type for each hash
-    let batch_size = 5000;
+    let batch_size = 50_000;
+    hash_db.begin_bulk_import()?;
     for chunk in hash_list.hashes.chunks(batch_size) {
         let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
             let hash_type_str = match entry.hash.len() {
@@ -518,8 +577,12 @@ fn load_hash_list_into_db(hash_list: settings::HashList) -> Result<(), String> {
             (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
         }).collect();
         
-        hash_db.add_hashes_batch(list_id, &batch_data).ok();
+        if let Err(e) = hash_db.add_hashes_batch_fast(list_id, &batch_data) {
+            let _ = hash_db.finish_bulk_import();
+            return Err(format!("Import failed: {}", e));
+        }
     }
+    hash_db.finish_bulk_import()?;
     
     eprintln!("✓ Hash list imported successfully");
     Ok(())
