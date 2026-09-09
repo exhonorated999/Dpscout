@@ -4,6 +4,7 @@ import { Button } from './Button';
 import { AppSettings, KeywordList, HashList, CustomAppDefinition, ScanOptions } from '../types/settings';
 import { ReportsManager } from './ReportsManager';
 import { ScanDocumentationPanel } from './ScanDocumentation';
+import { RegistrationScreen } from './RegistrationScreen';
 import './SettingsView.css';
 
 interface SettingsViewProps {
@@ -323,6 +324,17 @@ interface UpdateInfo {
   current_version?: string;
 }
 
+/// Mirrors `licensing::LicenseDiagnostics`.
+interface LicenseDiagnostics {
+  machine_id: string;
+  /** The ID this install reported before the motherboard serial was restored. */
+  legacy_machine_id: string | null;
+  platform: string;
+  app_version: string;
+  registered_locally: boolean;
+  fingerprint_warning: string | null;
+}
+
 interface ManualUpdateInfo {
   version: string;
   product_type: string;
@@ -500,8 +512,38 @@ const PrivacyPanel: React.FC = () => {
   );
 };
 
-const LicensePanel: React.FC = () => {
-  const [licenseInfo, setLicenseInfo] = React.useState<LicenseInfo | null>(null);
+/** One label/value line in the Machine Identity block. */
+const DiagRow: React.FC<{ label: string; value: string; mono?: boolean; hint?: string }> = ({
+  label, value, mono = false, hint,
+}) => (
+  <div>
+    <div style={{
+      color: 'var(--color-text-secondary)',
+      fontSize: '11px',
+      textTransform: 'uppercase',
+      letterSpacing: '0.5px',
+      marginBottom: '4px'
+    }}>
+      {label}
+    </div>
+    <div style={{
+      color: 'var(--color-text-primary)',
+      fontSize: mono ? '12px' : '14px',
+      fontFamily: mono ? 'monospace' : 'inherit',
+      wordBreak: 'break-all',
+      userSelect: 'text'
+    }}>
+      {value}
+    </div>
+    {hint && (
+      <div style={{ color: 'var(--color-text-secondary)', fontSize: '11px', marginTop: '4px', lineHeight: 1.4 }}>
+        {hint}
+      </div>
+    )}
+  </div>
+);
+
+const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = React.useState<LicenseInfo | null>(null);
   const [updateInfo, setUpdateInfo] = React.useState<UpdateInfo | null>(null);
   const [licenseKey, setLicenseKey] = React.useState('');
   const [activating, setActivating] = React.useState(false);
@@ -510,10 +552,65 @@ const LicensePanel: React.FC = () => {
   const [manualFallback, setManualFallback] = React.useState<ManualUpdateInfo | null>(null);
   const [message, setMessage] = React.useState('');
   const [error, setError] = React.useState('');
+  // Recovery path: if the first-run registration screen was never shown (or
+  // was skipped by a startup failure), the user would otherwise be stuck —
+  // unable to register and unable to activate, since activation requires a
+  // registered machine. This lets them register from Settings.
+  const [isRegistered, setIsRegistered] = React.useState<boolean | null>(null);
+  const [showRegisterForm, setShowRegisterForm] = React.useState(false);
+  // Machine identity, for support. Windows 11 24H2 removed `wmic`, which used
+  // to supply the motherboard serial folded into the machine ID — so machines
+  // that registered on an older build can be on the server under a different
+  // ID than they now report. There is deliberately no automatic fallback (the
+  // legacy ID is guessable and the server authorises on the hash alone), so
+  // rebinding is a support action and support needs to see both values.
+  const [diagnostics, setDiagnostics] = React.useState<LicenseDiagnostics | null>(null);
+  const [showDiagnostics, setShowDiagnostics] = React.useState(false);
+  const [copied, setCopied] = React.useState('');
 
   React.useEffect(() => {
     loadLicenseStatus();
+    loadRegistrationState();
+    loadDiagnostics();
   }, []);
+
+  const loadRegistrationState = async () => {
+    try {
+      setIsRegistered(await invoke<boolean>('is_agency_registered'));
+    } catch (err) {
+      console.error('Failed to check registration state:', err);
+      setIsRegistered(null);
+    }
+  };
+
+  const loadDiagnostics = async () => {
+    try {
+      setDiagnostics(await invoke<LicenseDiagnostics>('get_license_diagnostics'));
+    } catch (err) {
+      console.error('Failed to load license diagnostics:', err);
+      setDiagnostics(null);
+    }
+  };
+
+  const copyDiagnostics = async () => {
+    if (!diagnostics) return;
+    const lines = [
+      `Scout ${diagnostics.app_version} (${diagnostics.platform})`,
+      `Machine ID: ${diagnostics.machine_id}`,
+      diagnostics.legacy_machine_id
+        ? `Previous Machine ID: ${diagnostics.legacy_machine_id}`
+        : null,
+      `Registered locally: ${diagnostics.registered_locally ? 'yes' : 'no'}`,
+      diagnostics.fingerprint_warning ? `Warning: ${diagnostics.fingerprint_warning}` : null,
+    ].filter(Boolean);
+    try {
+      await navigator.clipboard.writeText(lines.join('\n'));
+      setCopied('Copied to clipboard');
+      setTimeout(() => setCopied(''), 2500);
+    } catch {
+      setCopied('Copy failed — select the text manually');
+    }
+  };
 
   const loadLicenseStatus = async () => {
     setChecking(true);
@@ -748,6 +845,58 @@ const LicensePanel: React.FC = () => {
         </button>
       </div>
 
+      {/* Register This Machine — recovery path when first-run registration
+          never happened. Activation is impossible until the machine is
+          registered, so without this the user has no way forward. */}
+      {isRegistered === false && (
+        <div style={{
+          background: 'var(--color-bg-tertiary)',
+          border: '1px solid #f59e0b',
+          borderRadius: '8px',
+          padding: '24px',
+          marginBottom: '24px'
+        }}>
+          <h4 style={{ color: 'var(--color-text-primary)', marginTop: 0, marginBottom: '8px' }}>
+            📝 This Machine Is Not Registered
+          </h4>
+          <p style={{ color: 'var(--color-text-secondary)', fontSize: '13px', marginTop: 0 }}>
+            A license key cannot be activated until the agency is registered on
+            this machine. If you were never asked to register when you first
+            installed Scout, register here.
+          </p>
+
+          {!showRegisterForm ? (
+            <button
+              onClick={() => setShowRegisterForm(true)}
+              style={{
+                padding: '10px 24px',
+                background: 'linear-gradient(135deg, var(--primary-blue), var(--accent-blue))',
+                border: 'none',
+                borderRadius: '6px',
+                color: '#fff',
+                fontWeight: 600,
+                cursor: 'pointer',
+                fontSize: '14px'
+              }}
+            >
+              Register This Machine
+            </button>
+          ) : (
+            <div style={{ marginTop: '16px' }}>
+              <RegistrationScreen
+                embedded
+                onRegistrationComplete={async () => {
+                  setShowRegisterForm(false);
+                  setMessage('Registration complete. You can now activate your license key.');
+                  await loadRegistrationState();
+                  await loadLicenseStatus();
+                }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Activate License Key */}
       <div style={{
         background: 'var(--color-bg-tertiary)',
@@ -829,6 +978,110 @@ const LicensePanel: React.FC = () => {
             fontSize: '13px'
           }}>
             ✅ {message}
+          </div>
+        )}
+      </div>
+
+      {/* Machine Identity — collapsed by default. Support asks for this when a
+          machine reports "not registered" despite having registered before,
+          which happens when the fingerprint changed underneath it. */}
+      <div style={{
+        background: 'var(--color-bg-tertiary)',
+        border: '1px solid var(--color-border)',
+        borderRadius: '8px',
+        padding: '24px',
+        marginBottom: '24px'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h4 style={{ color: 'var(--color-text-primary)', margin: 0 }}>
+            🔎 Machine Identity
+          </h4>
+          <button
+            onClick={() => setShowDiagnostics(!showDiagnostics)}
+            style={{
+              padding: '6px 14px',
+              background: 'transparent',
+              border: '1px solid var(--color-border)',
+              borderRadius: '6px',
+              color: 'var(--color-text-secondary)',
+              cursor: 'pointer',
+              fontSize: '12px'
+            }}
+          >
+            {showDiagnostics ? 'Hide' : 'Show'}
+          </button>
+        </div>
+
+        {diagnostics?.fingerprint_warning && (
+          <div style={{
+            marginTop: '14px',
+            padding: '10px 14px',
+            background: 'rgba(245, 158, 11, 0.1)',
+            border: '1px solid rgba(245, 158, 11, 0.3)',
+            borderRadius: '6px',
+            color: '#f59e0b',
+            fontSize: '13px'
+          }}>
+            ⚠️ {diagnostics.fingerprint_warning}
+          </div>
+        )}
+
+        {showDiagnostics && (
+          <div style={{ marginTop: '16px' }}>
+            {!diagnostics && (
+              <div style={{ color: 'var(--color-text-secondary)', fontSize: '13px' }}>
+                Machine identity unavailable.
+              </div>
+            )}
+
+            {diagnostics && (
+              <>
+                <p style={{ color: 'var(--color-text-secondary)', fontSize: '13px', marginTop: 0, lineHeight: 1.5 }}>
+                  Send these values to support if Scout says this machine is not
+                  registered even though it was registered before. A Windows
+                  update can change the machine ID, and only support can
+                  reattach your license to the new one.
+                </p>
+
+                <div style={{ display: 'grid', gap: '10px', marginBottom: '14px' }}>
+                  <DiagRow label="Version" value={`${diagnostics.app_version} (${diagnostics.platform})`} />
+                  <DiagRow label="Machine ID" value={diagnostics.machine_id} mono />
+                  {diagnostics.legacy_machine_id && (
+                    <DiagRow
+                      label="Previous Machine ID"
+                      value={diagnostics.legacy_machine_id}
+                      mono
+                      hint="Used by builds released before Windows 11 24H2 removed a system tool Scout relied on. If you registered on an older build, your license is attached to this ID."
+                    />
+                  )}
+                  <DiagRow
+                    label="Registered On This PC"
+                    value={diagnostics.registered_locally ? 'Yes' : 'No'}
+                  />
+                </div>
+
+                <button
+                  onClick={copyDiagnostics}
+                  style={{
+                    padding: '8px 18px',
+                    background: 'transparent',
+                    border: '1px solid var(--primary-blue)',
+                    borderRadius: '6px',
+                    color: 'var(--primary-blue)',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    fontWeight: 600
+                  }}
+                >
+                  📋 Copy For Support
+                </button>
+                {copied && (
+                  <span style={{ marginLeft: '12px', color: 'var(--color-text-secondary)', fontSize: '12px' }}>
+                    {copied}
+                  </span>
+                )}
+              </>
+            )}
           </div>
         )}
       </div>

@@ -55,6 +55,31 @@ pub struct UpdateInfo {
     pub current_version: Option<String>,
 }
 
+/// What support needs to rebind a machine whose ID changed underneath it.
+///
+/// The `wmic` removal in Windows 11 24H2 silently dropped the motherboard
+/// serial out of the desktop fingerprint, so anyone who registered while
+/// running a build that used `wmic` is on the server under `legacy_machine_id`
+/// rather than `machine_id`. There is no safe automatic fallback — the server
+/// authorizes on the raw hash, and the legacy hash is guessable — so the user
+/// reads both values off this panel and support repoints the record.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LicenseDiagnostics {
+    /// The ID this install reports today.
+    pub machine_id: String,
+    /// The ID this install reported while the motherboard serial was being
+    /// silently dropped. `None` when there is no distinct legacy identity.
+    pub legacy_machine_id: Option<String>,
+    /// "desktop" or "portable".
+    pub platform: String,
+    pub app_version: String,
+    /// Whether a server-confirmed registration is saved locally.
+    pub registered_locally: bool,
+    /// Set when the motherboard serial could not be read at all, which means
+    /// the fingerprint is running on COMPUTERNAME + USERNAME alone.
+    pub fingerprint_warning: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Machine ID — unique fingerprint for this installation
 // ---------------------------------------------------------------------------
@@ -64,12 +89,92 @@ pub fn get_platform() -> &'static str {
     if cfg!(feature = "portable") { "portable" } else { "desktop" }
 }
 
-pub fn get_machine_id() -> Result<String, String> {
-    use sha2::{Sha256, Digest};
+/// The COMPUTERNAME + USERNAME part of the desktop fingerprint. Always
+/// available on Windows, which is why `get_machine_id` can never fail there.
+#[cfg(not(feature = "portable"))]
+fn base_identity_components() -> Vec<String> {
+    let mut components = Vec::new();
+    if let Ok(name) = std::env::var("COMPUTERNAME") {
+        components.push(name);
+    }
+    if let Ok(user) = std::env::var("USERNAME") {
+        components.push(user);
+    }
+    components
+}
 
+#[cfg(not(feature = "portable"))]
+fn hash_components(components: &[String]) -> String {
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    hasher.update(components.join("|").as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Read `Win32_BaseBoard.SerialNumber` via WMI.
+///
+/// This replaces `wmic baseboard get serialnumber`. `wmic` was demoted to a
+/// disabled-by-default Feature-on-Demand and is simply ABSENT on Windows 11
+/// 24H2 (build 26100) and later — the process spawn fails outright. The old
+/// code swallowed that with `if let Ok(..)`, so the motherboard serial
+/// silently vanished from the fingerprint and the machine ID changed the
+/// moment a user took the 24H2 update. That looks exactly like "Machine not
+/// registered" on a machine that registered fine a month earlier.
+///
+/// `wmic baseboard get serialnumber` was only ever printing this WMI property,
+/// so reading it directly returns a byte-identical string and therefore an
+/// identical hash on machines where `wmic` used to work. No re-registration.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn baseboard_serial() -> Option<String> {
+    use wmi::{COMLibrary, WMIConnection, Variant};
+    use std::collections::HashMap;
+
+    let com = COMLibrary::new().ok()?;
+    let conn = WMIConnection::new(com).ok()?;
+    let rows: Vec<HashMap<String, Variant>> = conn
+        .raw_query("SELECT SerialNumber FROM Win32_BaseBoard")
+        .ok()?;
+
+    for row in rows {
+        if let Some(Variant::String(serial)) = row.get("SerialNumber") {
+            let trimmed = serial.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Legacy `wmic` path, kept only as a fallback for Windows builds old enough
+/// that WMI access could fail while `wmic` still shipped. Produces the same
+/// string as `baseboard_serial` when both work.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn baseboard_serial_via_wmic() -> Option<String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let output = std::process::Command::new("wmic")
+        .args(["baseboard", "get", "serialnumber"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    for line in text.lines().skip(1) {
+        let trimmed = line.trim();
+        if !trimmed.is_empty() {
+            return Some(trimmed.to_string());
+        }
+    }
+    None
+}
+
+pub fn get_machine_id() -> Result<String, String> {
     // Portable build: derive identity from the USB drive serial number
     #[cfg(feature = "portable")]
     {
+        use sha2::{Sha256, Digest};
         let serial = get_usb_drive_serial()?;
         let mut hasher = Sha256::new();
         hasher.update(serial.as_bytes());
@@ -80,29 +185,16 @@ pub fn get_machine_id() -> Result<String, String> {
     // Desktop build: hardware fingerprint (motherboard + user)
     #[cfg(not(feature = "portable"))]
     {
-        let mut components = Vec::new();
-
-        if let Ok(name) = std::env::var("COMPUTERNAME") {
-            components.push(name);
-        }
-        if let Ok(user) = std::env::var("USERNAME") {
-            components.push(user);
-        }
+        let mut components = base_identity_components();
 
         #[cfg(target_os = "windows")]
         {
-            if let Ok(output) = std::process::Command::new("wmic")
-                .args(["baseboard", "get", "serialnumber"])
-                .output()
-            {
-                let text = String::from_utf8_lossy(&output.stdout);
-                for line in text.lines().skip(1) {
-                    let trimmed = line.trim();
-                    if !trimmed.is_empty() {
-                        components.push(trimmed.to_string());
-                        break;
-                    }
-                }
+            match baseboard_serial().or_else(baseboard_serial_via_wmic) {
+                Some(serial) => components.push(serial),
+                None => eprintln!(
+                    "[Licensing] Motherboard serial unavailable (WMI and wmic both failed); \
+                     machine ID falls back to name+user only"
+                ),
             }
         }
 
@@ -110,11 +202,37 @@ pub fn get_machine_id() -> Result<String, String> {
             return Err("Cannot determine machine identity".to_string());
         }
 
-        let combined = components.join("|");
-        let mut hasher = Sha256::new();
-        hasher.update(combined.as_bytes());
-        let result = hasher.finalize();
-        Ok(hex::encode(result))
+        Ok(hash_components(&components))
+    }
+}
+
+/// The machine ID this install would have reported while the motherboard
+/// serial was being silently dropped (see `baseboard_serial`). Anyone who
+/// registered during that window is on the server under THIS id, not the one
+/// `get_machine_id()` now returns.
+///
+/// Deliberately NOT used as an automatic licensing fallback. The server treats
+/// `machine_id` as an unauthenticated bearer identity — it looks an agency up
+/// by the hash and nothing else. Accepting a name+user-only hash would mean
+/// anyone who sets COMPUTERNAME and USERNAME to a licensed agency's values
+/// collides with them and is served their license. A motherboard serial is at
+/// least not guessable; `DESK-PD01` + `jsmith` very much is.
+///
+/// So affected installs are rebound by support instead: read this value and
+/// the current one out of the diagnostics, then repoint the server record.
+/// Closing this properly needs a real credential (a per-install secret issued
+/// at activation and proven on later requests) rather than a fingerprint.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+pub fn get_legacy_machine_id() -> Option<String> {
+    let base = base_identity_components();
+    if base.is_empty() {
+        return None;
+    }
+    let legacy = hash_components(&base);
+    // Only meaningful when it actually differs — i.e. a serial is readable now.
+    match get_machine_id() {
+        Ok(current) if current != legacy => Some(legacy),
+        _ => None,
     }
 }
 
@@ -479,9 +597,44 @@ pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, Str
     Ok(act)
 }
 
+/// Gather the identity values support needs to rebind a stranded install.
+/// Never fails hard — a diagnostics panel that errors out is useless.
+pub fn get_license_diagnostics() -> LicenseDiagnostics {
+    let machine_id = get_machine_id().unwrap_or_else(|e| format!("UNAVAILABLE: {}", e));
+
+    #[cfg(all(not(feature = "portable"), target_os = "windows"))]
+    let legacy_machine_id = get_legacy_machine_id();
+    #[cfg(not(all(not(feature = "portable"), target_os = "windows")))]
+    let legacy_machine_id: Option<String> = None;
+
+    // Only a desktop Windows build folds in a motherboard serial, so only it
+    // can lose one.
+    #[cfg(all(not(feature = "portable"), target_os = "windows"))]
+    let fingerprint_warning = if baseboard_serial().or_else(baseboard_serial_via_wmic).is_none() {
+        Some(
+            "Motherboard serial could not be read, so this machine's ID is based on \
+             computer name and user name only. Report this to support — the ID may \
+             collide with another machine."
+                .to_string(),
+        )
+    } else {
+        None
+    };
+    #[cfg(not(all(not(feature = "portable"), target_os = "windows")))]
+    let fingerprint_warning: Option<String> = None;
+
+    LicenseDiagnostics {
+        machine_id,
+        legacy_machine_id,
+        platform: get_platform().to_string(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        registered_locally: is_registration_saved(),
+        fingerprint_warning,
+    }
+}
+
 /// Check for software updates
-pub fn check_for_updates() -> Result<UpdateInfo, String> {
-    let current = env!("CARGO_PKG_VERSION");
+pub fn check_for_updates() -> Result<UpdateInfo, String> {    let current = env!("CARGO_PKG_VERSION");
 
     let url = format!("{}/api/updates/check?current_version={}", SERVER_URL, current);
 
@@ -747,4 +900,94 @@ pub fn submit_bug_report(data: BugReportData) -> Result<BugReportResponse, Strin
         intellect_id,
         message: Some("Bug report submitted successfully".to_string()),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(all(test, not(feature = "portable")))]
+mod tests {
+    use super::*;
+
+    /// The fingerprint must stay a plain SHA-256 of the `|`-joined components.
+    /// Any change here silently invalidates every machine ID on the server, so
+    /// pin the exact algorithm rather than trusting it not to drift.
+    #[test]
+    fn hash_is_sha256_of_pipe_joined_components() {
+        use sha2::{Sha256, Digest};
+        let components = vec![
+            "OFFICE".to_string(),
+            "JUSTI".to_string(),
+            "07E4112_P31B737304".to_string(),
+        ];
+        let mut h = Sha256::new();
+        h.update(b"OFFICE|JUSTI|07E4112_P31B737304");
+        assert_eq!(hash_components(&components), hex::encode(h.finalize()));
+    }
+
+    #[test]
+    fn machine_id_is_stable_across_calls() {
+        let a = get_machine_id().expect("machine id must resolve on this host");
+        let b = get_machine_id().expect("machine id must resolve on this host");
+        assert_eq!(a, b);
+        assert_eq!(a.len(), 64, "SHA-256 hex is 64 chars");
+    }
+
+    /// The legacy ID is a SUPPORT DIAGNOSTIC, never a licensing fallback. It
+    /// must not be sent to `/api/license/status` or `/api/license/activate`:
+    /// `SHA256(COMPUTERNAME|USERNAME)` is guessable, and the server authorizes
+    /// on the hash alone, so accepting it would let anyone who sets those two
+    /// env vars impersonate a licensed agency.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn legacy_id_is_reported_only_when_it_differs_from_current() {
+        let current = get_machine_id().unwrap();
+        match get_legacy_machine_id() {
+            Some(legacy) => {
+                assert_ne!(legacy, current, "a legacy ID equal to current is noise");
+                assert_eq!(legacy.len(), 64);
+                assert_eq!(legacy, hash_components(&base_identity_components()));
+                // A distinct legacy ID implies a serial IS folded in now.
+                assert!(baseboard_serial().or_else(baseboard_serial_via_wmic).is_some());
+            }
+            None => {
+                // No serial readable, so the current ID already IS the
+                // name+user hash and there is no separate legacy identity.
+                assert_eq!(current, hash_components(&base_identity_components()));
+            }
+        }
+    }
+
+    /// The whole point of moving off `wmic`: WMI must produce the serial
+    /// without it.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wmi_reads_baseboard_serial() {
+        assert!(
+            baseboard_serial().is_some(),
+            "WMI could not read Win32_BaseBoard.SerialNumber on this host"
+        );
+    }
+
+    /// Diagnostics must never fail — a support panel that errors out is
+    /// useless precisely when it is needed.
+    #[test]
+    fn diagnostics_always_produce_a_usable_machine_id() {
+        let d = get_license_diagnostics();
+        assert!(!d.machine_id.starts_with("UNAVAILABLE"), "got {}", d.machine_id);
+        assert_eq!(d.machine_id.len(), 64);
+        assert_eq!(d.platform, "desktop");
+        assert!(!d.app_version.is_empty());
+        // A readable serial means no warning, and vice versa.
+        #[cfg(target_os = "windows")]
+        assert_eq!(
+            d.fingerprint_warning.is_none(),
+            baseboard_serial().or_else(baseboard_serial_via_wmic).is_some()
+        );
+        // The legacy ID, when present, must differ from the live one.
+        if let Some(legacy) = d.legacy_machine_id {
+            assert_ne!(legacy, d.machine_id);
+        }
+    }
 }

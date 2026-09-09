@@ -53,6 +53,10 @@ function App() {
   const [isAgencyRegistered, setIsAgencyRegistered] = useState<boolean | null>(null); // null = loading
   const [licenseExpired, setLicenseExpired] = useState(false);
   const [licenseDaysRemaining, setLicenseDaysRemaining] = useState(0);
+  // Non-fatal startup error (e.g. data directories could not be created).
+  // Surfaced on the registration screen so the user reports the real cause
+  // instead of "it just never asked me to register".
+  const [initError, setInitError] = useState<string | null>(null);
   const [, setCurrentUser] = useState<User | null>(null);
 
   const [state, setState] = useState<AppState>("start");
@@ -141,34 +145,54 @@ function App() {
   }, []);
 
   async function initializeApp() {
+    setCurrentUser({ username: 'forensic' });
+
+    // Directory creation and the registration check are INDEPENDENT concerns
+    // and must not share a catch block.
+    //
+    // They used to. A single try/catch wrapped both, and its handler called
+    // `setIsAgencyRegistered(true)`. So if `initialize_app` failed for any
+    // reason — locked-down %APPDATA%, AV blocking directory creation, roaming
+    // profile issues — the app concluded the machine was REGISTERED and
+    // skipped the registration screen entirely. The user then landed in a
+    // fully unregistered install with no way to register, and reinstalling
+    // could not help because nothing about the install was wrong.
+    //
+    // Registration state is now resolved on its own, and it fails CLOSED.
     try {
       console.log('📁 Initializing app directories');
       await invoke('initialize_app');
       console.log('✅ Directories initialized');
-      setCurrentUser({ username: 'forensic' });
-
-      // Check if agency is registered locally
-      const registered = await invoke<boolean>('is_agency_registered');
-      console.log('📋 Agency registered:', registered);
-      setIsAgencyRegistered(registered);
-
-      if (registered) {
-        // Check license status from server (with offline fallback)
-        try {
-          const licenseInfo = await invoke<LicenseInfo>('get_license_status');
-          console.log('🔑 License info:', licenseInfo);
-          setLicenseExpired(licenseInfo.is_expired);
-          setLicenseDaysRemaining(licenseInfo.days_remaining);
-        } catch (err) {
-          console.warn('⚠️ Failed to check license, allowing access:', err);
-          setLicenseExpired(false);
-        }
-      }
     } catch (error) {
-      console.error('❌ Failed to initialize app:', error);
-      // Fallback: allow access if init fails
-      setIsAgencyRegistered(true);
-      setLicenseExpired(false);
+      console.error('❌ Failed to initialize app directories:', error);
+      setInitError(String(error));
+      // Keep going. A directory problem says nothing about registration.
+    }
+
+    let registered = false;
+    try {
+      registered = await invoke<boolean>('is_agency_registered');
+      console.log('📋 Agency registered:', registered);
+    } catch (error) {
+      // Registration state is unknown. Show the registration screen rather
+      // than silently granting access — registering again is harmless and
+      // repairs local state, whereas guessing "yes" strands the user.
+      console.error('❌ Failed to check registration, showing registration screen:', error);
+      registered = false;
+    }
+    setIsAgencyRegistered(registered);
+
+    if (registered) {
+      // Check license status from server (with offline fallback)
+      try {
+        const licenseInfo = await invoke<LicenseInfo>('get_license_status');
+        console.log('🔑 License info:', licenseInfo);
+        setLicenseExpired(licenseInfo.is_expired);
+        setLicenseDaysRemaining(licenseInfo.days_remaining);
+      } catch (err) {
+        console.warn('⚠️ Failed to check license, allowing access:', err);
+        setLicenseExpired(false);
+      }
     }
   }
 
@@ -1708,6 +1732,7 @@ function App() {
   if (!isAgencyRegistered) {
     return (
       <RegistrationScreen
+        initError={initError}
         onRegistrationComplete={() => {
           setIsAgencyRegistered(true);
           setLicenseExpired(false);

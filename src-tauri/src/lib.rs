@@ -88,6 +88,13 @@ fn is_agency_registered() -> Result<bool, String> {
     Ok(licensing::is_registration_saved())
 }
 
+/// Identity values support needs when a machine's fingerprint has shifted
+/// (see the `wmic` removal note on `licensing::LicenseDiagnostics`).
+#[tauri::command]
+fn get_license_diagnostics() -> licensing::LicenseDiagnostics {
+    licensing::get_license_diagnostics()
+}
+
 #[tauri::command]
 fn scan_questionable_applications() -> Result<Vec<QuestionableApp>, String> {
     eprintln!("=== SCANNING APPLICATIONS ===");
@@ -2626,6 +2633,7 @@ pub fn run() {
             submit_bug_report,
             bug_attachment_stat,
             is_agency_registered,
+            get_license_diagnostics,
             scan_questionable_applications,
             get_settings,
             save_app_settings,

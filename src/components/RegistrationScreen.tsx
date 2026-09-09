@@ -4,6 +4,18 @@ import './RegistrationScreen.css';
 
 interface RegistrationScreenProps {
   onRegistrationComplete: () => void;
+  /**
+   * Non-fatal startup error to surface above the form. When data directories
+   * cannot be created, registration will very likely fail to persist too, so
+   * showing the real cause here beats letting the user guess.
+   */
+  initError?: string | null;
+  /**
+   * Render just the card, without the full-screen background and wordmark,
+   * so the same form can be embedded in Settings as a recovery path for
+   * anyone who was never shown the first-run screen.
+   */
+  embedded?: boolean;
 }
 
 interface RegisterResponse {
@@ -14,7 +26,7 @@ interface RegisterResponse {
   message?: string;
 }
 
-export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegistrationComplete }) => {
+export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegistrationComplete, initError = null, embedded = false }) => {
   const [agencyName, setAgencyName] = useState('');
   const [contactName, setContactName] = useState('');
   const [contactEmail, setContactEmail] = useState('');
@@ -68,20 +80,9 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
     }
   };
 
-  return (
-    <div className="registration-screen">
-      <div className="registration-container">
-        <div className="registration-header">
-          <h1>
-            <span className="brand-datapilot">DATAPILOT</span>
-            {' '}
-            <span className="brand-scout">SCOUT</span>
-          </h1>
-          <p className="registration-subtitle">Digital Forensic Triage Platform</p>
-        </div>
-
-        <div className="registration-card">
-          <h2>Agency Registration</h2>
+  const card = (
+    <div className="registration-card">
+      <h2>Agency Registration</h2>
           <p className="registration-description">
             Register your agency to begin your <strong>30-day free trial</strong>.<br/>
             A license key can be entered in Settings after registration.
@@ -182,6 +183,16 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
             </div>
           </div>
 
+          {initError && (
+            <div className="error-message">
+              ⚠️ Scout could not create its data folder: {initError}
+              <br />
+              Registration may not save until this is resolved. Try running
+              Scout as Administrator, or check that antivirus is not blocking
+              it.
+            </div>
+          )}
+
           {error && (
             <div className="error-message">
               ⚠️ {error}
@@ -205,7 +216,27 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
               <li><strong>Machine Bound:</strong> License is tied to this computer</li>
             </ul>
           </div>
+    </div>
+  );
+
+  // Embedded in Settings — the caller supplies its own heading and chrome.
+  if (embedded) {
+    return card;
+  }
+
+  return (
+    <div className="registration-screen">
+      <div className="registration-container">
+        <div className="registration-header">
+          <h1>
+            <span className="brand-datapilot">DATAPILOT</span>
+            {' '}
+            <span className="brand-scout">SCOUT</span>
+          </h1>
+          <p className="registration-subtitle">Digital Forensic Triage Platform</p>
         </div>
+
+        {card}
       </div>
     </div>
   );
