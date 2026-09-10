@@ -170,6 +170,70 @@ fn baseboard_serial_via_wmic() -> Option<String> {
     None
 }
 
+/// Read `HKLM\SOFTWARE\Microsoft\Cryptography\MachineGuid`.
+///
+/// Used ONLY when no motherboard serial can be read. Some machines genuinely
+/// cannot supply one — VMs, OEMs that leave the field blank or set it to
+/// "Default string", and boxes with a damaged WMI repository — which used to
+/// leave the fingerprint running on COMPUTERNAME + USERNAME alone. That is
+/// both guessable and collision-prone: image two workstations from the same
+/// template and give them the same local username and they share an identity.
+///
+/// MachineGuid is generated at Windows install time, is stable across reboots,
+/// BIOS updates and hardware swaps, and is readable by any user without
+/// elevation. It changes only on a Windows reinstall/re-image.
+///
+/// Note this is read under HKEY_LOCAL_MACHINE with a 64-bit view: the key
+/// lives in the shared (non-redirected) part of the registry, but being
+/// explicit avoids surprises if this ever runs as a 32-bit process under
+/// WOW64 redirection.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn machine_guid() -> Option<String> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_64KEY};
+    use winreg::RegKey;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let key = hklm
+        .open_subkey_with_flags(
+            r"SOFTWARE\Microsoft\Cryptography",
+            KEY_READ | KEY_WOW64_64KEY,
+        )
+        .ok()?;
+    let guid: String = key.get_value("MachineGuid").ok()?;
+    let trimmed = guid.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+/// Some OEMs ship placeholder serials. Treating those as real would make every
+/// machine from that vendor share one identity, which is worse than having no
+/// serial at all — so reject them and let MachineGuid take over.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn is_usable_serial(serial: &str) -> bool {
+    let s = serial.trim();
+    if s.len() < 3 {
+        return false;
+    }
+    const PLACEHOLDERS: [&str; 8] = [
+        "default string",
+        "to be filled by o.e.m.",
+        "to be filled by oem",
+        "none",
+        "n/a",
+        "not applicable",
+        "system serial number",
+        "0123456789",
+    ];
+    let lower = s.to_ascii_lowercase();
+    if PLACEHOLDERS.contains(&lower.as_str()) {
+        return false;
+    }
+    // All-zero / all-same-character serials carry no information.
+    !s.chars().all(|c| c == s.chars().next().unwrap())
+}
+
 pub fn get_machine_id() -> Result<String, String> {
     // Portable build: derive identity from the USB drive serial number
     #[cfg(feature = "portable")]
@@ -189,12 +253,31 @@ pub fn get_machine_id() -> Result<String, String> {
 
         #[cfg(target_os = "windows")]
         {
-            match baseboard_serial().or_else(baseboard_serial_via_wmic) {
+            // Order matters. A usable motherboard serial keeps the hash
+            // byte-identical to every previous build, so machines that can
+            // read one never re-register. MachineGuid is only consulted when
+            // there is no usable serial — those machines were otherwise
+            // running on COMPUTERNAME + USERNAME alone, which collides across
+            // identically-imaged workstations.
+            let serial = baseboard_serial()
+                .or_else(baseboard_serial_via_wmic)
+                .filter(|s| is_usable_serial(s));
+
+            match serial {
                 Some(serial) => components.push(serial),
-                None => eprintln!(
-                    "[Licensing] Motherboard serial unavailable (WMI and wmic both failed); \
-                     machine ID falls back to name+user only"
-                ),
+                None => match machine_guid() {
+                    Some(guid) => {
+                        eprintln!(
+                            "[Licensing] No usable motherboard serial; \
+                             using registry MachineGuid for machine identity"
+                        );
+                        components.push(guid);
+                    }
+                    None => eprintln!(
+                        "[Licensing] Neither motherboard serial nor MachineGuid \
+                         could be read; machine ID falls back to name+user only"
+                    ),
+                },
             }
         }
 
@@ -608,17 +691,26 @@ pub fn get_license_diagnostics() -> LicenseDiagnostics {
     let legacy_machine_id: Option<String> = None;
 
     // Only a desktop Windows build folds in a motherboard serial, so only it
-    // can lose one.
+    // can lose one. A missing serial is no longer worth reporting on its own —
+    // MachineGuid covers it and the resulting ID is stable. Warn only when
+    // BOTH are unavailable, which is the genuinely weak case.
     #[cfg(all(not(feature = "portable"), target_os = "windows"))]
-    let fingerprint_warning = if baseboard_serial().or_else(baseboard_serial_via_wmic).is_none() {
-        Some(
-            "Motherboard serial could not be read, so this machine's ID is based on \
-             computer name and user name only. Report this to support — the ID may \
-             collide with another machine."
-                .to_string(),
-        )
-    } else {
-        None
+    let fingerprint_warning = {
+        let has_serial = baseboard_serial()
+            .or_else(baseboard_serial_via_wmic)
+            .filter(|s| is_usable_serial(s))
+            .is_some();
+        if has_serial || machine_guid().is_some() {
+            None
+        } else {
+            Some(
+                "Neither the motherboard serial nor the Windows MachineGuid could be \
+                 read, so this machine's ID is based on computer name and user name \
+                 only. Report this to support — the ID may collide with another \
+                 machine."
+                    .to_string(),
+            )
+        }
     };
     #[cfg(not(all(not(feature = "portable"), target_os = "windows")))]
     let fingerprint_warning: Option<String> = None;
@@ -948,11 +1040,16 @@ mod tests {
                 assert_ne!(legacy, current, "a legacy ID equal to current is noise");
                 assert_eq!(legacy.len(), 64);
                 assert_eq!(legacy, hash_components(&base_identity_components()));
-                // A distinct legacy ID implies a serial IS folded in now.
-                assert!(baseboard_serial().or_else(baseboard_serial_via_wmic).is_some());
+                // A distinct legacy ID implies SOMETHING is folded in now --
+                // either a usable serial or the MachineGuid fallback.
+                let has_serial = baseboard_serial()
+                    .or_else(baseboard_serial_via_wmic)
+                    .filter(|x| is_usable_serial(x))
+                    .is_some();
+                assert!(has_serial || machine_guid().is_some());
             }
             None => {
-                // No serial readable, so the current ID already IS the
+                // Nothing extra readable, so the current ID already IS the
                 // name+user hash and there is no separate legacy identity.
                 assert_eq!(current, hash_components(&base_identity_components()));
             }
@@ -979,15 +1076,84 @@ mod tests {
         assert_eq!(d.machine_id.len(), 64);
         assert_eq!(d.platform, "desktop");
         assert!(!d.app_version.is_empty());
-        // A readable serial means no warning, and vice versa.
+        // The warning fires only when NEITHER identifier is readable.
         #[cfg(target_os = "windows")]
-        assert_eq!(
-            d.fingerprint_warning.is_none(),
-            baseboard_serial().or_else(baseboard_serial_via_wmic).is_some()
-        );
+        {
+            let has_serial = baseboard_serial()
+                .or_else(baseboard_serial_via_wmic)
+                .filter(|x| is_usable_serial(x))
+                .is_some();
+            assert_eq!(
+                d.fingerprint_warning.is_none(),
+                has_serial || machine_guid().is_some()
+            );
+        }
         // The legacy ID, when present, must differ from the live one.
         if let Some(legacy) = d.legacy_machine_id {
             assert_ne!(legacy, d.machine_id);
+        }
+    }
+
+    /// MachineGuid must be readable without elevation. It is the only thing
+    /// standing between a serial-less machine and a name+user-only ID.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn machine_guid_is_readable_unelevated() {
+        let guid = machine_guid().expect("HKLM\\...\\Cryptography\\MachineGuid unreadable");
+        assert!(guid.len() >= 32, "unexpected MachineGuid shape: {}", guid);
+        // Stable across calls — it is a registry read, not a generated value.
+        assert_eq!(Some(guid), machine_guid());
+    }
+
+    /// The critical no-regression guarantee: adding the MachineGuid fallback
+    /// must NOT change the ID of any machine that can read a usable serial.
+    /// If this breaks, every such install re-registers on update.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn serial_machines_keep_their_existing_id() {
+        let serial = baseboard_serial()
+            .or_else(baseboard_serial_via_wmic)
+            .filter(|s| is_usable_serial(s));
+        let Some(serial) = serial else {
+            // Host has no usable serial; nothing to assert about that path.
+            return;
+        };
+        let mut expected = base_identity_components();
+        expected.push(serial);
+        assert_eq!(
+            get_machine_id().unwrap(),
+            hash_components(&expected),
+            "ID for a serial-readable machine must be name|user|serial and nothing else"
+        );
+        // MachineGuid must NOT be folded in when a serial exists.
+        if let Some(guid) = machine_guid() {
+            let mut with_guid = base_identity_components();
+            with_guid.push(guid);
+            assert_ne!(get_machine_id().unwrap(), hash_components(&with_guid));
+        }
+    }
+
+    /// Placeholder serials carry no entropy — every machine from that vendor
+    /// would share one. They must be rejected so MachineGuid takes over.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn placeholder_serials_are_rejected() {
+        for bad in [
+            "Default string",
+            "DEFAULT STRING",
+            "To Be Filled By O.E.M.",
+            "None",
+            "N/A",
+            "0000000000",
+            "...",
+            "",
+            "  ",
+            "aa",
+        ] {
+            assert!(!is_usable_serial(bad), "{:?} must not be treated as a serial", bad);
+        }
+        for good in ["07E4112_P31B737304", "PF0ABCDE", "5CD1234XYZ"] {
+            assert!(is_usable_serial(good), "{:?} is a real serial", good);
         }
     }
 }
