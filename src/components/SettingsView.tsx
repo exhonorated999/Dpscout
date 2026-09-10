@@ -592,6 +592,22 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
     }
   };
 
+  // Does this machine still need to be registered?
+  //
+  // The server is the authority: activation looks the machine ID up server
+  // side, so "the server has no agency for this ID" is the condition that
+  // actually blocks the user — regardless of what the local DB says. Both
+  // signals are checked because they fail independently:
+  //   - isRegistered === false      -> no local registration_info row
+  //   - licenseInfo.registered false -> server does not know this machine ID
+  // When the server is unreachable, get_license_status() falls back to the
+  // cached answer (or the local flag), so this does not fire merely because
+  // the user is offline.
+  const needsRegistration =
+    isRegistered === false || licenseInfo?.registered === false;
+  const localRecordButServerDoesNot =
+    isRegistered === true && licenseInfo?.registered === false;
+
   const copyDiagnostics = async () => {
     if (!diagnostics) return;
     const lines = [
@@ -847,8 +863,14 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
 
       {/* Register This Machine — recovery path when first-run registration
           never happened. Activation is impossible until the machine is
-          registered, so without this the user has no way forward. */}
-      {isRegistered === false && (
+          registered, so without this the user has no way forward.
+
+          Gated on the SERVER's answer as well as the local one. A machine can
+          hold a local registration_info row while the server has no agency
+          bound to its machine ID — that is precisely the state that produces
+          "Machine not registered" on activation. Gating on local state alone
+          hid this panel from the users who needed it most. */}
+      {needsRegistration && (
         <div style={{
           background: 'var(--color-bg-tertiary)',
           border: '1px solid #f59e0b',
@@ -860,9 +882,14 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
             📝 This Machine Is Not Registered
           </h4>
           <p style={{ color: 'var(--color-text-secondary)', fontSize: '13px', marginTop: 0 }}>
-            A license key cannot be activated until the agency is registered on
-            this machine. If you were never asked to register when you first
-            installed Scout, register here.
+            {localRecordButServerDoesNot
+              ? `This machine has registration details saved locally, but Datapilot
+                 has no record of it — so license activation will fail with
+                 "Machine not registered." Registering here will fix that. Your
+                 license key will still work afterwards.`
+              : `A license key cannot be activated until the agency is registered on
+                 this machine. If you were never asked to register when you first
+                 installed Scout, register here.`}
           </p>
 
           {!showRegisterForm ? (
@@ -890,6 +917,7 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
                   setMessage('Registration complete. You can now activate your license key.');
                   await loadRegistrationState();
                   await loadLicenseStatus();
+                  await loadDiagnostics();
                 }}
               />
             </div>
