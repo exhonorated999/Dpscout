@@ -9,6 +9,10 @@
     "build:portable": "cross-env VITE_PORTABLE=true vite build",
     "build:diag": "cross-env VITE_DIAG=true vite build",
     "preview": "vite preview",
+    "lint:dialogs": "node scripts/check-dialogs.mjs",
+    "lint:dialogs:self-test": "node scripts/check-dialogs.mjs --self-test",
+    "test:dialogs": "node scripts/check-dialog-runtime.mjs",
+    "check:dialogs": "npm run lint:dialogs:self-test && npm run lint:dialogs && npm run test:dialogs",
     "tauri": "tauri"
   },
   "dependencies": {

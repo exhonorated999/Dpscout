@@ -5,6 +5,12 @@ import './BugReportModal.css';
 
 interface BugReportModalProps {
   onClose: () => void;
+  /**
+   * Pre-populated report, used when the user clicks "Report this" on an
+   * error dialog (see GlobalAlertHost).  It is *merged* with any saved
+   * draft, never substituted for it — see the constructor below.
+   */
+  prefill?: { title: string; description: string };
 }
 
 interface BugReportResponse {
@@ -92,12 +98,27 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
+export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose, prefill }) => {
   // Initialize from any previously-saved draft. useState's lazy initializer
   // means readDraft() runs exactly once on first render.
   const initialDraft = useRef<DraftPayload | null>(readDraft());
-  const [title, setTitle] = useState(initialDraft.current?.title || '');
-  const [description, setDescription] = useState(initialDraft.current?.description || '');
+  const draftTitle = initialDraft.current?.title || '';
+  const draftBody = initialDraft.current?.description || '';
+  const draftHasText = Boolean(draftTitle.trim() || draftBody.trim());
+
+  // Prefill vs draft. This file goes to some lengths never to lose a typed
+  // report, and an error dialog can fire while one is half-written, so a
+  // prefill must not overwrite it:
+  //   * empty draft        -> use the prefill as-is
+  //   * draft with a title -> keep the user's title, append the error body
+  // The user can always delete the appended block; they cannot retype a
+  // paragraph we threw away.
+  const [title, setTitle] = useState(() => (draftTitle.trim() ? draftTitle : prefill?.title || draftTitle));
+  const [description, setDescription] = useState(() => {
+    if (!prefill) return draftBody;
+    if (!draftBody.trim()) return prefill.description;
+    return `${draftBody}\n\n--- and then this happened ---\n\n${prefill.description}`;
+  });
   // Attachment paths are stored as absolute file system paths. We do NOT keep
   // the file bytes in component state — they'd bloat localStorage and we have
   // no way to round-trip them through JSON anyway. On submit, Rust reads each
@@ -112,9 +133,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bugId, setBugId] = useState<number | null>(null);
-  const [showRestoredNotice, setShowRestoredNotice] = useState(
-    Boolean(initialDraft.current && (initialDraft.current.title || initialDraft.current.description))
-  );
+  const [showRestoredNotice, setShowRestoredNotice] = useState(draftHasText);
 
   // Persist on every change. If both fields are empty AND no attachments,
   // we delete the draft so reopening a fresh report doesn't show the
@@ -285,7 +304,11 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose }) => {
           <form onSubmit={handleSubmit} className="bugreport-form">
             {showRestoredNotice && (
               <div className="bugreport-draft-notice">
-                <span>📝 We restored your previous draft. Continue editing, or clear both fields to start fresh.</span>
+                <span>
+                  {prefill
+                    ? '📝 You had an unfinished report, so the new error was appended to it rather than replacing it.'
+                    : '📝 We restored your previous draft. Continue editing, or clear both fields to start fresh.'}
+                </span>
                 <button
                   type="button"
                   className="bugreport-draft-dismiss"

@@ -30,6 +30,7 @@ import { WarrantInvestigationsList } from "./components/warrant/WarrantInvestiga
 import { WarrantInvestigationDetail } from "./components/warrant/WarrantInvestigationDetail";
 import { ExportProgressPanel } from "./components/warrant/ExportProgressPanel";
 import { trackEvent } from "./lib/telemetry";
+import { appConfirm } from "./lib/appDialog";
 import "./App.css";
 
 type AppState = "start" | "config" | "scanning" | "results" | "settings" | "media" | "report" | "browser" | "keywords" | "hashes" | "android" | "ios" | "overview" | "warrant" | "warrant_investigation" | "warrant_triage";
@@ -1593,13 +1594,14 @@ function App() {
         caseId,
         destDir: selected,
       });
-      // NOTE: `window.confirm` is NOT the DOM builtin here — tauri-plugin-dialog
-      // replaces it with an async function that resolves to a boolean, so this
-      // must be awaited. Without the await you get a Promise, which is always
-      // truthy. This helper is not a React component, so it cannot use the
-      // shared useDialog() hook from components/ConfirmDialog.
-      const openIt = await window.confirm(
-        `Report exported to:\n${result.reportDir}\n\nOpen the folder now?`
+      // This helper is not a React component, so it cannot use the shared
+      // useDialog() hook — appConfirm() is the non-component equivalent and
+      // renders through GlobalAlertHost.  Do NOT use window.confirm here:
+      // tauri-plugin-dialog replaces it with an async function, so the
+      // classic `if (!window.confirm(...))` guard silently never fires.
+      const openIt = await appConfirm(
+        `Report exported to:\n${result.reportDir}\n\nOpen the folder now?`,
+        { title: "Export complete", confirmLabel: "Open folder", cancelLabel: "Not now" }
       );
       if (openIt) {
         try {

@@ -98,12 +98,16 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
   async function handleProviderPicked(provider: WarrantProvider) {
     setShowProviderPicker(false);
     try {
-      const { open, ask } = await import('@tauri-apps/plugin-dialog');
-      const useFolder = await ask(
+      // A plain in-app confirm, not plugin-dialog's `ask`: an OS message box
+      // has no Copy/Report actions and looks nothing like the rest of Scout.
+      // Cancel means "Zip file" here, which is also what dismissing does —
+      // there is no answer that silently drops the user's click.
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const useFolder = await showConfirm(
         'Is the warrant data already extracted into a folder?\n\n' +
-          '• Yes → pick the extracted folder\n' +
-          '• No  → pick the .zip archive',
-        { title: 'Add return', kind: 'info', okLabel: 'Folder', cancelLabel: 'Zip file' }
+          '• Folder → pick the extracted folder\n' +
+          '• Zip file → pick the .zip archive',
+        { title: 'Add return', confirmLabel: 'Folder', cancelLabel: 'Zip file' }
       );
 
       let selected: string | null = null;
