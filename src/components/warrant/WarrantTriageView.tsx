@@ -212,6 +212,9 @@ const SECTION_LABELS: Record<string, string> = {
   account_billing: "Account & Billing",
   status_history: "Status Changes",
   ownership: "Ownership Analysis",
+  // Discord law-enforcement return
+  account_changes: "Account Changes",
+  activity_log: "Activity Log",
   notices: "Parser Notices",
 };
 
@@ -1267,6 +1270,9 @@ const SECTION_ICONS: Record<string, string> = {
   account_billing: "🧾",
   status_history: "🛠️",
   ownership: "🔎",
+  // Discord law-enforcement return
+  account_changes: "✏️",
+  activity_log: "📊",
   notices: "ℹ️",
 };
 

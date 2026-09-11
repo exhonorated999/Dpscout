@@ -67,8 +67,19 @@ impl WarrantParser for DiscordWarrantParser {
     }
 
     fn accepts(&self, path: &Path) -> Result<bool, ParseError> {
+        // A law-enforcement return and a user Data Package share the word
+        // "Discord" and nothing else — no filename, no casing, no container
+        // layout.  Check the LE shape first: it is the one an investigator
+        // actually receives, and its detector is strictly stricter (a scored
+        // multi-anchor test), so it cannot steal a Data Package.
         if path.is_dir() {
+            if super::discord_return::detect_dir(path).is_some() {
+                return Ok(true);
+            }
             return Ok(dir_has_discord_format(path));
+        }
+        if super::discord_return::detect_zip(path).is_some() {
+            return Ok(true);
         }
 
         let file = File::open(path)?;
@@ -117,6 +128,19 @@ impl WarrantParser for DiscordWarrantParser {
         archive_path: &Path,
         media_extract_dir: &Path,
     ) -> Result<ParsedReturn, ParseError> {
+        // Route by detected format, not by a flag.  Both formats live under
+        // one `Provider::Discord` so the operator never has to know which
+        // kind of Discord export they were handed.
+        let is_le_return = if archive_path.is_dir() {
+            super::discord_return::detect_dir(archive_path).is_some()
+        } else {
+            super::discord_return::detect_zip(archive_path).is_some()
+        };
+        if is_le_return {
+            fs::create_dir_all(media_extract_dir)?;
+            return super::discord_return::parse(archive_path, media_extract_dir);
+        }
+
         if !self.accepts(archive_path)? {
             return Err(ParseError::WrongFormat);
         }

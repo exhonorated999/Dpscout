@@ -10,6 +10,10 @@ pub mod meta;
 pub mod snapchat;
 pub mod kik;
 pub mod discord;
+/// Discord **law-enforcement return** (lowercase CSV layout).  A different
+/// format entirely from the user-downloaded Data Package handled by
+/// [`discord`], but routed through the same `Provider::Discord` tile.
+pub mod discord_return;
 pub mod google;
 pub mod yahoo;
 pub mod x;

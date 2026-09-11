@@ -176,7 +176,7 @@ const PROVIDERS: ProviderTile[] = [
     id: 'discord',
     name: 'Discord',
     subtitle: 'Discord Inc.',
-    formatHint: 'Discord Data Package (.zip or folder)',
+    formatHint: 'Discord LE Return or Data Package (.zip or folder)',
     enabled: true,
     icon: <DiscordIcon />,
     accent: '#5865F2',
