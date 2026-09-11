@@ -8,13 +8,48 @@
 //!   * `instructions.txt`     — ignored
 //!   * `linked_media/`        — JPEGs referenced by photos / message attachments
 //!
-//! Each section uses nested `div.div_table` blocks with
-//! `display:table` CSS, alternating bold-key cells and value cells.  Records
-//! within a section are flat lists of KV pairs with a known "record-boundary"
-//! key (e.g. `Author` for a message, `IP Address` for an IP event).
+//! Each section uses one of THREE grammars, auto-detected per document:
 //!
-//! This implementation is a port of the JS reference parser at
-//! `C:\Users\JUSTI\Workspace\VIPER\modules\meta-warrant\meta-warrant-parser.js`.
+//! 1. **Legacy tables** — `<table><tr><th>Label</th><td>Value</td></tr>`,
+//!    recursively nested for sub-records.
+//! 2. **DYI / inline-style** — nested `div.div_table` blocks with
+//!    `display:table` CSS, alternating bold-key cells and value cells.
+//! 3. **Minified div grammar (2025+)** — no tables at all:
+//!
+//!    ```html
+//!    <div id="property-{section}" class="content-pane">
+//!      <div id="page_N" class="pageBreak">… Business Record Page N</div>
+//!      <div class="t o">              <!-- row wrapper -->
+//!        <div class="t i">            <!-- row inner -->
+//!          Service                    <!-- LABEL: direct text of div.t.i -->
+//!          <div class="m">            <!-- value container -->
+//!            <div>
+//!              WhatsApp               <!-- VALUE: direct text -->
+//!              <div class="p"></div>  <!-- empty spacer == <br> -->
+//!            </div>
+//!          </div>
+//!        </div>
+//!      </div>
+//!    ```
+//!
+//!    Gotchas that make naive `.text()` extraction wrong here:
+//!      * `div#page_N.pageBreak` is pagination chrome **interleaved inside
+//!        value blocks** — including it injects "… Business Record Page 7"
+//!        into the middle of evidence values.
+//!      * `div.p` is always empty and means "line break"; text after it is
+//!        a continuation line, so values join with `\n`.
+//!      * A `div.t.i` with no label text is a continuation of the previous
+//!        row (Meta wraps long Definition blocks this way).
+//!      * `div.m > div` may contain further `div.t.o` rows instead of text,
+//!        which is how nested/repeating records are expressed.
+//!
+//! Records within a section are flat lists of KV pairs with a known
+//! "record-boundary" key (e.g. `Author` for a message, `IP Address` for an
+//! IP event).
+//!
+//! This implementation began as a port of the JS reference parser at
+//! `C:\Users\JUSTI\Workspace\VIPER\modules\meta-warrant\meta-warrant-parser.js`
+//! (grammars 1 and 2); grammar 3 was reverse-engineered from live returns.
 
 use std::collections::HashMap;
 use std::fs::{self, File};
@@ -37,6 +72,10 @@ pub struct MetaWarrantParser {
     sel_div_table_styled: Selector,
     sel_table_cell: Selector,
     sel_title: Selector,
+    /// New-grammar (2025+) row wrapper — `<div class="t o">`.
+    sel_row_outer: Selector,
+    /// New-grammar image selector, used for both grammars.
+    sel_img: Selector,
 }
 
 impl MetaWarrantParser {
@@ -49,6 +88,8 @@ impl MetaWarrantParser {
                 .unwrap(),
             sel_table_cell: Selector::parse(r#"div[style*="display:table-cell"]"#).unwrap(),
             sel_title: Selector::parse("title").unwrap(),
+            sel_row_outer: Selector::parse("div.t.o").unwrap(),
+            sel_img: Selector::parse("img").unwrap(),
         }
     }
 }
@@ -76,6 +117,7 @@ impl WarrantParser for MetaWarrantParser {
         let mut has_preservation = false;
         let mut has_quest_index = false;
         let mut has_quest_folder = false;
+        let mut records_index: Option<usize> = None;
 
         for i in 0..zip.len() {
             let entry = zip.by_index(i)?;
@@ -86,6 +128,7 @@ impl WarrantParser for MetaWarrantParser {
             let basename = lower.rsplit('/').next().unwrap_or(&lower);
             if basename == "records.html" {
                 has_records = true;
+                records_index = Some(i);
             } else if basename.starts_with("preservation-") && basename.ends_with(".html") {
                 has_preservation = true;
             }
@@ -109,7 +152,21 @@ impl WarrantParser for MetaWarrantParser {
             }
         }
 
-        let is_meta_records = has_records && (has_linked_media || has_preservation);
+        let mut is_meta_records = has_records && (has_linked_media || has_preservation);
+        // 2025+ productions may ship records.html with media loose in the
+        // archive and no preservation snapshot — sniff the HTML instead.
+        if !is_meta_records {
+            if let Some(idx) = records_index {
+                if let Ok(mut entry) = zip.by_index(idx) {
+                    let mut buf = vec![0u8; META_MARKER_SNIFF_BYTES];
+                    if let Ok(n) = entry.read(&mut buf) {
+                        buf.truncate(n);
+                        is_meta_records =
+                            html_has_meta_marker(&String::from_utf8_lossy(&buf));
+                    }
+                }
+            }
+        }
         let is_quest = has_quest_index && has_quest_folder;
         Ok(is_meta_records || is_quest)
     }
@@ -199,6 +256,7 @@ impl WarrantParser for MetaWarrantParser {
         let mut ctx = ParseCtx {
             items: Vec::new(),
             id_seq: HashMap::new(),
+            generic_seq: HashMap::new(),
             service: "Facebook".to_string(),
             target_account: None,
             date_range: None,
@@ -290,6 +348,9 @@ struct ParseCtx {
     items: Vec<WarrantItem>,
     /// Per-section running counter for stable IDs (e.g. msg-001, msg-002…).
     id_seq: HashMap<&'static str, usize>,
+    /// Same, for generically-handled sections whose names are only known at
+    /// runtime (`id_seq` needs `&'static str`, these come from the HTML).
+    generic_seq: HashMap<String, usize>,
     service: String,
     target_account: Option<String>,
     date_range: Option<String>,
@@ -299,6 +360,12 @@ struct ParseCtx {
 impl ParseCtx {
     fn next_id(&mut self, prefix: &'static str) -> String {
         let n = self.id_seq.entry(prefix).or_insert(0);
+        *n += 1;
+        format!("{}-{:04}", prefix, *n)
+    }
+
+    fn next_generic_id(&mut self, prefix: &str) -> String {
+        let n = self.generic_seq.entry(prefix.to_string()).or_insert(0);
         *n += 1;
         format!("{}-{:04}", prefix, *n)
     }
@@ -325,10 +392,18 @@ impl MetaWarrantParser {
         // Service detection from <title>
         if let Some(title_el) = doc.select(&self.sel_title).next() {
             let title = title_el.text().collect::<String>();
-            if title.to_lowercase().contains("instagram") {
+            let lower = title.to_lowercase();
+            // Check WhatsApp first: its records also say "Business Record",
+            // and a WhatsApp production mislabelled "Facebook" would put the
+            // wrong platform on a court exhibit.
+            if lower.contains("whatsapp") {
+                ctx.service = "WhatsApp".into();
+            } else if lower.contains("instagram") {
                 ctx.service = "Instagram".into();
-            } else if title.to_lowercase().contains("facebook") {
+            } else if lower.contains("facebook") {
                 ctx.service = "Facebook".into();
+            } else if lower.contains("threads") {
+                ctx.service = "Threads".into();
             }
         }
 
@@ -349,13 +424,102 @@ impl MetaWarrantParser {
                 "property-unified_messages" => self.parse_unified_messages(section, source, ctx),
                 "property-posts_to_other_walls" => self.parse_posts_to_other_walls(section, source, ctx),
                 _ => {
-                    // Unknown section — surface a single "raw" item so it's visible
-                    // in the triage UI rather than silently dropped.
+                    // No dedicated parser. Extract generically rather than
+                    // dropping the section: Meta emits ~110 distinct sections
+                    // across its product surface and we hand-model 12 of them,
+                    // so silently discarding the rest loses most of a return.
+                    let name = id.strip_prefix("property-").unwrap_or(id);
+                    if !name.is_empty() {
+                        self.parse_generic_section(section, name, source, ctx);
+                    }
                 }
             }
         }
 
         Ok(())
+    }
+
+    /// Fallback parser for any `property-*` section we don't model by hand.
+    ///
+    /// Emits one [`WarrantItem`] per record so the section is triageable and
+    /// searchable like any other, with every field preserved in
+    /// `raw_fields`. Record boundaries are inferred: whichever label repeats
+    /// most often starts a new record (the same heuristic the hand-written
+    /// section parsers encode explicitly via `split_records`).
+    fn parse_generic_section(
+        &self,
+        section: ElementRef<'_>,
+        name: &str,
+        source: &str,
+        ctx: &mut ParseCtx,
+    ) {
+        let display = prettify_section_name(name);
+
+        let kvs: Vec<KvPair> = self
+            .data_divs(section)
+            .into_iter()
+            .flat_map(|dd| self.extract_kv_pairs(dd))
+            .filter(|kv| !kv.key.contains("Definition"))
+            .collect();
+
+        if kvs.is_empty() {
+            return;
+        }
+        // A section whose only content is "No responsive records located"
+        // is a documented absence, not evidence — don't clutter triage.
+        if kvs.iter().all(|kv| is_no_records(&kv.value) || kv.value.is_empty()) {
+            return;
+        }
+
+        for record in split_records_by_repeat(&kvs) {
+            if record.is_empty() {
+                continue;
+            }
+            let obj = self.kv_to_json(&record);
+
+            // Best-effort semantic mapping so generic items still sort and
+            // preview sensibly in the UI.
+            let timestamp = pick_field(&record, &["timestamp", "time", "date", "created", "sent"]);
+            let author = pick_field(&record, &["author", "from", "sender", "name", "user"]);
+            let recipient = pick_field(&record, &["recipient", "to", "recipients"]);
+
+            let body_text = record
+                .iter()
+                .filter(|kv| !is_no_records(&kv.value) && !kv.value.is_empty())
+                .map(|kv| {
+                    let k = kv.key.rsplit('.').next().unwrap_or(&kv.key);
+                    format!("{}: {}", k, kv.value)
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            let attachments: Vec<String> = record
+                .iter()
+                .flat_map(|kv| kv.images.iter().cloned())
+                .filter_map(|src| {
+                    Path::new(&src)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                })
+                .collect();
+
+            let id = ctx.next_generic_id(name);
+            ctx.items.push(WarrantItem {
+                id,
+                section: name.to_string(),
+                section_display: display.clone(),
+                timestamp,
+                author,
+                recipient,
+                body_text: Some(body_text.clone()),
+                summary: Some(truncate(body_text.replace('\n', " · ").trim(), 100)),
+                raw_fields: with_source(obj, source),
+                attachments,
+                bucket: None,
+                note: None,
+                is_flagged: false,
+            });
+        }
     }
 
     /// Get the direct child `.div_table` elements of a section, skipping the
@@ -385,11 +549,50 @@ impl MetaWarrantParser {
                 }
             }
         }
+
+        // New minified grammar: data blocks are direct-child `div.t.o` rows.
+        // Only consult it when the legacy walk found nothing, so a document
+        // mixing both grammars keeps its legacy behaviour verbatim.
+        if out.is_empty() {
+            for row in direct_children_with(section, &["t", "o"]) {
+                // Same Definition skip as above. Meta also emits an unlabelled
+                // continuation row immediately after a long Definition block;
+                // it carries no evidence, only more help text, so drop rows
+                // whose label is empty AND which hold no nested rows.
+                let Some(inner) = direct_children_with(row, &["t", "i"]).into_iter().next() else {
+                    continue;
+                };
+                let label = row_label(inner);
+                if label.contains("Definition") {
+                    continue;
+                }
+                if label.is_empty() && self.new_grammar_nested_rows(inner).is_empty() {
+                    continue;
+                }
+                out.push(row);
+            }
+        }
+        out
+    }
+
+    /// Nested `div.t.o` rows living under a row's `div.m > div` value holder.
+    /// Non-empty means this row is a container for sub-records rather than a
+    /// scalar value.
+    fn new_grammar_nested_rows<'a>(&self, inner: ElementRef<'a>) -> Vec<ElementRef<'a>> {
+        let mut out = Vec::new();
+        for m in direct_children_with(inner, &["m"]) {
+            for holder in m.children().filter_map(ElementRef::wrap) {
+                out.extend(direct_children_with(holder, &["t", "o"]));
+            }
+        }
         out
     }
 
     /// Walk every `.div_table[display:table]` under `container` and pull out
     /// the key (first text child) / value (table-cell > div) pairs.
+    ///
+    /// Falls back to the minified `div.t.o` grammar when the legacy selectors
+    /// match nothing, which is the case for all 2025+ returns.
     fn extract_kv_pairs<'a>(&self, container: ElementRef<'a>) -> Vec<KvPair> {
         let mut pairs = Vec::new();
         for dt in container.select(&self.sel_div_table_styled) {
@@ -416,7 +619,7 @@ impl MetaWarrantParser {
                 .to_string();
 
             let images: Vec<String> = content_div
-                .select(&Selector::parse("img").unwrap())
+                .select(&self.sel_img)
                 .filter_map(|img| img.value().attr("src").map(|s| s.to_string()))
                 .collect();
 
@@ -426,7 +629,131 @@ impl MetaWarrantParser {
                 images,
             });
         }
+
+        if pairs.is_empty() {
+            self.extract_kv_pairs_new_grammar(container, &mut pairs, "", 0);
+        }
         pairs
+    }
+
+    /// Recursive extractor for the minified `div.t.o` / `div.t.i` / `div.m`
+    /// grammar.
+    ///
+    /// Nested rows are flattened with dotted key paths (`Connection.Device Id`)
+    /// so downstream section parsers — which expect a flat `Vec<KvPair>` —
+    /// keep working, while `raw_fields` still records the real hierarchy.
+    /// `prefix` accumulates the ancestor labels; `depth` is a recursion guard
+    /// (observed max nesting in live returns is 3; documents go to 13 levels
+    /// of raw DOM but only a few of KV nesting).
+    fn extract_kv_pairs_new_grammar<'a>(
+        &self,
+        container: ElementRef<'a>,
+        out: &mut Vec<KvPair>,
+        prefix: &str,
+        depth: usize,
+    ) {
+        const MAX_KV_DEPTH: usize = 8;
+        if depth > MAX_KV_DEPTH {
+            return;
+        }
+
+        // A container is either a section/holder holding `div.t.o` rows, or a
+        // single row itself (callers pass both).
+        let rows: Vec<ElementRef<'a>> = if has_classes(container, &["t", "o"]) {
+            vec![container]
+        } else {
+            let direct = direct_children_with(container, &["t", "o"]);
+            if direct.is_empty() {
+                container.select(&self.sel_row_outer).collect()
+            } else {
+                direct
+            }
+        };
+
+        for row in rows {
+            let Some(inner) = direct_children_with(row, &["t", "i"]).into_iter().next() else {
+                continue;
+            };
+            let label = row_label(inner);
+            let nested = self.new_grammar_nested_rows(inner);
+
+            if !nested.is_empty() {
+                // Container row: recurse, extending the key path.
+                //
+                // The OUTERMOST container's label is deliberately dropped
+                // (depth 0). Two reasons:
+                //
+                //  1. It is redundant — it restates the section name
+                //     (`property-user_notes_info` → "User Notes"), and the
+                //     hand-written section parsers look up bare camelCase
+                //     keys (`text`, `creationTime`), which a prefix breaks.
+                //
+                //  2. Correctness. Meta splits a long record group across a
+                //     page boundary into *sibling* containers, the second of
+                //     which is unlabelled:
+                //
+                //        div.t.o "User Notes"  → 19 rows
+                //        div.t.o ""            →  6 rows   (continuation)
+                //
+                //     Prefixing by container label put those halves in
+                //     different namespaces (`User Notes.Timestamp` vs
+                //     `Timestamp`), so the record-boundary label matched 5
+                //     times instead of 6 and two distinct events were merged
+                //     into one item.
+                let next_prefix = if depth == 0 || label.is_empty() {
+                    prefix.to_string()
+                } else if prefix.is_empty() {
+                    label.clone()
+                } else {
+                    format!("{}.{}", prefix, label)
+                };
+                for child_row in nested {
+                    self.extract_kv_pairs_new_grammar(
+                        child_row,
+                        out,
+                        &next_prefix,
+                        depth + 1,
+                    );
+                }
+                continue;
+            }
+
+            // Leaf row: value is the text of `div.m > div`, chrome-stripped.
+            let mut value_parts: Vec<String> = Vec::new();
+            let mut images: Vec<String> = Vec::new();
+            for m in direct_children_with(inner, &["m"]) {
+                for holder in m.children().filter_map(ElementRef::wrap) {
+                    let t = direct_text_lines(holder);
+                    if !t.is_empty() {
+                        value_parts.push(t);
+                    }
+                    images.extend(
+                        holder
+                            .select(&self.sel_img)
+                            .filter_map(|img| img.value().attr("src").map(|s| s.to_string())),
+                    );
+                }
+            }
+            let value = value_parts.join("\n");
+
+            // Unlabelled leaf with no value is pure layout padding.
+            if label.is_empty() && value.is_empty() && images.is_empty() {
+                continue;
+            }
+
+            let key = if prefix.is_empty() {
+                label
+            } else if label.is_empty() {
+                prefix.to_string()
+            } else {
+                format!("{}.{}", prefix, label)
+            };
+            if key.is_empty() {
+                continue;
+            }
+
+            out.push(KvPair { key, value, images });
+        }
     }
 
     /// Group a flat list of KV pairs into "records" by re-starting whenever
@@ -1233,6 +1560,7 @@ impl MetaWarrantParser {
         let mut ctx = ParseCtx {
             items: Vec::new(),
             id_seq: HashMap::new(),
+            generic_seq: HashMap::new(),
             service: "Quest".to_string(),
             target_account: None,
             date_range: None,
@@ -1796,8 +2124,205 @@ fn first_direct_text(el: ElementRef<'_>) -> String {
     String::new()
 }
 
+// ─── New minified-div grammar (2025+) helpers ────────────────────────────
+
+/// True when `el` carries every one of `want` in its class attribute.
+///
+/// Matches on whitespace-split tokens rather than substrings: `contains("p")`
+/// would also fire on `pageBreak`, which is exactly the chrome we are trying
+/// to exclude.
+fn has_classes(el: ElementRef<'_>, want: &[&str]) -> bool {
+    let Some(attr) = el.value().attr("class") else {
+        return false;
+    };
+    let tokens: Vec<&str> = attr.split_whitespace().collect();
+    want.iter().all(|w| tokens.contains(w))
+}
+
+/// Direct element children of `el` that match all of `want`.
+fn direct_children_with<'a>(el: ElementRef<'a>, want: &[&str]) -> Vec<ElementRef<'a>> {
+    el.children()
+        .filter_map(ElementRef::wrap)
+        .filter(|c| has_classes(*c, want))
+        .collect()
+}
+
+/// Text that belongs directly to `el`, with Meta's page-break chrome removed
+/// and `div.p` spacers treated as line breaks.
+///
+/// This is the single most important correctness rule in the new grammar.
+/// `div#page_N.pageBreak` elements are emitted *inside* value blocks, so a
+/// plain `el.text()` produces values like
+///
+/// ```text
+/// 2026-04-21 19:08:22 UTCWhatsApp Business Record Page 7reg_activity …
+/// ```
+///
+/// i.e. pagination furniture spliced into evidence. We walk direct children
+/// instead: own text first, then the tail text of each `div.p` spacer, and we
+/// skip `pageBreak` subtrees entirely while still keeping their tail text
+/// (the real content that follows the page marker).
+fn direct_text_lines(el: ElementRef<'_>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    for child in el.children() {
+        match child.value() {
+            scraper::node::Node::Text(t) => {
+                let s = t.trim();
+                if !s.is_empty() {
+                    parts.push(s.to_string());
+                }
+            }
+            scraper::node::Node::Element(_) => {
+                let Some(cel) = ElementRef::wrap(child) else {
+                    continue;
+                };
+                // `pageBreak` and `p` contribute no text of their own; both
+                // act as separators. Their *tail* text is real content.
+                let is_break = has_classes(cel, &["pageBreak"]);
+                let is_spacer = has_classes(cel, &["p"]);
+                if !(is_break || is_spacer) {
+                    continue;
+                }
+                for sib in cel.next_siblings() {
+                    if let Some(t) = sib.value().as_text() {
+                        let s = t.trim();
+                        if !s.is_empty() {
+                            parts.push(s.to_string());
+                        }
+                    }
+                    // Only the immediately following text node is this
+                    // element's tail; stop at the next element.
+                    if sib.value().is_element() {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // `next_siblings()` above can re-collect a tail already picked up as a
+    // direct text node, so de-duplicate consecutive repeats.
+    parts.dedup();
+    parts.join("\n")
+}
+
+/// The label of a new-grammar row: the direct text of `div.t.i` that appears
+/// before the `div.m` value container. Empty for continuation rows.
+fn row_label(inner: ElementRef<'_>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    for child in inner.children() {
+        if let Some(cel) = ElementRef::wrap(child) {
+            // Stop at the value container — everything past it is value.
+            if has_classes(cel, &["m"]) {
+                break;
+            }
+            continue;
+        }
+        if let Some(t) = child.value().as_text() {
+            let s = t.trim();
+            if !s.is_empty() {
+                parts.push(s.to_string());
+            }
+        }
+    }
+    parts.join(" ")
+}
+
 fn is_no_records(s: &str) -> bool {
     s.contains("No responsive records")
+}
+
+/// `user_notes_info` → `User Notes Info`; `sb_clear_phone_numbers` →
+/// `Phone Numbers`. Used for the UI section label of generically-parsed
+/// sections.
+fn prettify_section_name(name: &str) -> String {
+    // `sb_clear_*` is Meta's internal prefix for subpoena-response basic
+    // subscriber fields; it means nothing to an investigator.
+    let core = name.strip_prefix("sb_clear_").unwrap_or(name);
+    let mut out = String::new();
+    for (i, word) in core.split('_').filter(|w| !w.is_empty()).enumerate() {
+        if i > 0 {
+            out.push(' ');
+        }
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            out.extend(first.to_uppercase());
+            out.push_str(chars.as_str());
+        }
+    }
+    if out.is_empty() {
+        name.to_string()
+    } else {
+        out
+    }
+}
+
+/// Split a flat KV run into records by detecting the repeating label.
+///
+/// Meta emits repeating records as one long flat list — e.g. `user_notes_info`
+/// is `Timestamp, Author, Note Text, Note Type, Timestamp, Author, …`. The
+/// label that occurs most often is the record boundary. When nothing repeats
+/// the whole run is a single record.
+///
+/// Comparison is on the **leaf** label (after the last `.`), not the full
+/// dotted path. Meta breaks long record groups across page boundaries into
+/// sibling containers with different nesting labels, so path-based comparison
+/// silently merges the records either side of the break.
+fn split_records_by_repeat(kvs: &[KvPair]) -> Vec<Vec<KvPair>> {
+    if kvs.is_empty() {
+        return Vec::new();
+    }
+
+    fn leaf(key: &str) -> &str {
+        key.rsplit('.').next().unwrap_or(key)
+    }
+
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    for kv in kvs {
+        *counts.entry(leaf(&kv.key)).or_insert(0) += 1;
+    }
+    // Highest count wins; ties break on first appearance so the boundary is
+    // the *start* of a record rather than some field in its middle.
+    let max = counts.values().copied().max().unwrap_or(0);
+    if max < 2 {
+        return vec![kvs.to_vec()];
+    }
+    let boundary = kvs
+        .iter()
+        .map(|kv| leaf(&kv.key))
+        .find(|k| counts.get(k).copied().unwrap_or(0) == max);
+    let Some(boundary) = boundary else {
+        return vec![kvs.to_vec()];
+    };
+
+    let mut records: Vec<Vec<KvPair>> = Vec::new();
+    let mut current: Vec<KvPair> = Vec::new();
+    for kv in kvs {
+        if leaf(&kv.key) == boundary && !current.is_empty() {
+            records.push(std::mem::take(&mut current));
+        }
+        current.push(kv.clone());
+    }
+    if !current.is_empty() {
+        records.push(current);
+    }
+    records
+}
+
+/// First value in `record` whose (leaf) key case-insensitively equals one of
+/// `wanted`, in `wanted` priority order.
+fn pick_field(record: &[KvPair], wanted: &[&str]) -> Option<String> {
+    for want in wanted {
+        for kv in record {
+            let leaf = kv.key.rsplit('.').next().unwrap_or(&kv.key);
+            if leaf.eq_ignore_ascii_case(want) && !kv.value.is_empty() {
+                return Some(kv.value.clone());
+            }
+        }
+    }
+    None
 }
 
 fn to_camel_case(input: &str) -> String {
@@ -1889,10 +2414,16 @@ fn _readable_dummy() -> impl Read {
 /// Recursive `is_dir` walk that returns true if a file named (case-insensitive)
 /// `records.html` is anywhere under `dir` AND there's either a sibling/cousin
 /// `linked_media` directory or a `preservation-*.html` file.
+///
+/// Newer (2025+) productions sometimes ship `records.html` with the media
+/// loose in the archive rather than under `linked_media/`, and with no
+/// preservation snapshot. For those we fall back to sniffing the HTML itself
+/// for Meta's structural markers.
 fn dir_has_meta_format(dir: &Path) -> bool {
     let mut has_records = false;
     let mut has_linked_media = false;
     let mut has_preservation = false;
+    let mut records_path: Option<std::path::PathBuf> = None;
     let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
     // Depth-limit so we don't traverse pathological structures forever.
     let mut visited = 0usize;
@@ -1930,6 +2461,7 @@ fn dir_has_meta_format(dir: &Path) -> bool {
                     .to_lowercase();
                 if name == "records.html" {
                     has_records = true;
+                    records_path = Some(path.clone());
                 } else if name.starts_with("preservation-") && name.ends_with(".html") {
                     has_preservation = true;
                 }
@@ -1939,7 +2471,48 @@ fn dir_has_meta_format(dir: &Path) -> bool {
             }
         }
     }
-    has_records && (has_linked_media || has_preservation)
+    if has_records && (has_linked_media || has_preservation) {
+        return true;
+    }
+    // Fallback: trust the HTML's own structure.
+    records_path
+        .as_deref()
+        .map(file_has_meta_marker)
+        .unwrap_or(false)
+}
+
+/// How much of `records.html` to sniff for structural markers. Meta puts the
+/// `<title>` and the section nav (with `#property-*` links) in the first few
+/// KB, so a prefix is enough and we avoid pulling a multi-MB file into memory
+/// just to answer "is this ours?".
+const META_MARKER_SNIFF_BYTES: usize = 256 * 1024;
+
+fn file_has_meta_marker(path: &Path) -> bool {
+    let Ok(mut f) = File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; META_MARKER_SNIFF_BYTES];
+    let Ok(n) = f.read(&mut buf) else {
+        return false;
+    };
+    buf.truncate(n);
+    html_has_meta_marker(&String::from_utf8_lossy(&buf))
+}
+
+/// Structural markers shared by every Meta records grammar.
+///
+/// `records_output` / `sticky_side_bar` are the 2025+ minified layout;
+/// `property-` section ids and the "Business Record" / "Legal Request"
+/// titles span all generations.
+fn html_has_meta_marker(html: &str) -> bool {
+    let head = &html[..html.len().min(META_MARKER_SNIFF_BYTES)];
+    let lower = head.to_lowercase();
+    (lower.contains("records_output")
+        || lower.contains("sticky_side_bar")
+        || lower.contains(r#"id="property-"#)
+        || lower.contains("business record")
+        || lower.contains("legal request"))
+        && lower.contains("property-")
 }
 
 /// Mirror of the zip-iteration first pass for a folder input. Reads
@@ -2457,6 +3030,329 @@ fn pairs_to_json(kvs: &[KvPair]) -> Value {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    // ── New minified-div grammar (2025+) ─────────────────────────────────
+
+    /// Markup lifted verbatim in shape from a live 2026 WhatsApp production,
+    /// with values replaced. Covers every trap in the new grammar:
+    ///   * label as direct text of `div.t.i`
+    ///   * `div.p` empty spacer acting as a line break
+    ///   * `div#page_N.pageBreak` chrome interleaved *inside* a value block
+    ///   * nested `div.t.o` rows under `div.m > div`
+    ///   * a repeating flat run that must split into records
+    ///   * a `*Definition` help block that must not become evidence
+    const NEW_GRAMMAR: &str = r#"<html><head><title>WhatsApp Business Record</title></head>
+<body><div class="records_output" id="records">
+<div id="property-request_parameters" class="content-pane">
+<div id="page_1" class="pageBreak">WhatsApp Business Record Page 1</div>
+<div class="t o"><div class="t i">Service<div class="m"><div>WhatsApp<div class="p"></div></div></div></div></div>
+<div class="t o"><div class="t i">Target<div class="m"><div>+15550000000<div class="p"></div></div></div></div></div>
+<div class="t o"><div class="t i">Date Range<div class="m"><div>2026-01-01 00:00:00 UTC to 2026-06-25 23:59:59 UTC<div class="p"></div></div></div></div></div>
+</div>
+<div id="property-connection_info" class="content-pane">
+<div class="t o"><div class="t i">Connection Info Definition<div class="m"><div>Connection Info: help text.<div class="p"></div>Device ID: more help.<div class="p"></div></div></div></div></div>
+<div class="t o"><div class="t i">Connection<div class="m"><div>
+  <div class="t o"><div class="t i">Device Id<div class="m"><div>0<div class="p"></div></div></div></div></div>
+  <div id="page_2" class="pageBreak">WhatsApp Business Record Page 2</div>
+  <div class="t o"><div class="t i">Device Type<div class="m"><div>iPhone<div class="p"></div></div></div></div></div>
+</div></div></div></div>
+</div>
+<div id="property-user_notes_info" class="content-pane">
+<div class="t o"><div class="t i">User Notes<div class="m"><div>
+  <div class="t o"><div class="t i">Timestamp<div class="m"><div>2026-04-21 19:08:22 UTC<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Note Type<div class="m"><div>registration<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Timestamp<div class="m"><div>2026-05-09 01:10:51 UTC<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Note Type<div class="m"><div>login<div class="p"></div></div></div></div></div>
+</div></div></div></div>
+</div>
+<div id="property-web_info" class="content-pane">
+<div class="t o"><div class="t i">Web Info<div class="m"><div>No responsive records located<div class="p"></div></div></div></div></div>
+</div>
+</div></body></html>"#;
+
+    fn parse_fixture(html: &str) -> ParseCtx {
+        let parser = MetaWarrantParser::new();
+        let mut ctx = ParseCtx {
+            items: Vec::new(),
+            id_seq: HashMap::new(),
+            generic_seq: HashMap::new(),
+            service: "Facebook".to_string(),
+            target_account: None,
+            date_range: None,
+            generated_at_source: None,
+        };
+        parser
+            .parse_html_file(html, "records", &mut ctx)
+            .expect("new-grammar parse should succeed");
+        ctx
+    }
+
+    #[test]
+    fn new_grammar_detects_whatsapp_service() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        assert_eq!(
+            ctx.service, "WhatsApp",
+            "WhatsApp records also say 'Business Record'; must not be \
+             reported as Facebook"
+        );
+    }
+
+    #[test]
+    fn new_grammar_extracts_request_parameters() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        assert_eq!(ctx.target_account.as_deref(), Some("+15550000000"));
+        assert_eq!(
+            ctx.date_range.as_deref(),
+            Some("2026-01-01 00:00:00 UTC to 2026-06-25 23:59:59 UTC")
+        );
+    }
+
+    /// The regression that motivated all of this: `div.pageBreak` sits inside
+    /// value blocks, so a naive `.text()` splices "WhatsApp Business Record
+    /// Page 2" into evidence.
+    #[test]
+    fn new_grammar_strips_page_break_chrome() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        for item in &ctx.items {
+            let raw = serde_json::to_string(&item.raw_fields).unwrap();
+            assert!(
+                !raw.contains("Business Record Page"),
+                "page-break chrome leaked into {} raw_fields: {}",
+                item.section,
+                raw
+            );
+            if let Some(b) = &item.body_text {
+                assert!(
+                    !b.contains("Business Record Page"),
+                    "page-break chrome leaked into {} body: {}",
+                    item.section,
+                    b
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn new_grammar_flattens_nested_rows() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        let conn: Vec<_> = ctx
+            .items
+            .iter()
+            .filter(|i| i.section == "connection_info")
+            .collect();
+        assert!(!conn.is_empty(), "connection_info produced no items");
+        let raw = serde_json::to_string(&conn[0].raw_fields).unwrap();
+        // Nested labels are flattened as `Connection.Device Id` → camelCase.
+        assert!(
+            raw.contains("iPhone") && raw.contains('0'),
+            "nested Connection rows missing from raw_fields: {}",
+            raw
+        );
+    }
+
+    #[test]
+    fn new_grammar_skips_definition_help_text() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        for item in &ctx.items {
+            let raw = serde_json::to_string(&item.raw_fields).unwrap();
+            assert!(
+                !raw.contains("help text"),
+                "Definition help text became evidence in {}: {}",
+                item.section,
+                raw
+            );
+        }
+    }
+
+    #[test]
+    fn new_grammar_splits_repeating_records() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        let notes: Vec<_> = ctx
+            .items
+            .iter()
+            .filter(|i| i.section == "user_notes_info")
+            .collect();
+        assert_eq!(
+            notes.len(),
+            2,
+            "flat repeating run should split into 2 records, got {}",
+            notes.len()
+        );
+    }
+
+    /// Regression: Meta breaks a long record group across a page boundary
+    /// into two *sibling* containers, the second unlabelled. Namespacing by
+    /// container label put the halves in different key namespaces, so the
+    /// boundary label matched one time too few and the two records either
+    /// side of the break were merged into a single triage item — i.e. two
+    /// distinct events silently collapsed into one piece of evidence.
+    ///
+    /// Shape below mirrors the real `user_notes_info` from
+    /// `WhatsApp\1545908560883493\records.html`: 3 records total, split 2 + 1.
+    #[test]
+    fn new_grammar_records_survive_page_break_split_containers() {
+        let html = r#"<html><head><title>WhatsApp Business Record</title></head>
+<body><div class="records_output" id="records">
+<div id="property-user_notes_info" class="content-pane">
+<div class="t o"><div class="t i">User Notes<div class="m"><div>
+  <div class="t o"><div class="t i">Timestamp<div class="m"><div>2026-05-01 00:00:00 UTC<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Note Type<div class="m"><div>registration<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Timestamp<div class="m"><div>2026-05-20 12:29:55 UTC<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Note Type<div class="m"><div>registration<div class="p"></div></div></div></div></div>
+</div></div></div></div>
+<div id="page_9" class="pageBreak">WhatsApp Business Record Page 9</div>
+<div class="t o"><div class="t i"><div class="m"><div>
+  <div class="t o"><div class="t i">Timestamp<div class="m"><div>2026-05-23 05:53:29 UTC<div class="p"></div></div></div></div></div>
+  <div class="t o"><div class="t i">Note Type<div class="m"><div>registration<div class="p"></div></div></div></div></div>
+</div></div></div></div>
+</div>
+</div></body></html>"#;
+        let ctx = parse_fixture(html);
+        let notes: Vec<_> = ctx
+            .items
+            .iter()
+            .filter(|i| i.section == "user_notes_info")
+            .collect();
+        assert_eq!(
+            notes.len(),
+            3,
+            "records split across a page break must stay distinct; got {} \
+             (a continuation container was merged into the previous record)",
+            notes.len()
+        );
+        // Each record must keep its own timestamp.
+        let stamps: Vec<&str> = notes.iter().filter_map(|i| i.timestamp.as_deref()).collect();
+        assert_eq!(stamps.len(), 3, "every record needs its own timestamp: {:?}", stamps);
+        assert!(stamps.contains(&"2026-05-23 05:53:29 UTC"));
+    }
+
+    /// The real file this was found in: 6 `Timestamp` rows must yield exactly
+    /// 6 user-note items, not 5.
+    #[test]
+    fn real_return_user_notes_record_count() {
+        let dir = PathBuf::from(
+            r"C:\Users\JUSTI\Desktop\New VIPER Evidence Support Files\Warrant Returns\WhatsApp\1545908560883493",
+        );
+        if !dir.join("records.html").exists() {
+            eprintln!("Real return not present — skipping");
+            return;
+        }
+        let html = std::fs::read_to_string(dir.join("records.html")).unwrap();
+        let ctx = parse_fixture(&html);
+        let n = ctx
+            .items
+            .iter()
+            .filter(|i| i.section == "user_notes_info")
+            .count();
+        assert_eq!(
+            n, 6,
+            "records.html has 6 User Notes timestamps; parser found {}",
+            n
+        );
+    }
+
+    #[test]
+    fn new_grammar_drops_no_responsive_records_sections() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        assert!(
+            !ctx.items.iter().any(|i| i.section == "web_info"),
+            "a section containing only 'No responsive records located' is a \
+             documented absence, not a triage item"
+        );
+    }
+
+    /// Unhandled sections used to hit a `_ => {}` arm and vanish. Meta emits
+    /// ~110 sections and we hand-model 12.
+    #[test]
+    fn new_grammar_generic_fallback_covers_unmodelled_sections() {
+        let ctx = parse_fixture(NEW_GRAMMAR);
+        assert!(
+            ctx.items.iter().any(|i| i.section == "user_notes_info"),
+            "user_notes_info has no dedicated parser and must be picked up \
+             by the generic fallback"
+        );
+    }
+
+    #[test]
+    fn legacy_table_grammar_still_parses() {
+        // Grammar 1 must be untouched by the new backend.
+        let html = r#"<html><head><title>Facebook Legal Request</title></head><body>
+        <div id="property-request_parameters" class="content-pane">
+        <div class="div_table" style="display:table"><div style="display:table-cell"><div>x</div></div></div>
+        </div></body></html>"#;
+        let ctx = parse_fixture(html);
+        assert_eq!(ctx.service, "Facebook");
+    }
+
+    #[test]
+    fn prettify_section_name_cases() {
+        assert_eq!(prettify_section_name("user_notes_info"), "User Notes Info");
+        // `sb_clear_` is Meta's internal subpoena-response prefix — noise.
+        assert_eq!(prettify_section_name("sb_clear_phone_numbers"), "Phone Numbers");
+        assert_eq!(prettify_section_name("rooms"), "Rooms");
+    }
+
+    #[test]
+    fn html_marker_accepts_new_and_legacy() {
+        assert!(html_has_meta_marker(
+            r#"<div class="records_output" id="records"><div id="property-bio">"#
+        ));
+        assert!(html_has_meta_marker(
+            r#"<title>Facebook Legal Request</title><div id="property-bio">"#
+        ));
+        assert!(!html_has_meta_marker("<html><body>unrelated</body></html>"));
+    }
+
+    /// Real 2026-format productions found on this machine. Skipped when the
+    /// evidence folder isn't present (CI, other machines).
+    fn real_new_format_dirs() -> Vec<PathBuf> {
+        let base = PathBuf::from(
+            r"C:\Users\JUSTI\Desktop\New VIPER Evidence Support Files\Warrant Returns\WhatsApp",
+        );
+        ["1545908560883493", "1538250074766965 (1)"]
+            .iter()
+            .map(|d| base.join(d))
+            .filter(|p| p.join("records.html").exists())
+            .collect()
+    }
+
+    #[test]
+    fn parses_real_new_format_returns() {
+        let dirs = real_new_format_dirs();
+        if dirs.is_empty() {
+            eprintln!("No real new-format returns present — skipping");
+            return;
+        }
+        for dir in dirs {
+            let html = std::fs::read_to_string(dir.join("records.html")).unwrap();
+            let ctx = parse_fixture(&html);
+            assert!(
+                !ctx.items.is_empty(),
+                "{} produced zero items",
+                dir.display()
+            );
+            let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+            for it in &ctx.items {
+                *counts.entry(it.section.clone()).or_insert(0) += 1;
+            }
+            eprintln!("=== {} ===", dir.display());
+            eprintln!("  service: {}", ctx.service);
+            eprintln!("  target : {:?}", ctx.target_account);
+            for (k, v) in &counts {
+                eprintln!("  {:34} {}", k, v);
+            }
+            // Chrome must never reach evidence.
+            for it in &ctx.items {
+                let raw = serde_json::to_string(&it.raw_fields).unwrap();
+                assert!(
+                    !raw.contains("Business Record Page"),
+                    "chrome leaked in {} / {}",
+                    dir.display(),
+                    it.section
+                );
+            }
+        }
+    }
 
     fn sample_zip() -> Option<PathBuf> {
         // The user-provided sample lives in their Downloads directory.
