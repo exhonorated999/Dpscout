@@ -13,6 +13,8 @@
     "lint:dialogs:self-test": "node scripts/check-dialogs.mjs --self-test",
     "test:dialogs": "node scripts/check-dialog-runtime.mjs",
     "check:dialogs": "npm run lint:dialogs:self-test && npm run lint:dialogs && npm run test:dialogs",
+    "test:chat": "node scripts/check-chat-threads.mjs",
+    "check:all": "npm run check:dialogs && npm run test:chat",
     "tauri": "tauri"
   },
   "dependencies": {

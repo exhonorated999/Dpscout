@@ -20,6 +20,10 @@ import { ScanningIndicator } from "../ScanningIndicator";
 import { LocationMapView, LocationOverviewMap } from "./LocationMapView";
 import { useDialog, DialogModal } from "../ConfirmDialog";
 import { trackEvent } from "../../lib/telemetry";
+import {
+  NO_OWNER, sameParty, parseTs, dayKey,
+  inferOwner, matchOwner, buildThreads,
+} from "../../lib/chatThreads";
 import "./WarrantTriageView.css";
 
 // ─── Types (mirrors of Rust shapes) ─────────────────────────────────────
@@ -494,6 +498,10 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
   const autoViewMode: "list" | "grid" = useMemo(() => {
     if (filteredItems.length === 0) return "list";
     if (sectionFilter === "photos") return "grid";
+    // Messages are a conversation even when most of them are photos.
+    // Auto-gridding them turned Meta threads into a wall of cards with no
+    // sender, no order and no reply structure.
+    if (sectionFilter === "unified_messages") return "list";
     const withImages = filteredItems.filter((it) => {
       if (it.attachments.length === 0) return false;
       const ext = (it.attachments[0].split(".").pop() || "").toLowerCase();
@@ -1094,6 +1102,7 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
           ) : sectionFilter === "unified_messages" ? (
             <ChatView
               items={filteredItems}
+              allItems={detail.items}
               buckets={detail.buckets}
               selectedId={selectedItemId}
               onSelect={setSelectedItemId}
@@ -2673,13 +2682,44 @@ const ChatAttachmentThumb: React.FC<{ filename: string; caseId: string }> = ({
 
 // ─── ChatView — conversational layout for unified_messages ───────────────
 //
-// Renders each message as a chat bubble.  Bubbles are right-aligned and
-// blue when the author matches the case's target_account (the export
-// owner), left-aligned and grey otherwise.  Messages are grouped by
-// thread (recipient) with a sticky header and date separators.
+// Renders a real two-sided conversation: one thread per conversation, the
+// account owner's messages right-aligned and blue, everyone else's
+// left-aligned and grey.
+//
+// Three things this has to get right, all of which it previously got wrong:
+//
+//  1. THREAD IDENTITY.  Providers hand us an explicit conversation id
+//     (`threadId`, `conversationId`) in raw_fields.  Grouping by
+//     author/recipient strings instead splits a two-person chat into two
+//     one-sided threads — which is exactly what Meta returns looked like,
+//     because Meta leaves `recipient` empty on a 1:1 thread and the key
+//     fell through to the author.  Prefer the provider's own id.
+//
+//  2. WHO IS "ME".  The owner used to come only from the case's
+//     target_account, which the investigator often leaves blank, and which
+//     providers decorate ("ETest UserTwo (Facebook: 5979…)") so an exact
+//     compare misses even when it is filled in.  With no owner every
+//     message is "incoming" and a chat reads as a monologue.  So: match the
+//     target account loosely, and failing that infer the owner as the
+//     participant present in the most distinct threads — the account holder
+//     is in every conversation, each counterparty is in one.
+//
+//  3. SAYING SO.  An inferred owner is a guess about who sent what, inside
+//     a tool used to build cases.  It is stated in the header, marked
+//     inferred, and can be corrected or switched off from there.
+
+/** Long-form date for the separators between days in a conversation. */
+function dayLabel(ms: number): string {
+  return new Date(ms).toLocaleDateString(undefined, {
+    weekday: "long", year: "numeric", month: "long", day: "numeric",
+  });
+}
 
 interface ChatViewProps {
   items: WarrantItem[];
+  /** Every message in the case, unfiltered — owner inference must not
+   *  change just because the investigator typed in the search box. */
+  allItems: WarrantItem[];
   buckets: Bucket[];
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -2687,49 +2727,52 @@ interface ChatViewProps {
   owner: string | null;
 }
 
-const ChatView: React.FC<ChatViewProps> = ({ items, buckets: _buckets, selectedId, onSelect, caseId, owner }) => {
-  // Group by thread (= recipient when incoming, OR the other party when
-  // outgoing). We use the non-owner participant as the canonical thread key.
-  const threads = useMemo(() => {
-    const map = new Map<string, WarrantItem[]>();
-    for (const it of items) {
-      const a = it.author || "";
-      const r = it.recipient || "";
-      const other =
-        owner && a && a.toLowerCase() === owner.toLowerCase()
-          ? r
-          : owner && r && r.toLowerCase() === owner.toLowerCase()
-          ? a
-          : r || a || "Unknown";
-      const key = other || "Unknown";
-      if (!map.has(key)) map.set(key, []);
-      map.get(key)!.push(it);
-    }
-    // Sort threads by most-recent timestamp.
-    const arr = Array.from(map.entries()).map(([name, list]) => {
-      // items arrive in input order; keep that for chronological display
-      return { name, list };
-    });
-    arr.sort((x, y) => x.name.localeCompare(y.name));
-    return arr;
-  }, [items, owner]);
+const ChatView: React.FC<ChatViewProps> = ({
+  items, allItems, buckets: _buckets, selectedId, onSelect, caseId, owner,
+}) => {
+  // ── Who is the account owner? ────────────────────────────────────────
+  const { candidates, inferred } = useMemo(() => inferOwner(allItems), [allItems]);
 
-  const [activeThread, setActiveThread] = useState<string | null>(
-    threads.length > 0 ? threads[0].name : null
+  // The case's recorded target account wins when it matches someone here.
+  const matchedTarget = useMemo(
+    () => matchOwner(candidates, owner),
+    [candidates, owner]
   );
 
-  // If filters change and the active thread is gone, snap to the first.
-  useEffect(() => {
-    if (!activeThread || !threads.find((t) => t.name === activeThread)) {
-      setActiveThread(threads.length > 0 ? threads[0].name : null);
+  const autoOwner = matchedTarget || inferred;
+  const [ownerOverride, setOwnerOverride] = useState<string | null>(null);
+  const effectiveOwner = ownerOverride === NO_OWNER ? null : (ownerOverride ?? autoOwner);
+  const ownerIsGuess = !ownerOverride && !matchedTarget && !!inferred;
+
+  // ── Group into threads ───────────────────────────────────────────────
+  const threads = useMemo(
+    () => buildThreads(items, effectiveOwner),
+    [items, effectiveOwner]
+  );
+
+  // Keep the picker short, but never hide the person currently selected —
+  // a select whose value matches no option renders blank.
+  const ownerOptions = useMemo(() => {
+    const top = candidates.slice(0, 50);
+    if (effectiveOwner && !top.some((c) => c.name === effectiveOwner)) {
+      return [{ name: effectiveOwner, threads: 0 }, ...top];
     }
-  }, [threads, activeThread]);
+    return top;
+  }, [candidates, effectiveOwner]);
+
+  const [activeKey, setActiveKey] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeKey || !threads.find((t) => t.key === activeKey)) {
+      setActiveKey(threads.length > 0 ? threads[0].key : null);
+    }
+  }, [threads, activeKey]);
 
   if (items.length === 0) {
     return <div className="wt-itemlist-empty">No messages match the current filters.</div>;
   }
 
-  const active = threads.find((t) => t.name === activeThread) || threads[0];
+  const active = threads.find((t) => t.key === activeKey) || threads[0];
 
   return (
     <div className="wt-chat">
@@ -2737,9 +2780,10 @@ const ChatView: React.FC<ChatViewProps> = ({ items, buckets: _buckets, selectedI
         <div className="wt-chat-threads-header">Threads ({threads.length})</div>
         {threads.map((t) => (
           <button
-            key={t.name}
-            className={`wt-chat-thread ${t.name === activeThread ? "active" : ""}`}
-            onClick={() => setActiveThread(t.name)}
+            key={t.key}
+            className={`wt-chat-thread ${t.key === activeKey ? "active" : ""}`}
+            onClick={() => setActiveKey(t.key)}
+            title={t.name}
           >
             <span className="wt-chat-thread-avatar">{t.name.charAt(0).toUpperCase()}</span>
             <span className="wt-chat-thread-name">{t.name}</span>
@@ -2752,45 +2796,96 @@ const ChatView: React.FC<ChatViewProps> = ({ items, buckets: _buckets, selectedI
           <>
             <div className="wt-chat-stream-header">
               <span className="wt-chat-stream-avatar">{active.name.charAt(0).toUpperCase()}</span>
-              <div>
+              <div className="wt-chat-stream-id">
                 <div className="wt-chat-stream-title">{active.name}</div>
                 <div className="wt-chat-stream-sub">{active.list.length} messages</div>
               </div>
+              <div className="wt-chat-owner">
+                <label htmlFor="wt-owner-select">
+                  Viewing as
+                  {ownerIsGuess && (
+                    <span
+                      className="wt-chat-owner-guess"
+                      title={
+                        "Scout inferred the account holder: this participant appears in more " +
+                        "conversations than anyone else. Nothing in the return states it " +
+                        "outright. Correct it here if it is wrong."
+                      }
+                    >
+                      inferred
+                    </span>
+                  )}
+                </label>
+                <select
+                  id="wt-owner-select"
+                  value={effectiveOwner ?? NO_OWNER}
+                  onChange={(e) => setOwnerOverride(e.target.value)}
+                >
+                  <option value={NO_OWNER}>— nobody (show all as incoming) —</option>
+                  {ownerOptions.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                      {c.threads > 1 ? ` · ${c.threads} threads` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
             <div className="wt-chat-stream-body">
-              {active.list.map((m) => {
-                const isOut =
-                  owner && m.author && m.author.toLowerCase() === owner.toLowerCase();
-                const isSel = m.id === selectedId;
-                return (
-                  <div
-                    key={m.id}
-                    className={`wt-chat-row ${isOut ? "out" : "in"} ${isSel ? "selected" : ""} ${m.isFlagged ? "flagged" : ""}`}
-                    onClick={() => onSelect(m.id)}
-                  >
-                    {!isOut && (
-                      <div className="wt-chat-avatar">
-                        {(m.author || "?").charAt(0).toUpperCase()}
-                      </div>
-                    )}
-                    <div className="wt-chat-bubble">
-                      {!isOut && m.author && (
-                        <div className="wt-chat-author">{m.author}</div>
-                      )}
-                      {(m.bodyText || m.summary) && (
-                        <div className="wt-chat-body">
-                          {m.bodyText || m.summary}
+              {(() => {
+                let lastDay: string | null = null;
+                let lastAuthor: string | null = null;
+                const rows: React.ReactNode[] = [];
+                for (const m of active.list) {
+                  const ts = parseTs(m.timestamp);
+                  if (ts !== null) {
+                    const d = dayKey(ts);
+                    if (d !== lastDay) {
+                      lastDay = d;
+                      lastAuthor = null;
+                      rows.push(
+                        <div className="wt-chat-daysep" key={`day-${m.id}`}>
+                          <span>{dayLabel(ts)}</span>
+                        </div>
+                      );
+                    }
+                  }
+                  const isOut = sameParty(m.author, effectiveOwner);
+                  const isSel = m.id === selectedId;
+                  // Collapse the repeated name/avatar inside a run from the
+                  // same speaker — that repetition is what made the stream
+                  // look like a list of records rather than a conversation.
+                  const sameRun = lastAuthor !== null && lastAuthor === (m.author || "");
+                  lastAuthor = m.author || "";
+                  rows.push(
+                    <div
+                      key={m.id}
+                      className={`wt-chat-row ${isOut ? "out" : "in"} ${isSel ? "selected" : ""} ${m.isFlagged ? "flagged" : ""} ${sameRun ? "cont" : ""}`}
+                      onClick={() => onSelect(m.id)}
+                    >
+                      {!isOut && (
+                        <div className={`wt-chat-avatar ${sameRun ? "hidden" : ""}`}>
+                          {(m.author || "?").charAt(0).toUpperCase()}
                         </div>
                       )}
-                      <ChatAttachments item={m} caseId={caseId} />
-                      <div className="wt-chat-meta">
-                        {m.timestamp && <span>{m.timestamp}</span>}
-                        {m.isFlagged && <span>🚩</span>}
+                      <div className="wt-chat-bubble">
+                        {!isOut && !sameRun && m.author && (
+                          <div className="wt-chat-author">{m.author}</div>
+                        )}
+                        {(m.bodyText || m.summary) && (
+                          <div className="wt-chat-body">{m.bodyText || m.summary}</div>
+                        )}
+                        <ChatAttachments item={m} caseId={caseId} />
+                        <div className="wt-chat-meta">
+                          {m.timestamp && <span>{m.timestamp}</span>}
+                          {m.isFlagged && <span>🚩</span>}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                );
-              })}
+                  );
+                }
+                return rows;
+              })()}
             </div>
           </>
         ) : (
