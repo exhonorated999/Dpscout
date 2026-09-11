@@ -18,6 +18,7 @@ import { MediaGallery } from './MediaGallery';
 import { DeviceType } from './StartScreen';
 import SmsConversationView from './SmsConversationView';
 import { DeletedMediaPanel } from './DeletedMediaPanel';
+import { useDialog, DialogModal } from './ConfirmDialog';
 import './UnifiedDashboard.css';
 
 // Clickable file path component
@@ -1886,6 +1887,11 @@ const CSAMHashView: React.FC<{
   const flaggedMedia = media.filter(m => m.flags && m.flags.some(f => f.flagType === 'HashMatch'));
   const totalMatches = hashMatches.length > 0 ? hashMatches.length : flaggedMedia.length;
   const [removingFalsePositives, setRemovingFalsePositives] = useState(false);
+
+  // In-app confirm. tauri-plugin-dialog replaces window.confirm with an async
+  // function, so the old `if (!confirm) return;` guards never fired and Cancel
+  // still rewrote the officer's hash list file on disk.
+  const { dialog, showConfirm, handleResponse } = useDialog();
   const [excludedIndices, setExcludedIndices] = useState<Set<number>>(new Set());
   const [selectedFP, setSelectedFP] = useState<Set<number>>(new Set());
 
@@ -1951,10 +1957,11 @@ const CSAMHashView: React.FC<{
 
     if (!selected) return;
 
-    const confirm = window.confirm(
-      `Remove ${selectedHashes.length} selected false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`
+    const ok = await showConfirm(
+      `Remove ${selectedHashes.length} selected false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`,
+      { title: 'Edit hash list', confirmLabel: 'Remove selected', danger: true }
     );
-    if (!confirm) return;
+    if (!ok) return;
 
     setRemovingFalsePositives(true);
     try {
@@ -1995,10 +2002,11 @@ const CSAMHashView: React.FC<{
 
     if (!selected) return;
 
-    const confirm = window.confirm(
-      `Remove ALL ${group.hashes.length} hashes from "${listSource}" in:\n${selected}\n\n⚠️ This removes every match from this list. Use per-row checkboxes if you only want to remove specific ones.\n\nA backup (.bak) will be created.`
+    const ok = await showConfirm(
+      `Remove ALL ${group.hashes.length} hashes from "${listSource}" in:\n${selected}\n\n⚠️ This removes every match from this list. Use per-row checkboxes if you only want to remove specific ones.\n\nA backup (.bak) will be created.`,
+      { title: 'Edit hash list', confirmLabel: `Remove all ${group.hashes.length}`, danger: true }
     );
-    if (!confirm) return;
+    if (!ok) return;
 
     setRemovingFalsePositives(true);
     try {
@@ -2263,6 +2271,8 @@ const CSAMHashView: React.FC<{
         </div>
         </>
       )}
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

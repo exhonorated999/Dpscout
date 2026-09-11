@@ -302,16 +302,35 @@ pub fn remove_return(
 /// Delete the investigation.  If `delete_returns` is true, also delete
 /// every referenced return on disk (calls `triage_state::delete_case`).
 /// Otherwise the returns become orphans (no investigation parent).
+///
+/// Per-return failures used to be swallowed with `let _ =`, which is the
+/// worst possible outcome: the manifest disappears, the locked return
+/// survives, and it reappears under "Legacy Returns" on the next list —
+/// looking to the user like the delete silently undid itself.  We now
+/// report them.  The manifest is removed either way, so the operation
+/// never half-commits and a retry is always safe.
 pub fn delete(id: &str, delete_returns: bool) -> Result<(), StateError> {
     let inv = load(id)?;
+    let mut failed: Vec<String> = Vec::new();
     if delete_returns {
         for r in &inv.returns {
-            let _ = triage_state::delete_case(&r.case_id);
+            if let Err(e) = triage_state::delete_case(&r.case_id) {
+                failed.push(format!("{} ({})", r.label, e));
+            }
         }
     }
     let dir = investigation_dir(id);
     if dir.exists() {
         fs::remove_dir_all(&dir)?;
+    }
+    if !failed.is_empty() {
+        return Err(StateError::Conflict(format!(
+            "Investigation removed, but {} return(s) could not be deleted \
+             (a file may still be open): {}. They will reappear under \
+             \"Legacy Returns\".",
+            failed.len(),
+            failed.join(", ")
+        )));
     }
     Ok(())
 }

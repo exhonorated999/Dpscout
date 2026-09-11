@@ -9,6 +9,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useDialog, DialogModal } from '../ConfirmDialog';
 import './WarrantInvestigations.css';
 
 export interface InvestigationSummary {
@@ -40,6 +41,7 @@ export const WarrantInvestigationsList: React.FC<Props> = ({ onBack, onOpen }) =
   const [items, setItems] = useState<InvestigationSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [showCreate, setShowCreate] = useState(false);
+  const { dialog, showConfirm, showChoice, showAlert, handleResponse } = useDialog();
 
   async function load() {
     setLoading(true);
@@ -48,7 +50,7 @@ export const WarrantInvestigationsList: React.FC<Props> = ({ onBack, onOpen }) =
       setItems(list);
     } catch (err) {
       console.error('[warrant] list_investigations failed:', err);
-      alert(`Failed to load investigations:\n${String(err)}`);
+      await showAlert(String(err), { title: 'Failed to load investigations' });
     } finally {
       setLoading(false);
     }
@@ -66,22 +68,37 @@ export const WarrantInvestigationsList: React.FC<Props> = ({ onBack, onOpen }) =
 
   async function handleDelete(inv: InvestigationSummary, e: React.MouseEvent) {
     e.stopPropagation();
-    const message =
-      inv.returnCount > 0
-        ? `Delete investigation "${inv.name}"?\n\nThis investigation contains ${inv.returnCount} return${inv.returnCount === 1 ? '' : 's'}. ` +
-          `Click OK to ALSO delete the underlying return data. Click Cancel to keep the returns (they'll be re-attached to "Legacy Returns" on next load).`
-        : `Delete investigation "${inv.name}"?`;
-    const deleteReturns = window.confirm(message);
-    // If they cancelled and there are returns, ask if they want to keep at all.
-    if (!deleteReturns && inv.returnCount > 0) {
-      const keepConfirm = window.confirm(
-        `Delete investigation "${inv.name}" but KEEP the ${inv.returnCount} return${inv.returnCount === 1 ? '' : 's'}?`
+
+    // Three outcomes, so this is a three-button dialog rather than two
+    // chained confirms — with chained confirms the user cannot tell what
+    // "Cancel" on the first one is going to do.
+    let deleteReturns: boolean;
+    if (inv.returnCount > 0) {
+      const plural = inv.returnCount === 1 ? '' : 's';
+      const answer = await showChoice(
+        `"${inv.name}" holds ${inv.returnCount} warrant return${plural}.\n\n` +
+          `Delete the returns too and the parsed data is gone from this machine.\n` +
+          `Keep them and they stay on disk, re-attached to "Legacy Returns" on next load.`,
+        {
+          title: `Delete investigation "${inv.name}"?`,
+          confirmLabel: `Delete + ${inv.returnCount} return${plural}`,
+          altLabel: 'Delete investigation only',
+          cancelLabel: 'Cancel',
+          danger: true,
+        }
       );
-      if (!keepConfirm) return;
-    } else if (!deleteReturns && inv.returnCount === 0) {
-      // No returns and they hit cancel — abort
-      return;
+      if (answer === 'cancel') return;
+      deleteReturns = answer === 'confirm';
+    } else {
+      const ok = await showConfirm(`Delete investigation "${inv.name}"?`, {
+        title: 'Delete investigation',
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!ok) return;
+      deleteReturns = false;
     }
+
     try {
       await invoke('warrant_delete_investigation', {
         investigationId: inv.investigationId,
@@ -89,7 +106,8 @@ export const WarrantInvestigationsList: React.FC<Props> = ({ onBack, onOpen }) =
       });
       await load();
     } catch (err) {
-      alert(`Delete failed:\n${String(err)}`);
+      await load(); // the manifest may be gone even when a return failed
+      await showAlert(String(err), { title: 'Delete failed' });
     }
   }
 
@@ -176,6 +194,8 @@ export const WarrantInvestigationsList: React.FC<Props> = ({ onBack, onOpen }) =
           onCreated={handleCreated}
         />
       )}
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

@@ -10,6 +10,7 @@
 import React, { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './WarrantInvestigations.css';
+import { useDialog, DialogModal } from '../ConfirmDialog';
 import { WarrantLanding, WarrantProvider } from './WarrantLanding';
 import { startInvestigationExport } from './ExportProgressPanel';
 
@@ -71,6 +72,10 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
   } | null>(null);
   const [showEdit, setShowEdit] = useState(false);
   const [exporting, setExporting] = useState(false);
+
+  // In-app confirm. window.confirm is replaced by tauri-plugin-dialog with an
+  // async function, so its return value can never be used as a boolean.
+  const { dialog, showConfirm, handleResponse } = useDialog();
 
   async function load() {
     setLoading(true);
@@ -187,9 +192,11 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
   }
 
   async function handleRemoveReturn(caseId: string, label: string) {
-    if (!window.confirm(
-      `Remove "${label}" from this investigation?\n\nThe return data stays on disk and can be re-attached. Click OK to remove.`
-    )) return;
+    const ok = await showConfirm(
+      'The return data stays on disk and can be re-attached to another investigation.',
+      { title: `Remove "${label}" from this investigation?`, confirmLabel: 'Remove', danger: true }
+    );
+    if (!ok) return;
     try {
       await invoke('warrant_remove_return_from_investigation', {
         investigationId, caseId,
@@ -445,6 +452,8 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
           onSaved={async () => { setShowEdit(false); await load(); }}
         />
       )}
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

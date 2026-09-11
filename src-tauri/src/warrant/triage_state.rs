@@ -534,10 +534,17 @@ pub fn delete_bucket(case_id: &str, bucket_id: &str) -> Result<(), StateError> {
     save_case_file(&mut cf)
 }
 
+/// Remove a return and everything under it.
+///
+/// Idempotent on purpose: a case whose directory is already gone is a
+/// success, not a `NotFound`.  Delete is the one operation where "it
+/// isn't there" and "I removed it" are the same outcome to the caller,
+/// and treating them differently made investigation delete fail
+/// spuriously on returns that had already been cleaned up.
 pub fn delete_case(case_id: &str) -> Result<(), StateError> {
     let dir = case_dir(case_id);
     if !dir.exists() {
-        return Err(StateError::NotFound(case_id.to_string()));
+        return Ok(());
     }
     fs::remove_dir_all(&dir)?;
     Ok(())

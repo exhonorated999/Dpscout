@@ -1,6 +1,7 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
+import { useDialog, DialogModal } from './ConfirmDialog';
 import { AppSettings, KeywordList, HashList, CustomAppDefinition, ScanOptions } from '../types/settings';
 import { ReportsManager } from './ReportsManager';
 import { ScanDocumentationPanel } from './ScanDocumentation';
@@ -13,122 +14,6 @@ interface SettingsViewProps {
   onClose: () => void;
 }
 
-// ============================================================================
-// Custom Dialog System
-// ----------------------------------------------------------------------------
-// We DO NOT use native window.confirm() / window.alert() in this view.
-// In Tauri WebView2, those native modals can race against subsequent async
-// alert() calls, causing the "Cancel" path to still fire success messages
-// (see Settings bugs #1 and #2). This in-app modal is fully synchronous from
-// the user's perspective: nothing runs until the promise resolves.
-// ============================================================================
-
-type DialogKind = 'confirm' | 'alert';
-interface DialogState {
-  kind: DialogKind;
-  title: string;
-  message: string;
-  confirmLabel?: string;
-  cancelLabel?: string;
-  danger?: boolean;
-  resolve: (value: boolean) => void;
-}
-
-function useDialog() {
-  const [dialog, setDialog] = useState<DialogState | null>(null);
-
-  const showConfirm = useCallback(
-    (message: string, opts?: { title?: string; confirmLabel?: string; cancelLabel?: string; danger?: boolean }) =>
-      new Promise<boolean>((resolve) => {
-        setDialog({
-          kind: 'confirm',
-          title: opts?.title || 'Confirm',
-          message,
-          confirmLabel: opts?.confirmLabel || 'OK',
-          cancelLabel: opts?.cancelLabel || 'Cancel',
-          danger: opts?.danger,
-          resolve,
-        });
-      }),
-    []
-  );
-
-  const showAlert = useCallback(
-    (message: string, opts?: { title?: string; confirmLabel?: string }) =>
-      new Promise<void>((resolve) => {
-        setDialog({
-          kind: 'alert',
-          title: opts?.title || 'Notice',
-          message,
-          confirmLabel: opts?.confirmLabel || 'OK',
-          resolve: () => resolve(),
-        });
-      }),
-    []
-  );
-
-  const handleResponse = (value: boolean) => {
-    if (!dialog) return;
-    const r = dialog.resolve;
-    setDialog(null);
-    r(value);
-  };
-
-  return { dialog, showConfirm, showAlert, handleResponse };
-}
-
-const DialogModal: React.FC<{
-  dialog: DialogState | null;
-  onResponse: (value: boolean) => void;
-}> = ({ dialog, onResponse }) => {
-  if (!dialog) return null;
-  return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.65)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 10000,
-      }}
-      onClick={() => dialog.kind === 'confirm' && onResponse(false)}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: '#1a1d29',
-          border: '1px solid rgba(93, 207, 255, 0.25)',
-          borderRadius: 10,
-          padding: '1.5rem 1.75rem',
-          minWidth: 380,
-          maxWidth: 520,
-          boxShadow: '0 12px 40px rgba(0,0,0,0.55), 0 0 24px rgba(74,122,255,0.25)',
-        }}
-      >
-        <h3 style={{ margin: 0, color: '#5DCFFF', fontSize: '1.1rem' }}>{dialog.title}</h3>
-        <p style={{ marginTop: '0.85rem', marginBottom: '1.5rem', color: '#e6ecf5', lineHeight: 1.55, whiteSpace: 'pre-wrap' }}>
-          {dialog.message}
-        </p>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
-          {dialog.kind === 'confirm' && (
-            <Button variant="secondary" size="sm" onClick={() => onResponse(false)}>
-              {dialog.cancelLabel}
-            </Button>
-          )}
-          <Button
-            variant={dialog.kind === 'confirm' && dialog.danger ? 'danger' : 'primary'}
-            size="sm"
-            onClick={() => onResponse(true)}
-          >
-            {dialog.confirmLabel}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 // Tab metadata: order, label, and subtitle shown under the page header.
 // Profile is intentionally NOT first — Keyword Lists is the default landing tab.

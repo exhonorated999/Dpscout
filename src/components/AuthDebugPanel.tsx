@@ -11,10 +11,15 @@
 
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { useDialog, DialogModal } from './ConfirmDialog';
 
 export const AuthDebugPanel: React.FC = () => {
   const [result, setResult] = useState<string>('');
   const [loading, setLoading] = useState(false);
+
+  // window.confirm is replaced by tauri-plugin-dialog with an async function,
+  // so `if (!window.confirm(...))` never guards anything.
+  const { dialog, showConfirm, handleResponse } = useDialog();
 
   const testRegistrationCheck = async () => {
     setLoading(true);
@@ -71,9 +76,12 @@ export const AuthDebugPanel: React.FC = () => {
   };
 
   const testReset = async () => {
-    if (!window.confirm('This will delete all registration data. Continue?')) {
-      return;
-    }
+    const ok = await showConfirm('This will delete all registration data.', {
+      title: 'Reset registration?',
+      confirmLabel: 'Delete registration data',
+      danger: true,
+    });
+    if (!ok) return;
     setLoading(true);
     setResult('');
     try {
@@ -242,6 +250,8 @@ export const AuthDebugPanel: React.FC = () => {
           </p>
         </div>
       </div>
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

@@ -18,6 +18,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { invoke } from "@tauri-apps/api/core";
 import { ScanningIndicator } from "../ScanningIndicator";
 import { LocationMapView, LocationOverviewMap } from "./LocationMapView";
+import { useDialog, DialogModal } from "../ConfirmDialog";
 import { trackEvent } from "../../lib/telemetry";
 import "./WarrantTriageView.css";
 
@@ -222,6 +223,10 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
   const [detail, setDetail] = useState<CaseDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  // In-app confirm. Never use window.confirm — tauri-plugin-dialog replaces
+  // it with an async function, so `if (!window.confirm(...))` never fires.
+  const { dialog, showConfirm, handleResponse } = useDialog();
 
   // Filters
   // sectionFilter "overview" is the synthetic dashboard view (default landing).
@@ -677,9 +682,11 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
     async (bucketId: string) => {
       const b = detail?.buckets.find((x) => x.id === bucketId);
       if (!b) return;
-      if (!window.confirm(`Delete bucket "${b.name}"? Items assigned to it will become unbucketed.`)) {
-        return;
-      }
+      const ok = await showConfirm(
+        `Items assigned to "${b.name}" will become unbucketed. The items themselves are not deleted.`,
+        { title: `Delete bucket "${b.name}"?`, confirmLabel: 'Delete bucket', danger: true }
+      );
+      if (!ok) return;
       try {
         await invoke("warrant_delete_bucket", { caseId, bucketId });
         if (bucketFilter === bucketId) setBucketFilter(null);
@@ -688,7 +695,7 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
         setError(String(e));
       }
     },
-    [caseId, bucketFilter, detail, reload]
+    [caseId, bucketFilter, detail, reload, showConfirm]
   );
 
   const openMedia = useCallback(
@@ -1130,6 +1137,8 @@ export const WarrantTriageView: React.FC<WarrantTriageViewProps> = ({
           </aside>
         )}
       </div>
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

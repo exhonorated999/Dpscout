@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Button } from './Button';
 import { MediaFile } from '../types/media';
 import { invoke } from '@tauri-apps/api/core';
+import { useDialog, DialogModal } from './ConfirmDialog';
 import './HashResults.css';
 
 interface HashResultsProps {
@@ -48,6 +49,11 @@ export const HashResults: React.FC<HashResultsProps> = ({
   const [excludingFile, setExcludingFile] = useState<string | null>(null);
   const [excludeReason, setExcludeReason] = useState('');
   const [removingFalsePositives, setRemovingFalsePositives] = useState(false);
+
+  // In-app confirm. tauri-plugin-dialog overwrites window.confirm with an
+  // async function, so its result is a Promise and always truthy — the old
+  // guard here let Cancel rewrite the officer's hash list anyway.
+  const { dialog, showConfirm, handleResponse } = useDialog();
 
   // Filter matches based on search query, then hide excluded paths.
   // Final ordering respects the list priority chosen on the configure screen.
@@ -170,10 +176,11 @@ export const HashResults: React.FC<HashResultsProps> = ({
 
     if (!selected) return;
 
-    const confirm = window.confirm(
-      `Remove ${group.hashes.length} false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`
+    const ok = await showConfirm(
+      `Remove ${group.hashes.length} false positive hashes from:\n${selected}\n\nA backup (.bak) will be created.`,
+      { title: 'Edit hash list', confirmLabel: 'Remove hashes', danger: true }
     );
-    if (!confirm) return;
+    if (!ok) return;
 
     setRemovingFalsePositives(true);
     try {
@@ -681,6 +688,8 @@ export const HashResults: React.FC<HashResultsProps> = ({
           </div>
         </div>
       </div>
+
+      <DialogModal dialog={dialog} onResponse={handleResponse} />
     </div>
   );
 };

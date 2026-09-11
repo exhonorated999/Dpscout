@@ -1593,7 +1593,12 @@ function App() {
         caseId,
         destDir: selected,
       });
-      const openIt = window.confirm(
+      // NOTE: `window.confirm` is NOT the DOM builtin here — tauri-plugin-dialog
+      // replaces it with an async function that resolves to a boolean, so this
+      // must be awaited. Without the await you get a Promise, which is always
+      // truthy. This helper is not a React component, so it cannot use the
+      // shared useDialog() hook from components/ConfirmDialog.
+      const openIt = await window.confirm(
         `Report exported to:\n${result.reportDir}\n\nOpen the folder now?`
       );
       if (openIt) {
