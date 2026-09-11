@@ -11,7 +11,7 @@ const IS_PORTABLE_BUILD = import.meta.env.VITE_PORTABLE === 'true';
  * Provider identifiers — kept in sync with Rust `warrant::providers::Provider`.
  * Adding a new provider here AND in Rust + setting `enabled: true` lights up the tile.
  */
-export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo' | 'x' | 'whatsapp';
+export type WarrantProvider = 'meta' | 'snapchat' | 'kik' | 'discord' | 'google' | 'yahoo' | 'x' | 'whatsapp' | 'att';
 
 /**
  * Providers that remain available when the demo trial / paid license has
@@ -130,6 +130,20 @@ const WhatsAppIcon = () => (
   </svg>
 );
 
+// AT&T — the "globe" mark, reduced to concentric bands in AT&T cyan.
+const AttIcon = () => (
+  <svg viewBox="0 0 48 48" width="44" height="44" fill="none">
+    <circle cx="24" cy="24" r="16" stroke="#00A8E0" strokeWidth="2.5" />
+    <path
+      d="M9 18.5h30M8.5 24h31M9 29.5h30"
+      stroke="#00A8E0"
+      strokeWidth="2.2"
+      strokeLinecap="round"
+    />
+    <ellipse cx="24" cy="24" rx="7" ry="16" stroke="#00A8E0" strokeWidth="2.2" />
+  </svg>
+);
+
 const PROVIDERS: ProviderTile[] = [
   {
     id: 'meta',
@@ -203,6 +217,15 @@ const PROVIDERS: ProviderTile[] = [
     enabled: true,
     icon: <WhatsAppIcon />,
     accent: '#25D366',
+  },
+  {
+    id: 'att',
+    name: 'AT&T',
+    subtitle: 'AT&T Mobility / Kodex',
+    formatHint: 'AT&T report folder or .zip (fixed-width .txt reports)',
+    enabled: true,
+    icon: <AttIcon />,
+    accent: '#00A8E0',
   },
 ];
 

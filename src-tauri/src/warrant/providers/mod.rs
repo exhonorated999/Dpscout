@@ -15,6 +15,10 @@ pub mod yahoo;
 pub mod x;
 pub mod whatsapp;
 
+/// AT&T — the first telecom (as opposed to social-media) provider.  Its
+/// returns are fixed-width text reports, not HTML/JSON.
+pub mod att;
+
 /// Generic catalog fallback used when a provider parser rejects a return and
 /// the operator consents to a degraded import.  Not a `Provider` variant.
 pub mod generic;

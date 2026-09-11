@@ -207,6 +207,12 @@ const SECTION_LABELS: Record<string, string> = {
   ad_data: "Ad Data",
   x_metadata: "Account Metadata",
   audio: "Audio",
+  // AT&T
+  subscriber: "Subscriber Records",
+  account_billing: "Account & Billing",
+  status_history: "Status Changes",
+  ownership: "Ownership Analysis",
+  notices: "Parser Notices",
 };
 
 const NEW_BUCKET_COLORS = [
@@ -1256,6 +1262,12 @@ const SECTION_ICONS: Record<string, string> = {
   ad_data: "📢",
   x_metadata: "🗂️",
   audio: "🎧",
+  // AT&T
+  subscriber: "📇",
+  account_billing: "🧾",
+  status_history: "🛠️",
+  ownership: "🔎",
+  notices: "ℹ️",
 };
 
 const CaseOverview: React.FC<CaseOverviewProps> = ({

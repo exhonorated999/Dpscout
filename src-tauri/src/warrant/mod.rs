@@ -37,6 +37,8 @@ pub enum Provider {
     Yahoo,
     X,
     WhatsApp,
+    /// AT&T — telecom subscriber / activity returns (fixed-width text).
+    Att,
 }
 
 impl Provider {
@@ -50,6 +52,7 @@ impl Provider {
             Provider::Yahoo => "Yahoo",
             Provider::X => "X (Twitter)",
             Provider::WhatsApp => "WhatsApp",
+            Provider::Att => "AT&T",
         }
     }
 }
@@ -202,6 +205,7 @@ pub mod registry {
             Box::new(super::providers::yahoo::YahooWarrantParser),
             Box::new(super::providers::x::XWarrantParser),
             Box::new(super::providers::whatsapp::WhatsAppWarrantParser),
+            Box::new(super::providers::att::AttWarrantParser),
         ]
     }
 
@@ -216,6 +220,7 @@ pub mod registry {
             Provider::Yahoo => Some(Box::new(super::providers::yahoo::YahooWarrantParser)),
             Provider::X => Some(Box::new(super::providers::x::XWarrantParser)),
             Provider::WhatsApp => Some(Box::new(super::providers::whatsapp::WhatsAppWarrantParser)),
+            Provider::Att => Some(Box::new(super::providers::att::AttWarrantParser)),
         }
     }
 
