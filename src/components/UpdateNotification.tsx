@@ -121,8 +121,10 @@ export default function UpdateNotification() {
 
       {beta && (
         <div className="update-splash__beta-note">
-          Field-testing release. Please report anything that looks wrong or
-          missing &mdash; your feedback shapes the next build.
+          <b>Field-testing release.</b> If something looks wrong, slow or
+          missing, send it straight to us with the bug icon at the top right
+          of the start screen &mdash; next to the gear. Your reports decide
+          what gets fixed next.
         </div>
       )}
 
