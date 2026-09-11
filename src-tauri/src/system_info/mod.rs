@@ -2,11 +2,13 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
 mod accounts;
+mod bitlocker;
 mod hardware;
 mod emails;
 mod usb_history;
 
 pub use accounts::*;
+pub use bitlocker::*;
 pub use hardware::*;
 pub use emails::*;
 pub use usb_history::*;
@@ -28,6 +30,9 @@ pub struct SystemInfo {
     pub hardware: HardwareInfo,
     pub network: NetworkInfo,
     pub usb_history: Vec<UsbDeviceHistory>,
+    /// BitLocker protection state and any recovery keys recovered.
+    /// Beta — the live-volume side requires Administrator.
+    pub bitlocker: BitLockerFindings,
 }
 
 /// Windows user account information
@@ -93,7 +98,18 @@ pub fn collect_system_info() -> Result<SystemInfo, String> {
             Vec::new()
         }
     };
-    
+
+    // BitLocker runs with a targeted sweep so it stays cheap enough for the
+    // inline scan. Like usb_history above, it must never fail the whole scan —
+    // `collect` reports problems inside the struct rather than returning Err.
+    let bitlocker = bitlocker::collect(bitlocker::SweepScope::Targeted);
+    eprintln!(
+        "BitLocker: {} ({} volume(s), {} key file(s))",
+        bitlocker.status,
+        bitlocker.volumes.len(),
+        bitlocker.key_files.len()
+    );
+
     Ok(SystemInfo {
         scan_id,
         scan_timestamp,
@@ -109,6 +125,7 @@ pub fn collect_system_info() -> Result<SystemInfo, String> {
         hardware,
         network,
         usb_history,
+        bitlocker,
     })
 }
 

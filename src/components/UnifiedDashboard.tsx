@@ -6,7 +6,8 @@ import { MediaFile } from '../types/media';
 // Hot reload trigger
 import { KeywordMatch } from '../types/keyword';
 import { BrowserData } from '../types/browser';
-import { SystemInfo, UsbDeviceInfo, DeletedMediaDriveResult } from '../types/system';
+import { listen, UnlistenFn } from '@tauri-apps/api/event';
+import { SystemInfo, UsbDeviceInfo, DeletedMediaDriveResult, BitLockerKeyFile } from '../types/system';
 import { IntrusionScanResults, defaultIntrusionScanOptions } from '../types/intrusion';
 import { ReportMetadata, ReportScope, ReportFormat, ReportPayload, ReportGenerationResult } from '../types/report';
 import { AppSettings } from '../types/settings';
@@ -813,6 +814,68 @@ const DeviceInfoView: React.FC<{
   const [usbDeviceInfo, setUsbDeviceInfo] = React.useState<UsbDeviceInfo | null>(null);
   const [loadingUsbInfo, setLoadingUsbInfo] = React.useState(false);
 
+  // ---- BitLocker Tier D: full-drive sweep (Beta) -------------------------
+  // Deliberately user-triggered rather than automatic. The inline scan only
+  // does the targeted sweep; a whole-drive walk takes minutes, so making it
+  // implicit would stall every scan for a result most cases do not need.
+  const [blSweeping, setBlSweeping] = React.useState(false);
+  const [blSweepMsg, setBlSweepMsg] = React.useState<string | null>(null);
+  const [blSweptFiles, setBlSweptFiles] = React.useState<BitLockerKeyFile[]>([]);
+
+  React.useEffect(() => {
+    if (!blSweeping) return;
+    let unlistenFound: UnlistenFn | undefined;
+    let unlistenProgress: UnlistenFn | undefined;
+    let cancelled = false;
+
+    (async () => {
+      unlistenFound = await listen<BitLockerKeyFile>('bitlocker-key-found', (e) => {
+        if (cancelled) return;
+        // Stream hits in as they are found so a long sweep shows progress.
+        setBlSweptFiles((prev) =>
+          prev.some((f) => f.path === e.payload.path) ? prev : [...prev, e.payload]
+        );
+      });
+      unlistenProgress = await listen<{ stage: string; message: string; found: number }>(
+        'bitlocker-sweep-progress',
+        (e) => {
+          if (cancelled) return;
+          setBlSweepMsg(e.payload.message);
+        }
+      );
+    })();
+
+    return () => {
+      cancelled = true;
+      unlistenFound?.();
+      unlistenProgress?.();
+    };
+  }, [blSweeping]);
+
+  const runBitLockerFullSweep = async () => {
+    const drives =
+      selectedDrives.length > 0
+        ? selectedDrives
+        : (systemInfo?.hardware?.drives || []).map((d) => d.letter);
+    if (drives.length === 0) {
+      setBlSweepMsg('No drives available to sweep.');
+      return;
+    }
+    setBlSweptFiles([]);
+    setBlSweepMsg(`Starting full sweep of ${drives.join(', ')}...`);
+    setBlSweeping(true);
+    try {
+      const results = await invoke<BitLockerKeyFile[]>('sweep_bitlocker_key_files', { drives });
+      setBlSweptFiles(results);
+      setBlSweepMsg(`Full sweep complete — ${results.length} artifact(s) found.`);
+    } catch (e) {
+      console.error('BitLocker full sweep failed:', e);
+      setBlSweepMsg(`Full sweep failed: ${String(e)}`);
+    } finally {
+      setBlSweeping(false);
+    }
+  };
+
   // Fetch USB device info if in USB mode
   React.useEffect(() => {
     console.log('DeviceInfoView: deviceType =', deviceType, 'selectedDrives =', selectedDrives);
@@ -1139,7 +1202,12 @@ const DeviceInfoView: React.FC<{
     return (
       <div className="content-view">
         <h2 className="view-title">DEVICE INFORMATION</h2>
-        <div className="no-data">Collecting system information...</div>
+        <div className="no-data">
+          Collecting system information...
+          <div style={{ marginTop: '0.5rem', fontSize: '0.85em', opacity: 0.7 }}>
+            Hardware, account, USB history and BitLocker checks can take a minute.
+          </div>
+        </div>
       </div>
     );
   }
@@ -1214,6 +1282,275 @@ const DeviceInfoView: React.FC<{
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/*
+        BITLOCKER (Beta)
+
+        Rendered only when the backend supplied a `bitlocker` block, which it
+        does for Windows system scans and not for USB or Android scans — so
+        this section simply disappears in those modes rather than showing an
+        empty shell.
+
+        Keys are shown in plain text on purpose: an officer holding the
+        machine under warrant needs to read the key off the screen, and
+        masking would only add a step. Same reasoning applies in the PDF.
+      */}
+      {systemInfo.bitlocker && (
+        <div className="info-section">
+          <h3 className="section-subtitle">
+            BITLOCKER
+            <span
+              style={{
+                marginLeft: '10px',
+                padding: '2px 8px',
+                fontSize: '10px',
+                fontWeight: 700,
+                letterSpacing: '0.08em',
+                borderRadius: '10px',
+                border: '1px solid #5DCFFF',
+                color: '#5DCFFF',
+                verticalAlign: 'middle',
+              }}
+            >
+              BETA
+            </span>
+          </h3>
+
+          {(() => {
+            const bl = systemInfo.bitlocker!;
+            const enabled = bl.status === 'Enabled';
+            const needsAdmin = bl.status === 'Requires Administrator';
+            const statusColor = enabled
+              ? '#4ADE80'
+              : needsAdmin
+              ? '#FBBF24'
+              : 'var(--color-text-secondary)';
+
+            // Headline label, per requirement: say plainly whether BitLocker
+            // is on, and when it is, list the recovered key underneath.
+            const headline = enabled
+              ? 'BitLocker Enabled'
+              : bl.status === 'Not Enabled'
+              ? 'BitLocker Not Enabled'
+              : bl.status;
+
+            // Inline targeted-sweep hits plus anything the on-demand full
+            // sweep has streamed in, de-duplicated by path.
+            const mergedFiles: BitLockerKeyFile[] = [...bl.key_files];
+            for (const f of blSweptFiles) {
+              if (!mergedFiles.some((x) => x.path === f.path)) mergedFiles.push(f);
+            }
+
+            return (
+              <>
+                <div className="info-grid">
+                  <div className="info-card">
+                    <div className="info-label">Status</div>
+                    <div className="info-value" style={{ color: statusColor, fontWeight: 700 }}>
+                      {headline}
+                    </div>
+                  </div>
+                  <div className="info-card">
+                    <div className="info-label">Volumes Reported</div>
+                    <div className="info-value">{bl.volumes.length}</div>
+                  </div>
+                  <div className="info-card">
+                    <div className="info-label">Key Artifacts Found</div>
+                    <div className="info-value">{mergedFiles.length}</div>
+                  </div>
+                </div>
+
+                <div className="info-description">{bl.status_detail}</div>
+
+                {bl.error && (
+                  <div className="info-description" style={{ color: '#F87171' }}>
+                    {bl.error}
+                  </div>
+                )}
+
+                {/*
+                  Not elevated: Windows blocks volume status AND the key, so
+                  the notice stands in for the whole live-volume block. The
+                  file-sweep results below still render — they need no admin.
+                */}
+                {needsAdmin && (
+                  <div
+                    style={{
+                      margin: '12px 0',
+                      padding: '12px 14px',
+                      border: '1px solid #FBBF24',
+                      borderRadius: '6px',
+                      background: 'rgba(251, 191, 36, 0.08)',
+                    }}
+                  >
+                    <div style={{ color: '#FBBF24', fontWeight: 600, marginBottom: '6px' }}>
+                      Administrator required
+                    </div>
+                    <div style={{ fontSize: '13px', marginBottom: '10px' }}>
+                      Windows blocks all BitLocker volume status and recovery key access
+                      unless Scout is running as Administrator. Relaunch elevated to collect
+                      them. Files found on disk are still listed below.
+                    </div>
+                    <button
+                      className="btn-secondary"
+                      onClick={async () => {
+                        try {
+                          await invoke('relaunch_elevated');
+                        } catch (e) {
+                          console.error('Elevated relaunch failed:', e);
+                        }
+                      }}
+                    >
+                      Relaunch as Administrator
+                    </button>
+                  </div>
+                )}
+
+                {bl.volumes.length > 0 && (
+                  <div className="drives-section">
+                    <h4 className="subsection-title">VOLUMES</h4>
+                    <div className="data-table">
+                      <div className="table-header">
+                        <div className="table-col">DRIVE</div>
+                        <div className="table-col">PROTECTION</div>
+                        <div className="table-col">LOCK</div>
+                        <div className="table-col">CONVERSION</div>
+                        <div className="table-col">METHOD</div>
+                        <div className="table-col">KEY ID</div>
+                        <div className="table-col">RECOVERY KEY</div>
+                      </div>
+                      <div className="table-body">
+                        {bl.volumes.map((v, idx) => (
+                          <div key={idx} className="table-row">
+                            <div className="table-col">{v.drive_letter || 'N/A'}</div>
+                            <div
+                              className="table-col"
+                              style={{ color: v.protected ? '#4ADE80' : undefined }}
+                            >
+                              {v.protection_status}
+                            </div>
+                            <div className="table-col">{v.lock_status}</div>
+                            <div className="table-col">
+                              {v.conversion_status}
+                              {v.encryption_percentage !== null &&
+                              v.encryption_percentage !== undefined
+                                ? ` (${v.encryption_percentage}%)`
+                                : ''}
+                            </div>
+                            <div className="table-col">{v.encryption_method}</div>
+                            <div className="table-col" style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                              {v.recovery_key_id || 'N/A'}
+                            </div>
+                            <div
+                              className="table-col"
+                              style={{
+                                fontFamily: 'monospace',
+                                fontSize: '12px',
+                                color: v.recovery_password ? '#5DCFFF' : undefined,
+                                userSelect: 'text',
+                              }}
+                            >
+                              {v.recovery_password || 'Not available'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/*
+                  Tier D trigger. The targeted sweep has already run inline;
+                  this widens it to whole drives on demand.
+                */}
+                <div style={{ margin: '12px 0', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <button
+                    className="btn-secondary"
+                    disabled={blSweeping}
+                    onClick={runBitLockerFullSweep}
+                  >
+                    {blSweeping ? 'Sweeping...' : 'Full Drive Sweep for Key Files'}
+                  </button>
+                  {blSweepMsg && (
+                    <span style={{ fontSize: '12px', color: 'var(--color-text-secondary)' }}>
+                      {blSweepMsg}
+                    </span>
+                  )}
+                </div>
+
+                {mergedFiles.length > 0 && (
+                  <div className="drives-section">
+                    <h4 className="subsection-title">RECOVERY KEY FILES ON DISK</h4>
+                    <div className="info-description">
+                      Files matching BitLocker recovery-key artifacts
+                      {blSweptFiles.length > 0
+                        ? ' (targeted sweep plus full drive sweep)'
+                        : ' (targeted sweep of user profiles and removable media)'}
+                    </div>
+                    <div className="data-table">
+                      <div className="table-header">
+                        <div className="table-col">PATH</div>
+                        <div className="table-col">TYPE</div>
+                        <div className="table-col">KEY ID</div>
+                        <div className="table-col">RECOVERY KEY(S)</div>
+                        <div className="table-col">MODIFIED</div>
+                      </div>
+                      <div className="table-body">
+                        {mergedFiles.map((f, idx) => (
+                          <div key={idx} className="table-row">
+                            <div className="table-col">
+                              <ClickableFilePath path={f.path} />
+                            </div>
+                            <div className="table-col">{f.file_type}</div>
+                            <div className="table-col" style={{ fontFamily: 'monospace', fontSize: '11px' }}>
+                              {f.recovery_key_id || 'N/A'}
+                            </div>
+                            <div
+                              className="table-col"
+                              style={{ fontFamily: 'monospace', fontSize: '12px', userSelect: 'text' }}
+                            >
+                              {f.recovery_passwords.length === 0 ? (
+                                f.file_type === 'BEK' ? (
+                                  <span style={{ opacity: 0.7 }}>
+                                    Startup key file (no printable password)
+                                  </span>
+                                ) : (
+                                  'None'
+                                )
+                              ) : (
+                                f.recovery_passwords.map((k, ki) => (
+                                  <div key={ki} style={{ color: '#5DCFFF' }}>
+                                    {k}
+                                  </div>
+                                ))
+                              )}
+                              {!f.checksum_valid && f.recovery_passwords.length > 0 && (
+                                <div style={{ color: '#FBBF24', fontSize: '11px' }}>
+                                  Failed checksum — verify manually
+                                </div>
+                              )}
+                            </div>
+                            <div className="table-col">{f.modified || 'Unknown'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {enabled && bl.volumes.every((v) => !v.recovery_password) &&
+                  mergedFiles.length === 0 && (
+                    <div className="info-description" style={{ color: '#FBBF24' }}>
+                      BitLocker is enabled but no recovery password could be recovered. The
+                      volume may have no numerical-password protector, or the key may be
+                      escrowed to Active Directory or a Microsoft account.
+                    </div>
+                  )}
+              </>
+            );
+          })()}
         </div>
       )}
 

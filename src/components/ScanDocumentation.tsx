@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './ScanDocumentation.css';
 
-type ScanSection = 'device' | 'browser' | 'keywords' | 'hash' | 'intrusion' | 'media';
+type ScanSection = 'device' | 'bitlocker' | 'browser' | 'keywords' | 'hash' | 'intrusion' | 'media';
 
 export const ScanDocumentationPanel: React.FC = () => {
   const [activeSection, setActiveSection] = useState<ScanSection>('device');
@@ -25,6 +25,13 @@ export const ScanDocumentationPanel: React.FC = () => {
             >
               <span className="doc-nav-icon">💻</span>
               <span className="doc-nav-text">Device Information</span>
+            </button>
+            <button
+              className={`doc-nav-item ${activeSection === 'bitlocker' ? 'active' : ''}`}
+              onClick={() => setActiveSection('bitlocker')}
+            >
+              <span className="doc-nav-icon">🔒</span>
+              <span className="doc-nav-text">BitLocker Keys</span>
             </button>
             <button
               className={`doc-nav-item ${activeSection === 'browser' ? 'active' : ''}`}
@@ -67,6 +74,7 @@ export const ScanDocumentationPanel: React.FC = () => {
         {/* Content Area */}
         <div className="documentation-content">
           {activeSection === 'device' && <DeviceInfoDoc />}
+          {activeSection === 'bitlocker' && <BitLockerDoc />}
           {activeSection === 'browser' && <BrowserHistoryDoc />}
           {activeSection === 'keywords' && <KeywordSearchDoc />}
           {activeSection === 'hash' && <HashMatchingDoc />}
@@ -110,6 +118,262 @@ const DeviceInfoDoc: React.FC = () => (
         <li><strong>Timeline Establishment:</strong> OS installation date provides temporal boundaries</li>
         <li><strong>Network Activity:</strong> Network info reveals potential online activity</li>
       </ul>
+    </div>
+  </div>
+);
+
+// BitLocker Documentation
+const BitLockerDoc: React.FC = () => (
+  <div className="doc-section">
+    <h3>🔒 BitLocker Encryption &amp; Recovery Keys <span style={{ fontSize: '0.6em', verticalAlign: 'middle', padding: '2px 8px', borderRadius: '10px', background: 'rgba(255,165,0,0.18)', color: 'var(--accent-orange)', border: '1px solid rgba(255,165,0,0.4)' }}>BETA</span></h3>
+
+    <p className="doc-intro">
+      BitLocker is Microsoft's built-in full-disk encryption. When it is turned on, everything
+      written to the drive is scrambled, and pulling that drive out of the computer gets you
+      nothing readable — not files, not deleted data, not even a recognizable file system. The
+      only thing that turns it back into evidence is a key.
+    </p>
+
+    <div className="doc-callout warning">
+      <strong>⏱️ This is the one scan you cannot do later</strong>
+      Scout can only ask Windows for a recovery key on a computer that is <strong>powered on
+      and already unlocked</strong> — a machine you are sitting in front of at the scene. The
+      moment that computer is shut down, the volume re-locks and Windows will no longer hand
+      the key over to anyone, including Scout. After that you are down to hoping a copy was
+      saved somewhere: a printout, a file on a USB stick, or a backup in your suspect's
+      Microsoft account or their employer's Active Directory — none of which you control.
+      <strong style={{ marginTop: '12px' }}>Run Scout before you pull the plug.</strong>
+    </div>
+
+    <div className="doc-subsection">
+      <h4>Step 1: How Scout Decides Whether BitLocker Is On</h4>
+      <p>
+        Scout asks Windows directly rather than guessing from file extensions. It queries the
+        Windows encryption service for every volume on the machine and reads back the real
+        protection state, how much of the drive is encrypted, and which encryption method is
+        in use.
+      </p>
+      <p>You will see one of three results, and the difference between them matters:</p>
+      <ul>
+        <li>
+          <strong>BitLocker Not Enabled:</strong> Windows confirmed the drives are not
+          encrypted. You can image this machine normally.
+        </li>
+        <li>
+          <strong>BitLocker Enabled:</strong> At least one volume is protected. Scout will
+          list each volume and attempt to recover its key (Step 2).
+        </li>
+        <li>
+          <strong>Requires Administrator:</strong> Scout was blocked from looking. Windows
+          refuses <em>all</em> BitLocker questions to a program that is not running as
+          Administrator — this is a Windows restriction, not a Scout limitation.
+        </li>
+      </ul>
+      <div className="doc-callout warning">
+        <strong>⚠️ "Requires Administrator" does NOT mean the drive is unencrypted</strong>
+        These two results look similar on screen but mean opposite things. If you see
+        "Requires Administrator", click <strong>Relaunch as Administrator</strong> and scan
+        again <em>before</em> you conclude anything about this machine's encryption. Treating
+        "we were not allowed to look" as "there is no encryption" is how a drive ends up
+        unreadable back at the lab.
+      </div>
+    </div>
+
+    <div className="doc-subsection">
+      <h4>Step 2: How Scout Locates the Recovery Key</h4>
+      <p>Scout looks in four places, because the key can live in more than one of them:</p>
+      <ol>
+        <li>
+          <strong>Ask Windows for it.</strong> If BitLocker was set up with a recovery
+          password, Windows is holding that 48-digit number and will release it to an
+          Administrator on the running machine. This is the most reliable source, and it is
+          why running elevated matters.
+        </li>
+        <li>
+          <strong>Read the volume's Key ID.</strong> Every protected volume has an
+          identifier that ties it to its key. Scout records it so you can prove later that a
+          specific key belongs to a specific drive.
+        </li>
+        <li>
+          <strong>Search where people actually save keys.</strong> Many users print or save
+          the key when Windows prompts them. Scout sweeps user profiles, Desktop, Documents,
+          Downloads, OneDrive folders, and any attached removable drives, looking at{' '}
+          <code>.txt</code>, <code>.csv</code>, <code>.rtf</code>, <code>.log</code>,{' '}
+          <code>.docx</code>, <code>.xlsx</code> and <code>.BEK</code> files. It reads inside
+          Office documents too, not just filenames.
+        </li>
+        <li>
+          <strong>Full Drive Sweep (optional).</strong> A button on the results screen scans
+          every attached drive end to end. Slower, but it finds keys saved somewhere unusual.
+          You can cancel it at any time.
+        </li>
+      </ol>
+
+      <div className="doc-subsection">
+        <h5>How Scout avoids false positives</h5>
+        <p>
+          A BitLocker recovery key is not just any 48 digits — it is eight groups of six, and
+          every group is mathematically divisible by 11. Scout uses that rule to tell a real
+          key from a spreadsheet full of invoice numbers.
+        </p>
+        <p>
+          There is one deliberate exception. If a file's <em>name</em> already announces itself
+          (for example <code>BitLocker Recovery Key A1B2C3D4….txt</code>), Scout reports what
+          it found even if the digits fail that check, and flags it as unverified. A key that
+          was retyped by hand with a typo is still a lead worth having — better on your screen
+          with a warning than silently discarded.
+        </p>
+        <p>
+          The same reasoning applies to Key IDs. A Key ID is a GUID, and GUIDs appear in
+          ordinary log files, installer records and data exports by the thousand. So in a file
+          that has not otherwise identified itself, Scout only records a GUID as a Key ID when
+          the surrounding text ties it to BitLocker — the words <code>BitLocker</code> or
+          <code>Recovery key</code> near the value, or the label <code>Identifier:</code> in a
+          file that mentions BitLocker elsewhere. That is exactly how Windows writes its own
+          recovery file. A bare <code>identifier:</code> in an application log is not enough. In
+          a file already named for BitLocker, any GUID is taken at face value.
+        </p>
+      </div>
+
+      <div className="doc-callout info">
+        <strong>📄 Recovery keys appear in full</strong>
+        Keys are shown complete on screen and printed in full in your PDF report. They are not
+        masked or truncated, because a partial key cannot unlock anything. Treat the report as
+        sensitive material and handle it under your agency's evidence protocols.
+      </div>
+    </div>
+
+    <div className="doc-subsection">
+      <h4>Step 3: Using the Recovery Key Back at the Lab</h4>
+      <p>
+        This is what the key is <em>for</em>. Once you have the 48-digit number, you can read
+        that drive after it has been removed from the suspect's computer or after that computer
+        has been powered off. Work in this order:
+      </p>
+
+      <ol>
+        <li>
+          <strong>Connect the drive through a hardware write blocker.</strong> Do this first,
+          every time. When Windows sees a BitLocker volume it will try to interact with it and
+          may prompt you for the key on its own — and that interaction can write to your
+          evidence. The write blocker is what keeps the original drive untouched.
+        </li>
+        <li>
+          <strong>Image the drive while it is still encrypted.</strong> Take your bit-for-bit
+          image normally. The image will look like meaningless data, and that is correct and
+          expected. You then unlock the <em>image</em> and leave the original drive alone.
+        </li>
+        <li>
+          <strong>Confirm you are holding the right key.</strong> When Windows or your forensic
+          tool asks for a recovery key, it displays a partial Key ID. Match that against the
+          Key ID Scout recorded for the volume. If you seized several machines, this is how you
+          avoid wasting hours trying the wrong key.
+        </li>
+        <li>
+          <strong>Unlock it.</strong> Either let your forensic suite do it, or use Windows'
+          built-in command (see below).
+        </li>
+      </ol>
+
+      <div className="doc-subsection">
+        <h5>Option A — Your forensic software (recommended)</h5>
+        <p>
+          Most mainstream tools accept a BitLocker recovery password directly and will mount
+          the volume read-only, which is exactly what you want. This includes
+          <strong> EnCase</strong>, <strong>FTK</strong>, <strong>X-Ways</strong>,
+          <strong> Magnet AXIOM</strong>, <strong>Passware</strong>, and
+          <strong> Arsenal Image Mounter</strong>. On Linux, the open-source
+          <strong> dislocker</strong> tool does the same job. Look for a prompt labelled
+          "BitLocker", "recovery password", or "decryption key" and paste the 48-digit number
+          from your Scout report.
+        </p>
+      </div>
+
+      <div className="doc-subsection">
+        <h5>Option B — Windows command line</h5>
+        <p>
+          On a Windows analysis machine, open Command Prompt <strong>as Administrator</strong>.
+          Replace <code>X:</code> with the evidence drive letter and paste your key, hyphens
+          included:
+        </p>
+        <code className="code-block wrap">
+          manage-bde -unlock X: -RecoveryPassword 111111-222222-333333-444444-555555-666666-777777-888888
+        </code>
+        <p>Then confirm it worked:</p>
+        <code className="code-block wrap">manage-bde -status X:</code>
+        <p>
+          The volume is now readable and you can work with it in your normal tools. This unlock
+          lasts for the current session only — it does <em>not</em> permanently change the
+          drive, which is why it is safe for evidence.
+        </p>
+      </div>
+
+      <div className="doc-callout warning">
+        <strong>🚫 Never run <code>manage-bde -off</code> on evidence</strong>
+        That command permanently decrypts the drive and rewrites every sector on it. It
+        destroys the original state of your evidence and is not reversible. You never need it
+        to read a drive — <code>-unlock</code> is sufficient. Similarly, if Windows offers to
+        "back up your recovery key" or "manage BitLocker" on the evidence drive, decline.
+      </div>
+
+      <div className="doc-subsection">
+        <h5>If the drive is damaged and will not unlock</h5>
+        <p>
+          Windows includes a repair tool that salvages what it can and writes the readable data
+          to a <em>separate</em> destination, leaving the damaged original as-is. It requires an
+          output location — it will not repair in place:
+        </p>
+        <code className="code-block wrap">
+          repair-bde X: D:\RecoveredImage.img -rp 111111-222222-333333-444444-555555-666666-777777-888888
+        </code>
+        <p>
+          Point the destination at a clean drive with enough free space, never back at the
+          evidence drive.
+        </p>
+      </div>
+    </div>
+
+    <div className="doc-subsection">
+      <h4>A Note on <code>.BEK</code> Files</h4>
+      <p>
+        If Scout reports a <code>.BEK</code> file, that is a different kind of key — a
+        BitLocker <strong>startup key</strong>, stored as a binary file on a USB stick rather
+        than as a number you can read or type. It is used on machines without a TPM chip, where
+        the USB stick effectively acts as the ignition key.
+      </p>
+      <p>
+        There is no 48-digit number inside it, so Scout reports the file's existence and its
+        Key ID rather than a password. <strong>Seize that USB stick.</strong> To use it, supply
+        the file itself:
+      </p>
+      <code className="code-block wrap">manage-bde -unlock X: -RecoveryKey D:\A1B2C3D4-....BEK</code>
+      <p>
+        These files are hidden by default, which is why Scout deliberately searches hidden files
+        — a normal Explorer window will not show them to you.
+      </p>
+    </div>
+
+    <div className="doc-subsection">
+      <h4>Forensic Value</h4>
+      <ul>
+        <li><strong>Preserves access to the evidence:</strong> Captures the one piece of information that stops an encrypted seizure from becoming an unreadable brick</li>
+        <li><strong>Time-critical capture:</strong> Documents the key while the machine is live, when it is still obtainable</li>
+        <li><strong>Ties key to drive:</strong> The recorded Key ID links a specific key to a specific volume for your report</li>
+        <li><strong>Finds user-saved copies:</strong> Locates keys the suspect printed or saved to a file, including on removable media</li>
+        <li><strong>Documents the encryption itself:</strong> Whether a drive was encrypted, and how thoroughly, can be relevant to intent</li>
+      </ul>
+    </div>
+
+    <div className="doc-callout info">
+      <strong>🧪 Beta feature</strong>
+      BitLocker key recovery is new and marked Beta. Detection and the file search are tested,
+      but real-world BitLocker configurations vary. Most importantly, not every encrypted volume
+      has a 48-digit recovery password attached to it — some are configured with only a TPM or
+      startup key. When that is the case Scout will report the volume as encrypted but note that
+      no recovery-password protector exists, and the key may only live in the organisation's
+      Active Directory, Entra ID, or the owner's Microsoft account. On a corporate or
+      school-owned machine, that is a lead worth pursuing with the agency's IT department or a
+      warrant. If you hit a configuration Scout handles poorly, please report it.
     </div>
   </div>
 );

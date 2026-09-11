@@ -1486,6 +1486,25 @@ fn draw_deleted_media(ctx: &mut PdfContext, drives: &[serde_json::Value], _paylo
     Ok(())
 }
 
+/// Largest byte offset `<= limit_chars` characters into `s` that is a valid
+/// UTF-8 char boundary.
+///
+/// `draw_wrapped_text` works in a *character* budget but slices by *byte*
+/// offset. Slicing straight at the character budget panics the moment a path
+/// contains non-ASCII — `C:\Users\José\...`, a CJK folder name — and that
+/// panic takes down report generation entirely. For pure-ASCII input this
+/// returns exactly `limit_chars`, so existing output is byte-identical.
+///
+/// Guarantees, relied on by the wrap loop to terminate:
+///   * the result is always a char boundary of `s`;
+///   * the result is `>= 1` whenever `s` is non-empty and `limit_chars >= 1`.
+pub(super) fn safe_break_point(s: &str, limit_chars: usize) -> usize {
+    match s.char_indices().nth(limit_chars) {
+        Some((idx, _)) => idx,
+        None => s.len(),
+    }
+}
+
 /// Wrap long text into multiple lines that fit within the usable page width.
 /// Uses an approximate character width for the given font size.
 /// Returns the lines and the total vertical space consumed.
@@ -1504,8 +1523,8 @@ fn draw_wrapped_text(
     let usable_width_mm = PAGE_WIDTH - 2.0 * PAGE_MARGIN;
     let avg_char_width_mm = font_size * 0.24; // empirical ratio for Helvetica
     let max_chars = (usable_width_mm / avg_char_width_mm) as usize;
-    
-    if max_chars == 0 || text.len() <= max_chars {
+
+    if max_chars == 0 || text.chars().count() <= max_chars {
         layer.use_text(text, font_size, x, *y, font);
         *y -= Mm(line_height);
         return;
@@ -1514,19 +1533,20 @@ fn draw_wrapped_text(
     // Split into lines, preferring to break at path separators or spaces
     let mut remaining = text;
     while !remaining.is_empty() {
-        if remaining.len() <= max_chars {
+        if remaining.chars().count() <= max_chars {
             layer.use_text(remaining, font_size, x, *y, font);
             *y -= Mm(line_height);
             break;
         }
         
         // Find a good break point: look for backslash, forward slash, or space near the limit
-        let chunk = &remaining[..max_chars];
+        let limit = safe_break_point(remaining, max_chars);
+        let chunk = &remaining[..limit];
         let break_at = chunk.rfind('\\')
             .or_else(|| chunk.rfind('/'))
             .or_else(|| chunk.rfind(' '))
-            .map(|pos| pos + 1) // break after the separator
-            .unwrap_or(max_chars); // hard break if no separator found
+            .map(|pos| pos + 1) // break after the separator (all 3 are 1-byte ASCII)
+            .unwrap_or(limit); // hard break at the char-safe boundary
         
         layer.use_text(&remaining[..break_at], font_size, x, *y, font);
         *y -= Mm(line_height);
@@ -1712,6 +1732,144 @@ fn draw_system_info_section(ctx: &mut PdfContext, payload: &ReportPayload) -> Re
                         layer.use_text(&format!("  • {}", drive_info), FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font);
                         y -= Mm(LINE_HEIGHT_BODY);
                     }
+                }
+            }
+        }
+    }
+    
+    y -= Mm(5.0);
+    
+    // ---------------------------------------------------------------
+    // BitLocker (Beta)
+    //
+    // Recovery keys are printed in full, matching the on-screen view: a
+    // report that masked them would be useless to the examiner who needs to
+    // re-mount the volume later. The elevation notice is included so a
+    // reviewer can tell the difference between "no encryption" and "Scout
+    // was not allowed to look".
+    // ---------------------------------------------------------------
+    if let Some(bl) = payload.all_data.system_info.get("bitlocker") {
+        ctx.check_page_break(30.0);
+        let layer = ctx.current_layer();
+
+        let status = bl.get("status").and_then(|v| v.as_str()).unwrap_or("Unknown");
+
+        layer.set_fill_color(color_accent());
+        layer.use_text("BitLocker (Beta):", FONT_SIZE_SUBHEADING, left_margin, y, ctx.font_bold);
+        y -= Mm(LINE_HEIGHT_SECTION);
+
+        layer.set_fill_color(color_text());
+
+        // Headline phrased the same way as the UI.
+        let headline = match status {
+            "Enabled" => "BitLocker Enabled",
+            "Not Enabled" => "BitLocker Not Enabled",
+            other => other,
+        };
+        y = draw_info_field(&layer, "Status:", headline, left_margin + Mm(5.0), y, ctx.font_bold, ctx.font);
+
+        if let Some(detail) = bl.get("status_detail").and_then(|v| v.as_str()) {
+            if !detail.is_empty() {
+                ctx.check_page_break(10.0);
+                let layer = ctx.current_layer();
+                draw_wrapped_text(
+                    &layer,
+                    detail,
+                    FONT_SIZE_SMALL,
+                    left_margin + Mm(5.0),
+                    &mut y,
+                    ctx.font,
+                    LINE_HEIGHT_BODY,
+                );
+            }
+        }
+
+        // Volumes
+        if let Some(volumes) = bl.get("volumes").and_then(|v| v.as_array()) {
+            if !volumes.is_empty() {
+                y -= Mm(3.0);
+                ctx.check_page_break(20.0);
+                let layer = ctx.current_layer();
+                layer.use_text("Volumes:", FONT_SIZE_LABEL, left_margin + Mm(5.0), y, ctx.font_bold);
+                y -= Mm(LINE_HEIGHT_BODY);
+
+                for vol in volumes {
+                    ctx.check_page_break(24.0);
+                    let layer = ctx.current_layer();
+
+                    let letter = vol.get("drive_letter").and_then(|v| v.as_str()).unwrap_or("(no letter)");
+                    let prot = vol.get("protection_status").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                    let conv = vol.get("conversion_status").and_then(|v| v.as_str()).unwrap_or("Unknown");
+                    let meth = vol.get("encryption_method").and_then(|v| v.as_str()).unwrap_or("Unknown");
+
+                    layer.use_text(
+                        &format!("  • {} — {} / {} / {}", letter, prot, conv, meth),
+                        FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font,
+                    );
+                    y -= Mm(LINE_HEIGHT_BODY);
+
+                    if let Some(kid) = vol.get("recovery_key_id").and_then(|v| v.as_str()) {
+                        layer.use_text(&format!("      Key ID: {}", kid),
+                            FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font);
+                        y -= Mm(LINE_HEIGHT_BODY);
+                    }
+                    match vol.get("recovery_password").and_then(|v| v.as_str()) {
+                        Some(pw) if !pw.is_empty() => {
+                            layer.use_text(&format!("      Recovery Key: {}", pw),
+                                FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font_bold);
+                            y -= Mm(LINE_HEIGHT_BODY);
+                        }
+                        _ => {
+                            layer.use_text("      Recovery Key: not available",
+                                FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font);
+                            y -= Mm(LINE_HEIGHT_BODY);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Key files found on disk
+        if let Some(files) = bl.get("key_files").and_then(|v| v.as_array()) {
+            if !files.is_empty() {
+                y -= Mm(3.0);
+                ctx.check_page_break(20.0);
+                let layer = ctx.current_layer();
+                layer.use_text(&format!("Recovery Key Files Found ({}):", files.len()),
+                    FONT_SIZE_LABEL, left_margin + Mm(5.0), y, ctx.font_bold);
+                y -= Mm(LINE_HEIGHT_BODY);
+
+                for f in files.iter().take(50) {
+                    ctx.check_page_break(18.0);
+                    let layer = ctx.current_layer();
+
+                    let path = f.get("path").and_then(|v| v.as_str()).unwrap_or("(unknown path)");
+                    let ftype = f.get("file_type").and_then(|v| v.as_str()).unwrap_or("?");
+                    draw_wrapped_text(
+                        &layer,
+                        &format!("  • [{}] {}", ftype, path),
+                        FONT_SIZE_SMALL,
+                        left_margin + Mm(10.0),
+                        &mut y,
+                        ctx.font,
+                        LINE_HEIGHT_BODY,
+                    );
+                    if let Some(keys) = f.get("recovery_passwords").and_then(|v| v.as_array()) {
+                        for k in keys {
+                            if let Some(ks) = k.as_str() {
+                                layer.use_text(&format!("      Recovery Key: {}", ks),
+                                    FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font_bold);
+                                y -= Mm(LINE_HEIGHT_BODY);
+                            }
+                        }
+                    }
+                }
+                if files.len() > 50 {
+                    ctx.check_page_break(10.0);
+                    let layer = ctx.current_layer();
+                    layer.use_text(&format!("... and {} more files", files.len() - 50),
+                        FONT_SIZE_SMALL, left_margin + Mm(10.0), y, ctx.font);
+                    y -= Mm(LINE_HEIGHT_BODY);
                 }
             }
         }

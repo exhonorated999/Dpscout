@@ -611,8 +611,68 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
     Ok(reg)
 }
 
-/// Check license status (online with offline fallback)
+/// Check license status (online with offline fallback).
+///
+/// A debug build is never license-gated. `debug_assertions` is on for
+/// `cargo build` / `tauri dev` and off for every release bundle, so the
+/// override below is compiled out of anything `npx tauri build` produces —
+/// it cannot escape into a shipped installer.
+///
+/// The real check still runs first, so the cache stays truthful and Settings
+/// keeps showing the machine's actual agency/plan. Only the fields that can
+/// lock the UI are overridden, and `days_remaining` is set to an absurd value
+/// so a developer can tell at a glance that they are looking at the override
+/// and not a real license.
 pub fn get_license_status() -> Result<LicenseInfo, String> {
+    let real = check_license_with_server();
+
+    #[cfg(debug_assertions)]
+    {
+        let mut info = real.unwrap_or_else(|e| {
+            eprintln!("[Licensing] debug build: status check failed ({}), continuing anyway", e);
+            LicenseInfo {
+                registered: false,
+                agency_name: None,
+                plan: None,
+                status: None,
+                expires_at: None,
+                days_remaining: 0,
+                is_expired: true,
+            }
+        });
+
+        if !info.registered || info.is_expired {
+            eprintln!(
+                "[Licensing] debug build: server says registered={} expired={} — \
+                 bypassing the license gate (this override does not exist in release builds)",
+                info.registered, info.is_expired
+            );
+        }
+
+        info.registered = true;
+        info.is_expired = false;
+        info.days_remaining = DEV_LICENSE_DAYS;
+        if info.plan.is_none() {
+            info.plan = Some("developer".to_string());
+        }
+        if info.status.is_none() {
+            info.status = Some("active".to_string());
+        }
+        if info.agency_name.is_none() {
+            info.agency_name = Some("DEVELOPER BUILD (unlicensed)".to_string());
+        }
+        return Ok(info);
+    }
+
+    #[cfg(not(debug_assertions))]
+    real
+}
+
+/// Obvious-on-sight stand-in for a real remaining-days count in debug builds.
+#[cfg(debug_assertions)]
+const DEV_LICENSE_DAYS: i64 = 9999;
+
+fn check_license_with_server() -> Result<LicenseInfo, String> {
     let machine_id = get_machine_id()?;
 
     // Try online check first
@@ -1092,6 +1152,22 @@ mod tests {
         if let Some(legacy) = d.legacy_machine_id {
             assert_ne!(legacy, d.machine_id);
         }
+    }
+
+    /// A debug build must never be gated by licensing, whatever the server
+    /// says about this machine. Regressing this strands every developer whose
+    /// machine ID has drifted out of the server's records.
+    ///
+    /// Network-independent: the offline fallback and the error path both end
+    /// in the debug override, so this holds on a disconnected machine too.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn debug_builds_are_never_license_gated() {
+        let info = get_license_status().expect("debug build must not fail the license check");
+        assert!(info.registered, "debug build reported as unregistered");
+        assert!(!info.is_expired, "debug build reported as expired");
+        assert_eq!(info.days_remaining, DEV_LICENSE_DAYS);
+        assert!(info.plan.is_some() && info.status.is_some());
     }
 
     /// MachineGuid must be readable without elevation. It is the only thing

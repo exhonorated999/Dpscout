@@ -918,6 +918,11 @@ function App() {
     
     const progressList: ScanProgressType[] = [];
 
+    // Device information is collected concurrently with the module scans so the
+    // scans are not held up by it. The handle is kept here so the scan can wait
+    // on it before declaring itself complete — see the join further down.
+    let sysInfoPromise: Promise<void> | null = null;
+
     try {
       // Collect device info — lightweight for USB, full system info for Windows
       setIsLoadingSystemInfo(true);
@@ -935,19 +940,23 @@ function App() {
           };
           setSystemInfo(minimalSysInfo);
           console.log("USB device info collected (instant):", usbInfo);
+          setIsLoadingSystemInfo(false);
         } else {
-          // Windows mode: collect full system info (in background, don't block scans)
-          const sysInfoPromise = invoke<SystemInfo>("get_system_info").then(sysInfo => {
+          // Windows mode: collect full system info (in background, don't block scans).
+          // `isLoadingSystemInfo` stays true until this settles — it is the flag
+          // that says the Device Information panel has not been filled in yet.
+          sysInfoPromise = invoke<SystemInfo>("get_system_info").then(sysInfo => {
             setSystemInfo(sysInfo);
             console.log("System info collected:", sysInfo);
           }).catch(error => {
             console.error("Failed to collect system info:", error);
+          }).finally(() => {
+            setIsLoadingSystemInfo(false);
           });
-          // Don't await — let it complete in background while scans start
+          // Don't await here — let it run while the module scans start.
         }
       } catch (error) {
         console.error("Failed to collect device info:", error);
-      } finally {
         setIsLoadingSystemInfo(false);
       }
 
@@ -1425,6 +1434,36 @@ function App() {
         }
         
         setScanProgress([...progressList]);
+      }
+
+      // Device information runs in parallel with the module scans and is
+      // usually the slowest single step (WMI, registry, USB history, the
+      // BitLocker sweep). Announcing "SCAN COMPLETE" over a Device Information
+      // panel that still reads "Collecting system information..." makes a
+      // working app look broken, so the scan is not finished until it lands.
+      //
+      // Bounded so a wedged WMI call cannot strand the user in a scan with no
+      // way out: after the cap we give up waiting and let the panel fill in
+      // whenever it does. Skipped entirely on cancel — a stop request must not
+      // be made to wait on anything.
+      if (sysInfoPromise && !scanCancelledRef.current) {
+        setCurrentScanModule("System Information");
+        const SYSINFO_JOIN_TIMEOUT_MS = 120_000;
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        await Promise.race([
+          sysInfoPromise,
+          new Promise<void>(resolve => {
+            timeoutHandle = setTimeout(() => {
+              console.warn(
+                `System info did not finish within ${SYSINFO_JOIN_TIMEOUT_MS}ms — ` +
+                `completing the scan without it`
+              );
+              resolve();
+            }, SYSINFO_JOIN_TIMEOUT_MS);
+          }),
+        ]);
+        // Don't leave a 2-minute timer alive once the info has landed.
+        if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
       }
 
       // Scan complete - calculate duration and update system info

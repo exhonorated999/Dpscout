@@ -95,6 +95,33 @@
   background: rgba(255, 255, 255, 0.08);
 }
 
+/* Beta marker — lives in the always-visible header so it cannot be
+   scrolled past inside the notes box. */
+.update-splash__beta {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(255, 176, 32, 0.16);
+  border: 1px solid rgba(255, 176, 32, 0.45);
+  color: #ffb020;
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  vertical-align: 2px;
+}
+
+.update-splash__beta-note {
+  margin: 10px 16px 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 176, 32, 0.08);
+  border-left: 3px solid #ffb020;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: #e4d3b4;
+}
+
 .update-splash__notes-label {
   padding: 0 16px;
   font-size: 10.5px;

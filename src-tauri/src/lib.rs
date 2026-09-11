@@ -157,6 +157,61 @@ async fn get_system_info() -> Result<SystemInfo, String> {
     }).await.map_err(|e| format!("System info thread panicked: {}", e))?
 }
 
+#[derive(Clone, Serialize)]
+struct BitLockerSweepProgress {
+    stage: String,
+    message: String,
+    found: usize,
+}
+
+/// Tier D — full-drive sweep for BitLocker recovery-key artifacts.
+///
+/// Split out from `get_system_info` deliberately. The inline scan runs only a
+/// targeted sweep (profiles and the usual dumping grounds) because
+/// `get_system_info` is invoked without `await` so the Device Info tab can
+/// paint immediately. A whole-drive walk takes minutes and would hold that
+/// tab hostage, so it streams results instead and honours the existing Cancel
+/// button via `hash_scan::is_scan_cancelled`.
+#[tauri::command]
+async fn sweep_bitlocker_key_files(
+    app: tauri::AppHandle,
+    drives: Vec<String>,
+) -> Result<Vec<system_info::BitLockerKeyFile>, String> {
+    use tauri::Emitter;
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _ = app.emit("bitlocker-sweep-progress", BitLockerSweepProgress {
+            stage: "start".to_string(),
+            message: format!("Sweeping {} drive(s) for BitLocker keys...", drives.len()),
+            found: 0,
+        });
+
+        let cancelled = || scanner::hash_scan::is_scan_cancelled();
+        let mut count = 0usize;
+        let app_for_hits = app.clone();
+
+        let results = system_info::sweep_full(&drives, &cancelled, |hit| {
+            count += 1;
+            let _ = app_for_hits.emit("bitlocker-key-found", hit.clone());
+        });
+
+        let stage = if cancelled() { "cancelled" } else { "complete" };
+        let _ = app.emit("bitlocker-sweep-progress", BitLockerSweepProgress {
+            stage: stage.to_string(),
+            message: format!(
+                "Full sweep {}: {} artifact(s) found.",
+                stage,
+                results.len()
+            ),
+            found: results.len(),
+        });
+
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("BitLocker sweep thread panicked: {}", e))?
+}
+
 // #[tauri::command]
 // fn start_progressive_scan(
 //     app: tauri::AppHandle,
@@ -2643,6 +2698,7 @@ pub fn run() {
             add_category_mapping,
             remove_category_mapping,
             get_system_info,
+            sweep_bitlocker_key_files,
             // start_progressive_scan,  // Temporarily disabled
             import_vic_hash_list,
             import_and_load_hash_list,

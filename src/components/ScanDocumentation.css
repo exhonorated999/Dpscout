@@ -185,6 +185,21 @@
   font-weight: 600;
 }
 
+/* Inline code — used for filenames, extensions and short commands in prose. */
+.doc-section p code,
+.doc-section li code,
+.doc-section h4 code,
+.doc-callout code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: rgba(108, 138, 237, 0.14);
+  border: 1px solid rgba(108, 138, 237, 0.25);
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-size: 0.88em;
+  color: #a8d4ff;
+  white-space: nowrap;
+}
+
 /* Code Blocks */
 .code-block {
   display: block;
@@ -198,6 +213,15 @@
   color: #a8d4ff;
   overflow-x: auto;
   margin: 16px 0;
+}
+
+/* Long shell commands (e.g. a 48-digit recovery key) must wrap rather than
+   hide behind a horizontal scrollbar — an officer copying a command that
+   silently ran off the edge of the panel would paste a truncated key. */
+.code-block.wrap {
+  white-space: pre-wrap;
+  word-break: break-all;
+  overflow-x: visible;
 }
 
 /* Callout Boxes */

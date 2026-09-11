@@ -29,6 +29,20 @@ interface AvailableUpdate {
   notes: string;
 }
 
+/**
+ * A release is flagged as beta by its own notes rather than by a separate
+ * field, so there is only one thing to get right when publishing: write
+ * "BETA" in the release notes on the admin dashboard and the badge appears.
+ *
+ * The badge matters because the notes box is scrollable (max-height 168px).
+ * A "this is beta" line buried in the changelog can be scrolled past without
+ * ever being read; the badge sits in the always-visible header instead.
+ */
+function isBetaRelease(notes: string, version: string): boolean {
+  const haystack = `${notes} ${version}`.toLowerCase();
+  return haystack.includes('beta');
+}
+
 export default function UpdateNotification() {
   const [update, setUpdate] = useState<AvailableUpdate | null>(null);
   const [closing, setClosing] = useState(false);
@@ -78,6 +92,8 @@ export default function UpdateNotification() {
     setTimeout(() => setUpdate(null), 240);
   };
 
+  const beta = isBetaRelease(update.notes, update.version);
+
   return (
     <div className={`update-splash${closing ? ' closing' : ''}`} role="alert">
       <div className="update-splash__accent" />
@@ -85,7 +101,10 @@ export default function UpdateNotification() {
       <div className="update-splash__head">
         <span className="update-splash__icon" aria-hidden>🚀</span>
         <div className="update-splash__title">
-          <h4>Update Available</h4>
+          <h4>
+            Update Available
+            {beta && <span className="update-splash__beta">BETA</span>}
+          </h4>
           <div className="update-splash__versions">
             v{update.currentVersion} &rarr; <b>v{update.version}</b>
           </div>
@@ -99,6 +118,13 @@ export default function UpdateNotification() {
           &times;
         </button>
       </div>
+
+      {beta && (
+        <div className="update-splash__beta-note">
+          Field-testing release. Please report anything that looks wrong or
+          missing &mdash; your feedback shapes the next build.
+        </div>
+      )}
 
       {update.notes && (
         <>

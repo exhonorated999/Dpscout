@@ -9,6 +9,56 @@ export interface UsbDeviceHistory {
   drive_letter: string | null;
 }
 
+// ---------------------------------------------------------------------------
+// BitLocker (Beta)
+// Mirrors system_info::bitlocker in the Rust backend.
+// ---------------------------------------------------------------------------
+
+/** Headline states emitted by the backend. */
+export type BitLockerStatus =
+  | 'Enabled'
+  | 'Not Enabled'
+  | 'Requires Administrator'
+  | 'Not Supported';
+
+export interface BitLockerVolume {
+  drive_letter: string | null;
+  device_id: string | null;
+  persistent_volume_id: string | null;
+  protected: boolean;
+  protection_status: string;
+  lock_status: string;
+  conversion_status: string;
+  encryption_method: string;
+  encryption_percentage: number | null;
+  recovery_key_id: string | null;
+  recovery_password: string | null;
+  note: string | null;
+}
+
+export interface BitLockerKeyFile {
+  path: string;
+  file_type: string;
+  recovery_key_id: string | null;
+  recovery_passwords: string[];
+  /** False when a recovered key fails BitLocker's divisible-by-11 group check. */
+  checksum_valid: boolean;
+  modified: string | null;
+  size_bytes: number | null;
+}
+
+export interface BitLockerFindings {
+  supported: boolean;
+  /** When false, Windows blocked all live-volume access and `volumes` is empty. */
+  elevated: boolean;
+  status: BitLockerStatus | string;
+  status_detail: string;
+  volumes: BitLockerVolume[];
+  key_files: BitLockerKeyFile[];
+  sweep_scope: 'none' | 'targeted' | 'full' | string;
+  error: string | null;
+}
+
 export interface SystemInfo {
   scan_id?: string;
   scan_timestamp?: string;
@@ -24,6 +74,7 @@ export interface SystemInfo {
   hardware?: HardwareInfo;
   network?: NetworkInfo;
   usb_history?: UsbDeviceHistory[];
+  bitlocker?: BitLockerFindings;
   usb_device_info?: UsbDeviceInfo;  // NEW: For USB device scans
   android_device_info?: any;  // NEW: For Android device scans
   // iOS-specific fields (optional)
