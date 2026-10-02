@@ -2614,22 +2614,25 @@ pub fn run() {
             telemetry::flush_in_background();
             Ok(())
         })
-        // ── Auto-sink window when it loses focus ────────────────────────────
-        // Examiners run Scout alongside V.I.P.E.R. and Cellebrite. When they
-        // click into one of those apps, Scout should drop to the bottom of
-        // the z-order so it stops covering the Coach / case-detail drawers.
-        // When Scout regains focus (taskbar click / Alt-Tab), we restore
-        // normal z-order so it pops to the front like any other window.
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Focused(focused) = event {
-                // set_always_on_bottom(true) on blur → other windows float
-                // above Scout. set_always_on_bottom(false) on focus →
-                // normal stacking, so Scout can come back to the top.
-                if let Err(e) = window.set_always_on_bottom(!*focused) {
-                    eprintln!("[Window] Failed to set always_on_bottom={}: {}", !*focused, e);
-                }
-            }
-        })
+        // ── Window z-order ──────────────────────────────────────────────────
+        // There used to be an `on_window_event` handler here that called
+        // `set_always_on_bottom(true)` whenever Scout lost focus, so it would
+        // drop behind V.I.P.E.R. / Cellebrite, and `set_always_on_bottom(false)`
+        // when it regained focus.
+        //
+        // The restore half cannot work. On Windows, tao implements
+        // `set_always_on_bottom(false)` as `SetWindowPos(HWND_NOTOPMOST, ...)`,
+        // and Win32 documents HWND_NOTOPMOST as having NO EFFECT on a window
+        // that is already non-topmost — which Scout always is. So the sink was
+        // one-way: Scout went to the bottom of the z-order and nothing ever
+        // brought it back. It still took keyboard focus, so it looked like the
+        // app had vanished; users reported minimising every other window as
+        // the only way to find it.
+        //
+        // Removed rather than repaired. Normal z-order already achieves the
+        // stated goal — clicking into another app puts that app in front of
+        // Scout. The handler only added the part nobody wanted: burying Scout
+        // beneath windows the examiner never touched.
         .register_asynchronous_uri_scheme_protocol("scout-afc", move |_app, request, responder| {
             // Run on a blocking thread because read_range() ultimately
             // blocks waiting for the Python daemon to reply.
