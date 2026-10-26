@@ -380,6 +380,51 @@ struct KvPair {
     images: Vec<String>,
 }
 
+/// Which HTML grammar a record block was written in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Grammar {
+    /// `div.div_table` / `display:table` / `display:table-cell` (pre-2025).
+    Legacy,
+    /// `div.t.o` / `div.t.i` / `div.m` (2025+). A 1:1 tag rename of Legacy.
+    Minified,
+}
+
+/// One top-level record block of a `property-*` section, grammar-tagged.
+struct RecordBlock<'a> {
+    grammar: Grammar,
+    /// Block heading (`Unified Messages`, `Album: …`). Empty for a minified
+    /// page-break continuation block.
+    label: String,
+    /// Legacy: the value `div` inside the table cell. Minified: the row itself.
+    content: ElementRef<'a>,
+}
+
+/// A Messenger message being assembled from the KV stream.
+#[derive(Debug, Default)]
+struct PendingMessage {
+    author: Option<String>,
+    sent: Option<String>,
+    body: Option<String>,
+    attachments: Vec<String>,
+    attachment_meta: Vec<Value>,
+    /// Per-message fields with no dedicated slot (call records, shares, …).
+    extras: Vec<(String, Value)>,
+}
+
+/// Message-level labels kept verbatim in `raw_fields` when present. An
+/// allow-list on purpose: thread-level labels (`Read Receipts`,
+/// `Past Participants`) can follow the last message of a thread and must not
+/// be pinned onto it.
+const MESSAGE_EXTRA_LABELS: &[&str] = &[
+    "Share",
+    "Missed",
+    "Duration",
+    "Removed by Sender",
+    "Reactions",
+    "Edited",
+    "Unsent",
+];
+
 impl MetaWarrantParser {
     fn parse_html_file(
         &self,
@@ -575,6 +620,105 @@ impl MetaWarrantParser {
         out
     }
 
+    /// Classify a block returned by [`Self::data_divs`] and pull out its
+    /// heading and content. `None` when a legacy block lacks the expected
+    /// table/cell/div structure (the legacy parsers always skipped those).
+    fn record_block<'a>(&self, dd: ElementRef<'a>) -> Option<RecordBlock<'a>> {
+        let is_legacy = dd
+            .value()
+            .attr("class")
+            .map(|c| c.contains("div_table"))
+            .unwrap_or(false);
+        if is_legacy {
+            let inner = dd.select(&self.sel_div_table_styled).next()?;
+            let label = first_direct_text(inner);
+            let cell = inner.select(&self.sel_table_cell).next()?;
+            let content = cell
+                .children()
+                .filter_map(ElementRef::wrap)
+                .find(|e| e.value().name() == "div")?;
+            return Some(RecordBlock { grammar: Grammar::Legacy, label, content });
+        }
+        if has_classes(dd, &["t", "o"]) {
+            let inner = direct_children_with(dd, &["t", "i"]).into_iter().next()?;
+            return Some(RecordBlock {
+                grammar: Grammar::Minified,
+                label: row_label(inner),
+                content: dd,
+            });
+        }
+        None
+    }
+
+    /// Flatten a minified row into the same KV stream the legacy grammar
+    /// yields: document order, BARE labels, container rows emitted before
+    /// their children with their own direct text as the value
+    /// (`Thread` → `(29202235737044)`).
+    ///
+    /// [`Self::extract_kv_pairs_new_grammar`] is wrong for state-machine
+    /// parsers: it drops a container's own text (the thread id) and prefixes
+    /// child keys, so `Author` never matches.
+    ///
+    /// Images are collected per row, never from inside a nested row, so a
+    /// page-break continuation container cannot sweep up every image beneath
+    /// it. Unlabelled rows that carry an image are emitted with key `""` —
+    /// that is how an attachment's thumbnail row appears.
+    fn flat_kv_pairs_new_grammar(&self, row: ElementRef<'_>) -> Vec<KvPair> {
+        let mut out = Vec::new();
+        self.flat_walk(row, &mut out, 0);
+        out
+    }
+
+    fn flat_walk(&self, row: ElementRef<'_>, out: &mut Vec<KvPair>, depth: usize) {
+        const MAX_FLAT_DEPTH: usize = 16;
+        if depth > MAX_FLAT_DEPTH {
+            return;
+        }
+        let Some(inner) = direct_children_with(row, &["t", "i"]).into_iter().next() else {
+            return;
+        };
+        let label = row_label(inner);
+
+        let mut value_parts: Vec<String> = Vec::new();
+        let mut images: Vec<String> = Vec::new();
+        let mut nested: Vec<ElementRef<'_>> = Vec::new();
+        for m in direct_children_with(inner, &["m"]) {
+            for holder in m.children().filter_map(ElementRef::wrap) {
+                let t = direct_text_lines(holder);
+                if !t.is_empty() {
+                    value_parts.push(t);
+                }
+                for img in holder.select(&self.sel_img) {
+                    // Skip images that belong to a nested row or to chrome.
+                    let owned_here = img
+                        .ancestors()
+                        .filter_map(ElementRef::wrap)
+                        .take_while(|a| a.id() != holder.id())
+                        .all(|a| !has_classes(a, &["t", "o"]) && !has_classes(a, &["pageBreak"]));
+                    if owned_here {
+                        if let Some(src) = img.value().attr("src") {
+                            images.push(src.to_string());
+                        }
+                    }
+                }
+                nested.extend(direct_children_with(holder, &["t", "o"]));
+            }
+        }
+        let value = value_parts.join("\n");
+
+        if !label.is_empty() {
+            out.push(KvPair { key: label, value, images });
+        } else if !images.is_empty() || (nested.is_empty() && !value.is_empty()) {
+            // An unlabelled *container* is a page-break continuation; it is
+            // not a field, so it is only emitted when it carries an image.
+            let value = if nested.is_empty() { value } else { String::new() };
+            out.push(KvPair { key: String::new(), value, images });
+        }
+        for child in nested {
+            self.flat_walk(child, out, depth + 1);
+        }
+    }
+
     /// Nested `div.t.o` rows living under a row's `div.m > div` value holder.
     /// Non-empty means this row is a container for sub-records rather than a
     /// scalar value.
@@ -594,6 +738,15 @@ impl MetaWarrantParser {
     /// Falls back to the minified `div.t.o` grammar when the legacy selectors
     /// match nothing, which is the case for all 2025+ returns.
     fn extract_kv_pairs<'a>(&self, container: ElementRef<'a>) -> Vec<KvPair> {
+        self.extract_kv_pairs_opt(container, false)
+    }
+
+    /// `br_as_newline`: render legacy `<br />` as a line break instead of
+    /// dropping it. Only the message path opts in — `Current Participants`
+    /// is `timestamp<br />Name<br />Name`, and without the breaks it reads as
+    /// one run-on line, so no participant (and no recipient) was ever parsed
+    /// from a legacy return. Other sections keep their historical values.
+    fn extract_kv_pairs_opt<'a>(&self, container: ElementRef<'a>, br_as_newline: bool) -> Vec<KvPair> {
         let mut pairs = Vec::new();
         for dt in container.select(&self.sel_div_table_styled) {
             let key = first_direct_text(dt);
@@ -612,11 +765,15 @@ impl MetaWarrantParser {
                 continue;
             };
 
-            let value = content_div
-                .text()
-                .collect::<String>()
-                .trim()
-                .to_string();
+            let value = if br_as_newline {
+                text_with_breaks(content_div)
+            } else {
+                content_div
+                    .text()
+                    .collect::<String>()
+                    .trim()
+                    .to_string()
+            };
 
             let images: Vec<String> = content_div
                 .select(&self.sel_img)
@@ -1073,26 +1230,27 @@ impl MetaWarrantParser {
     }
 
     fn parse_photos(&self, section: ElementRef<'_>, source: &str, ctx: &mut ParseCtx) {
+        // Minified grammar splits a long album across a page break into an
+        // unlabelled continuation block; it belongs to the previous album.
+        let mut last_label = String::new();
         for dd in self.data_divs(section) {
-            let Some(inner) = dd.select(&self.sel_div_table_styled).next() else {
+            let Some(block) = self.record_block(dd) else {
                 continue;
             };
-            let section_label = first_direct_text(inner);
+            let section_label = if block.label.is_empty() && block.grammar == Grammar::Minified {
+                last_label.clone()
+            } else {
+                last_label = block.label.clone();
+                block.label.clone()
+            };
             if is_no_records(&section_label) {
                 continue;
             }
-            let Some(cell) = inner.select(&self.sel_table_cell).next() else {
-                continue;
-            };
-            let Some(content_div) = cell
-                .children()
-                .filter_map(ElementRef::wrap)
-                .find(|e| e.value().name() == "div")
-            else {
-                continue;
-            };
 
-            let kvs = self.extract_kv_pairs(content_div);
+            let kvs = match block.grammar {
+                Grammar::Legacy => self.extract_kv_pairs(block.content),
+                Grammar::Minified => self.flat_kv_pairs_new_grammar(dd),
+            };
             if kvs.is_empty() {
                 continue;
             }
@@ -1145,74 +1303,99 @@ impl MetaWarrantParser {
         }
     }
 
+    /// Messenger content — Meta's `unified_messages` section.
+    ///
+    /// Legacy documents keep their original per-block behaviour verbatim.
+    ///
+    /// Minified (2025+) documents used to produce **nothing at all** here:
+    /// this parser looked for a `div.div_table[display:table]` inside each
+    /// block, the minified grammar has none, every block hit `continue`, and
+    /// because the section has a dedicated parser the generic fallback never
+    /// ran either. A whole Messenger history vanished with no notice.
+    ///
+    /// Minified blocks are walked differently on purpose, not just renamed:
+    /// all blocks in the section are flattened into ONE event stream and run
+    /// through the message state machine ONCE. A long thread is split across
+    /// page breaks into sibling continuation blocks with empty labels — one
+    /// observed return runs to 1,692 pages. Run per block, every
+    /// continuation would lose its thread id and participants, and a message
+    /// whose `Author` and `Body` straddle a break would become two half
+    /// messages: one with no text, one with no author.
     fn parse_unified_messages(
         &self,
         section: ElementRef<'_>,
         source: &str,
         ctx: &mut ParseCtx,
     ) {
+        let mut minified_events: Vec<KvPair> = Vec::new();
         for dd in self.data_divs(section) {
-            let Some(inner) = dd.select(&self.sel_div_table_styled).next() else {
+            let Some(block) = self.record_block(dd) else {
                 continue;
             };
-            let section_label = first_direct_text(inner);
-            if !(section_label.starts_with("Unified Messages")
-                || section_label.starts_with("Thread"))
-            {
-                continue;
+            match block.grammar {
+                Grammar::Legacy => {
+                    let section_label = block.label;
+                    if !(section_label.starts_with("Unified Messages")
+                        || section_label.starts_with("Thread"))
+                    {
+                        continue;
+                    }
+                    if is_no_records(&section_label) {
+                        continue;
+                    }
+                    self.parse_message_threads(block.content, source, ctx);
+                }
+                Grammar::Minified => {
+                    minified_events.extend(self.flat_kv_pairs_new_grammar(dd));
+                }
             }
-            if is_no_records(&section_label) {
-                continue;
-            }
-            let Some(cell) = inner.select(&self.sel_table_cell).next() else {
-                continue;
-            };
-            let Some(content_div) = cell
-                .children()
-                .filter_map(ElementRef::wrap)
-                .find(|e| e.value().name() == "div")
-            else {
-                continue;
-            };
-
-            self.parse_message_threads(content_div, source, ctx);
+        }
+        if !minified_events.is_empty() {
+            self.emit_messages(&minified_events, source, ctx);
         }
     }
 
+    /// Legacy entry point: one `div_table` content block.
     fn parse_message_threads(
         &self,
         container: ElementRef<'_>,
         source: &str,
         ctx: &mut ParseCtx,
     ) {
-        let kvs = self.extract_kv_pairs(container);
+        let kvs = self.extract_kv_pairs_opt(container, true);
+        self.emit_messages(&kvs, source, ctx);
+    }
+
+    /// Message state machine over a flat, document-ordered KV stream with
+    /// bare labels (`Thread`, `Current Participants`, `Author`, `Sent`,
+    /// `Body`, `Attachments`, …). Both grammars produce that shape.
+    fn emit_messages(&self, kvs: &[KvPair], source: &str, ctx: &mut ParseCtx) {
         if kvs.is_empty() {
             return;
         }
 
         let mut current_thread_id: Option<String> = None;
         let mut current_participants: Vec<String> = Vec::new();
+        let mut current_thread_name: Option<String> = None;
 
         // Working message being assembled
-        let mut msg_author: Option<String> = None;
-        let mut msg_sent: Option<String> = None;
-        let mut msg_body: Option<String> = None;
-        let mut msg_attachments: Vec<String> = Vec::new();
-        let mut msg_raw_attachment_meta: Vec<Value> = Vec::new();
+        let mut msg = PendingMessage::default();
 
         let flush_message = |ctx: &mut ParseCtx,
                              thread_id: &Option<String>,
                              participants: &[String],
-                             author: &mut Option<String>,
-                             sent: &mut Option<String>,
-                             body: &mut Option<String>,
-                             attachments: &mut Vec<String>,
-                             attachment_meta: &mut Vec<Value>| {
-            if author.is_none() && body.is_none() && attachments.is_empty() {
+                             thread_name: &Option<String>,
+                             msg: &mut PendingMessage| {
+            if msg.author.is_none() && msg.body.is_none() && msg.attachments.is_empty() {
+                // Nothing to emit, but never let a stray field ride into the
+                // next message.
+                *msg = PendingMessage::default();
                 return;
             }
             let id = ctx.next_id("msg");
-            let body_text = body.take();
+            let author = msg.author.take();
+            let sent = msg.sent.take();
+            let body_text = msg.body.take();
             let recipient = if participants.len() <= 1 {
                 None
             } else {
@@ -1225,38 +1408,59 @@ impl MetaWarrantParser {
                         .join(", "),
                 )
             };
+            // An attachment is named twice — by the <img> on its row and by
+            // its "Linked Media File:" line — so de-duplicate, keeping order.
+            let mut seen = std::collections::HashSet::new();
+            let attachments: Vec<String> = std::mem::take(&mut msg.attachments)
+                .into_iter()
+                .filter(|a| seen.insert(a.to_ascii_lowercase()))
+                .collect();
+
+            let mut raw = json!({
+                "threadId": thread_id,
+                "participants": participants,
+                "author": author,
+                "sent": sent,
+                "body": body_text,
+                "attachmentMeta": std::mem::take(&mut msg.attachment_meta),
+            });
+            if let Some(obj) = raw.as_object_mut() {
+                if let Some(name) = thread_name {
+                    obj.insert("threadName".into(), Value::String(name.clone()));
+                }
+                // Flat, per the triage table's contract.
+                for (k, v) in std::mem::take(&mut msg.extras) {
+                    obj.entry(k).or_insert(v);
+                }
+            }
+
             ctx.items.push(WarrantItem {
                 id,
                 section: "unified_messages".into(),
                 section_display: "Messages".into(),
-                timestamp: sent.clone(),
-                author: author.clone(),
+                timestamp: sent,
+                author,
                 recipient,
                 body_text: body_text.clone(),
                 summary: body_text.as_deref().map(|t| truncate(t, 80)),
-                raw_fields: with_source(
-                    json!({
-                        "threadId": thread_id,
-                        "participants": participants,
-                        "author": author,
-                        "sent": sent,
-                        "body": body_text,
-                        "attachmentMeta": attachment_meta.clone(),
-                    }),
-                    source,
-                ),
-                attachments: attachments.clone(),
+                raw_fields: with_source(raw, source),
+                attachments,
                 bucket: None,
                 note: None,
                 is_flagged: false,
             });
-            *author = None;
-            *sent = None;
-            attachments.clear();
-            attachment_meta.clear();
+            *msg = PendingMessage::default();
         };
 
-        for kv in &kvs {
+        // `Type` means a call's type under `Call Record` and an attachment's
+        // MIME type under `Attachments`; track which one we are inside.
+        let mut in_call = false;
+        for kv in kvs {
+            match kv.key.as_str() {
+                "Call Record" => in_call = true,
+                "Thread" | "Author" | "Attachments" => in_call = false,
+                _ => {}
+            }
             match kv.key.as_str() {
                 "Thread" => {
                     // Flush any in-flight message before switching threads
@@ -1264,15 +1468,19 @@ impl MetaWarrantParser {
                         ctx,
                         &current_thread_id,
                         &current_participants,
-                        &mut msg_author,
-                        &mut msg_sent,
-                        &mut msg_body,
-                        &mut msg_attachments,
-                        &mut msg_raw_attachment_meta,
+                        &current_thread_name,
+                        &mut msg,
                     );
                     // Extract (digits) from "(1234567890)" if present
                     current_thread_id = extract_paren_number(&kv.value);
                     current_participants.clear();
+                    current_thread_name = None;
+                }
+                "Thread Name" => {
+                    let name = kv.value.trim();
+                    if !name.is_empty() {
+                        current_thread_name = Some(name.to_string());
+                    }
                 }
                 "Current Participants" => {
                     // Value lines: first is a timestamp, rest are participant names
@@ -1294,32 +1502,51 @@ impl MetaWarrantParser {
                         ctx,
                         &current_thread_id,
                         &current_participants,
-                        &mut msg_author,
-                        &mut msg_sent,
-                        &mut msg_body,
-                        &mut msg_attachments,
-                        &mut msg_raw_attachment_meta,
+                        &current_thread_name,
+                        &mut msg,
                     );
-                    msg_author = Some(kv.value.clone());
+                    msg.author = Some(kv.value.clone());
                 }
-                "Sent" => msg_sent = Some(kv.value.clone()),
-                "Body" => msg_body = Some(kv.value.clone()),
+                "Sent" => msg.sent = Some(kv.value.clone()),
+                "Body" => msg.body = Some(kv.value.clone()),
                 "Attachments" => {
                     // Each "Attachments" line carries a description + may have
                     // <img src> entries pointing at linked_media filenames.
                     for img in &kv.images {
                         if let Some(name) = Path::new(img).file_name() {
-                            msg_attachments.push(name.to_string_lossy().into_owned());
+                            msg.attachments.push(name.to_string_lossy().into_owned());
                         }
                     }
-                    msg_raw_attachment_meta.push(json!({
+                    msg.attachment_meta.push(json!({
                         "description": kv.value,
                         "images": kv.images,
                     }));
                 }
+                "Call Record" => {
+                    // Usually a container for Type/Missed/Duration, which
+                    // arrive as their own events. Legacy renders a container's
+                    // value as all nested text, so only a single-line value is
+                    // trusted as the field itself.
+                    if msg.author.is_some() {
+                        let v = kv.value.trim();
+                        let val = if !v.is_empty() && !v.contains('\n') {
+                            Value::String(v.to_string())
+                        } else {
+                            Value::Bool(true)
+                        };
+                        msg.extras.retain(|(k, _)| k != "callRecord");
+                        msg.extras.push(("callRecord".into(), val));
+                    }
+                }
+                "Type" if in_call => {
+                    // A call's Type (audio/video), not an attachment's.
+                    if msg.author.is_some() && !kv.value.trim().is_empty() {
+                        msg.extras.push(("callType".into(), Value::String(kv.value.clone())));
+                    }
+                }
                 "Type" | "Size" | "URL" | "Linked Media File:" => {
                     // Attachment metadata for the last attachment record
-                    if let Some(last) = msg_raw_attachment_meta.last_mut() {
+                    if let Some(last) = msg.attachment_meta.last_mut() {
                         if let Some(obj) = last.as_object_mut() {
                             obj.insert(to_camel_case(&kv.key), Value::String(kv.value.clone()));
                         }
@@ -1327,7 +1554,39 @@ impl MetaWarrantParser {
                     // Linked Media File: directly names a file — capture it
                     if kv.key == "Linked Media File:" && !kv.value.is_empty() {
                         if let Some(name) = Path::new(&kv.value).file_name() {
-                            msg_attachments.push(name.to_string_lossy().into_owned());
+                            msg.attachments.push(name.to_string_lossy().into_owned());
+                        }
+                    }
+                }
+                "" => {
+                    // Minified grammar only: an attachment's thumbnail row is
+                    // unlabelled. Legacy never emits an empty key.
+                    for img in &kv.images {
+                        if let Some(name) = Path::new(img).file_name() {
+                            msg.attachments.push(name.to_string_lossy().into_owned());
+                        }
+                    }
+                    if !kv.images.is_empty() {
+                        if let Some(obj) =
+                            msg.attachment_meta.last_mut().and_then(|v| v.as_object_mut())
+                        {
+                            if let Some(arr) = obj.get_mut("images").and_then(|v| v.as_array_mut()) {
+                                for img in &kv.images {
+                                    let v = Value::String(img.clone());
+                                    if !arr.contains(&v) {
+                                        arr.push(v);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                k if MESSAGE_EXTRA_LABELS.contains(&k) => {
+                    // Only meaningful inside a message; keep the first value.
+                    if msg.author.is_some() && !kv.value.trim().is_empty() {
+                        let key = to_camel_case(k);
+                        if !msg.extras.iter().any(|(ek, _)| *ek == key) {
+                            msg.extras.push((key, Value::String(kv.value.clone())));
                         }
                     }
                 }
@@ -1340,11 +1599,8 @@ impl MetaWarrantParser {
             ctx,
             &current_thread_id,
             &current_participants,
-            &mut msg_author,
-            &mut msg_sent,
-            &mut msg_body,
-            &mut msg_attachments,
-            &mut msg_raw_attachment_meta,
+            &current_thread_name,
+            &mut msg,
         );
     }
 
@@ -2122,6 +2378,25 @@ fn first_direct_text(el: ElementRef<'_>) -> String {
         }
     }
     String::new()
+}
+
+/// All descendant text with legacy `<br>` rendered as a line break; lines
+/// trimmed, blank lines dropped (matching [`direct_text_lines`] in the
+/// minified grammar, so both produce the same value).
+fn text_with_breaks(el: ElementRef<'_>) -> String {
+    let mut s = String::new();
+    for node in el.descendants() {
+        match node.value() {
+            scraper::node::Node::Text(t) => s.push_str(t),
+            scraper::node::Node::Element(e) if e.name() == "br" => s.push('\n'),
+            _ => {}
+        }
+    }
+    s.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 // ─── New minified-div grammar (2025+) helpers ────────────────────────────
@@ -3282,6 +3557,211 @@ mod tests {
         </div></body></html>"#;
         let ctx = parse_fixture(html);
         assert_eq!(ctx.service, "Facebook");
+    }
+
+    // ── Grammar parity ───────────────────────────────────────────────────
+
+    /// Rewrite a legacy (grammar 1, `div_table`) document into the minified
+    /// 2025+ grammar. The two are a 1:1 tag substitution — verified against a
+    /// live 2026 WhatsApp production, whose `profile_picture` block is the
+    /// legacy shape with the tags renamed:
+    ///
+    ///   div.div_table                 → div.t.o   (row wrapper)
+    ///   div.div_table[display:table]  → div.t.i   (label + value)
+    ///   div[display:table-cell]       → div.m     (value container)
+    ///   <br />                        → div.p     (line break)
+    ///
+    /// This is how the new-grammar message path is tested at all: every real
+    /// Facebook return on this machine with messages in it is legacy, and the
+    /// only new-grammar Facebook return we know of reached us as a structural
+    /// fingerprint, not as HTML.
+    fn legacy_to_new_grammar(html: &str) -> String {
+        let mut out = html
+            .replace(
+                r#"<div class="div_table" style="font-weight: bold; display:table;">"#,
+                r#"<div class="t i">"#,
+            )
+            .replace(r#"<div class="div_table" style="font-weight: bold;">"#, r#"<div class="t o">"#)
+            .replace("<br />", r#"<div class="p"></div>"#);
+        // The table-cell style string carries word-break rules; match its prefix.
+        const CELL: &str = r#"<div style="font-weight: normal; display:table-cell;"#;
+        while let Some(start) = out.find(CELL) {
+            let end = start + out[start..].find('>').expect("unterminated cell tag") + 1;
+            out.replace_range(start..end, r#"<div class="m">"#);
+        }
+        out
+    }
+
+    /// Every real legacy Facebook `records.html` we can find. Skipped when
+    /// absent (CI, other machines).
+    fn legacy_facebook_records() -> Option<String> {
+        let zp = sample_zip()?;
+        let mut zip = ZipArchive::new(File::open(zp).ok()?).ok()?;
+        let mut f = zip.by_name("records.html").ok()?;
+        let mut s = String::new();
+        f.read_to_string(&mut s).ok()?;
+        Some(s)
+    }
+
+    fn section_counts(ctx: &ParseCtx) -> std::collections::BTreeMap<String, usize> {
+        let mut m = std::collections::BTreeMap::new();
+        for it in &ctx.items {
+            *m.entry(it.section.clone()).or_insert(0) += 1;
+        }
+        m
+    }
+
+    #[test]
+    fn grammar_parity_section_counts() {
+        let Some(legacy) = legacy_facebook_records() else {
+            eprintln!("Legacy Facebook sample not present — skipping");
+            return;
+        };
+        let converted = legacy_to_new_grammar(&legacy);
+        assert!(
+            !converted.contains(r#"display:table"#),
+            "conversion left legacy markup behind — the test would be \
+             parsing a mixed document and prove nothing"
+        );
+        let a = section_counts(&parse_fixture(&legacy));
+        let b = section_counts(&parse_fixture(&converted));
+        eprintln!("{:30} {:>7} {:>7}", "section", "legacy", "new");
+        let keys: std::collections::BTreeSet<_> = a.keys().chain(b.keys()).cloned().collect();
+        for k in &keys {
+            eprintln!(
+                "{:30} {:>7} {:>7}",
+                k,
+                a.get(k).copied().unwrap_or(0),
+                b.get(k).copied().unwrap_or(0)
+            );
+        }
+        for k in ["unified_messages", "photos"] {
+            assert!(a.get(k).copied().unwrap_or(0) > 0, "legacy sample has no {k}");
+            assert_eq!(a.get(k), b.get(k), "{k} count differs between grammars");
+        }
+    }
+
+    /// The fields an investigator reads, per message, in document order.
+    fn message_tuples(ctx: &ParseCtx) -> Vec<(Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, Vec<String>)> {
+        ctx.items
+            .iter()
+            .filter(|it| it.section == "unified_messages")
+            .map(|it| {
+                (
+                    it.raw_fields.get("threadId").and_then(|v| v.as_str()).map(String::from),
+                    it.author.clone(),
+                    it.recipient.clone(),
+                    it.timestamp.clone(),
+                    it.body_text.clone(),
+                    it.attachments.clone(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn grammar_parity_message_content() {
+        let Some(legacy) = legacy_facebook_records() else {
+            eprintln!("Legacy Facebook sample not present — skipping");
+            return;
+        };
+        let a = message_tuples(&parse_fixture(&legacy));
+        let b = message_tuples(&parse_fixture(&legacy_to_new_grammar(&legacy)));
+        for (x, y) in a.iter().zip(b.iter()) {
+            eprintln!("legacy {:?}\nnew    {:?}", x, y);
+        }
+        assert!(!a.is_empty());
+        // Legacy `<br />`-separated participants used to be read as one
+        // run-on line, so every legacy message had recipient = None.
+        assert!(a.iter().all(|t| t.2.is_some()), "legacy participants not parsed");
+        assert_eq!(a, b, "messages differ between grammars");
+    }
+
+    /// 2025+ Messenger content, including a thread that a page break splits
+    /// mid-message into an unlabelled continuation block.
+    const MINIFIED_MESSAGES: &str = r#"<html><head><title>Facebook Business Record</title></head><body>
+<div id="property-unified_messages" class="content-pane">
+<div class="t o"><div class="t i">Unified Messages Definition<div class="m"><div>Help text that is not evidence</div></div></div></div>
+<div class="t o"><div class="t i">Unified Messages<div class="m"><div>
+<div class="t o"><div class="t i">Thread<div class="m"><div>(111)
+<div class="t o"><div class="t i">Current Participants<div class="m"><div>2024-01-01 00:00:00 UTC<div class="p"></div>Alice (Facebook: 1)<div class="p"></div>Bob (Facebook: 2)</div></div></div></div>
+<div class="t o"><div class="t i">Author<div class="m"><div>Alice (Facebook: 1)</div></div></div></div>
+<div class="t o"><div class="t i">Sent<div class="m"><div>2024-01-09 19:08:22 UTC</div></div></div></div>
+<div class="t o"><div class="t i">Body<div class="m"><div>hello</div></div></div></div>
+<div class="t o"><div class="t i">Author<div class="m"><div>Bob (Facebook: 2)</div></div></div></div>
+<div class="t o"><div class="t i">Sent<div class="m"><div>2024-01-09 19:09:00 UTC</div></div></div></div>
+</div></div></div></div>
+</div></div></div></div>
+<div id="page_7" class="pageBreak"></div>
+<div class="t o"><div class="t i"><div class="m"><div>
+<div class="t o"><div class="t i">Body<div class="m"><div>reply across the break</div></div></div></div>
+<div class="t o"><div class="t i">Attachments<div class="m"><div>image-abc (999)
+<div class="t o"><div class="t i">Type<div class="m"><div>image/jpeg</div></div></div></div>
+<div class="t o"><div class="t i">Size<div class="m"><div>1234</div></div></div></div>
+<div class="t o"><div class="t i">URL<div class="m"><div>https://example.invalid/abc</div></div></div></div>
+<div class="t o"><div class="t i"><div class="m"><div><img src="linked_media/abc.jpg"></div></div></div></div>
+<div class="t o"><div class="t i">Linked Media File:<div class="m"><div>linked_media/abc.jpg</div></div></div></div>
+</div></div></div></div>
+<div class="t o"><div class="t i">Author<div class="m"><div>Alice (Facebook: 1)</div></div></div></div>
+<div class="t o"><div class="t i">Sent<div class="m"><div>2024-01-09 19:10:00 UTC</div></div></div></div>
+<div class="t o"><div class="t i">Call Record<div class="m"><div>
+<div class="t o"><div class="t i">Type<div class="m"><div>audio</div></div></div></div>
+<div class="t o"><div class="t i">Missed<div class="m"><div>true</div></div></div></div>
+<div class="t o"><div class="t i">Duration<div class="m"><div>0</div></div></div></div>
+</div></div></div></div>
+<div class="t o"><div class="t i">Thread<div class="m"><div>(222)
+<div class="t o"><div class="t i">Thread Name<div class="m"><div>Group chat</div></div></div></div>
+<div class="t o"><div class="t i">Current Participants<div class="m"><div>2024-02-01 00:00:00 UTC<div class="p"></div>Alice (Facebook: 1)<div class="p"></div>Bob (Facebook: 2)<div class="p"></div>Cara (Facebook: 3)</div></div></div></div>
+<div class="t o"><div class="t i">Author<div class="m"><div>Cara (Facebook: 3)</div></div></div></div>
+<div class="t o"><div class="t i">Sent<div class="m"><div>2024-02-02 10:00:00 UTC</div></div></div></div>
+<div class="t o"><div class="t i">Body<div class="m"><div>hi all</div></div></div></div>
+</div></div></div></div>
+</div></div></div></div>
+</div>
+</body></html>"#;
+
+    #[test]
+    fn minified_messages_survive_page_breaks() {
+        let ctx = parse_fixture(MINIFIED_MESSAGES);
+        let msgs: Vec<&WarrantItem> = ctx
+            .items
+            .iter()
+            .filter(|it| it.section == "unified_messages")
+            .collect();
+        assert_eq!(msgs.len(), 4, "got {:#?}", msgs);
+
+        let tid = |m: &WarrantItem| m.raw_fields.get("threadId").and_then(|v| v.as_str()).map(String::from);
+
+        assert_eq!(tid(msgs[0]).as_deref(), Some("111"));
+        assert_eq!(msgs[0].author.as_deref(), Some("Alice (Facebook: 1)"));
+        assert_eq!(msgs[0].recipient.as_deref(), Some("Bob (Facebook: 2)"));
+        assert_eq!(msgs[0].body_text.as_deref(), Some("hello"));
+        assert_eq!(msgs[0].timestamp.as_deref(), Some("2024-01-09 19:08:22 UTC"));
+
+        // Author/Sent before the break, Body + attachment after it: one message.
+        assert_eq!(tid(msgs[1]).as_deref(), Some("111"), "continuation lost its thread");
+        assert_eq!(msgs[1].author.as_deref(), Some("Bob (Facebook: 2)"));
+        assert_eq!(msgs[1].body_text.as_deref(), Some("reply across the break"));
+        assert_eq!(msgs[1].attachments, vec!["abc.jpg".to_string()], "attachment not de-duplicated");
+        let meta = &msgs[1].raw_fields["attachmentMeta"][0];
+        assert_eq!(meta["description"], "image-abc (999)");
+        assert_eq!(meta["type"], "image/jpeg");
+
+        assert_eq!(msgs[2].author.as_deref(), Some("Alice (Facebook: 1)"));
+        assert_eq!(msgs[2].raw_fields["callRecord"], true);
+        assert_eq!(msgs[2].raw_fields["callType"], "audio", "call Type misfiled as attachment metadata");
+        assert_eq!(msgs[2].raw_fields["missed"], "true");
+        assert_eq!(msgs[2].raw_fields["duration"], "0");
+        assert!(msgs[2].raw_fields.get("threadName").is_none());
+
+        assert_eq!(tid(msgs[3]).as_deref(), Some("222"));
+        assert_eq!(msgs[3].raw_fields["threadName"], "Group chat");
+        assert_eq!(msgs[3].recipient.as_deref(), Some("Alice (Facebook: 1), Bob (Facebook: 2)"));
+
+        for it in &ctx.items {
+            let raw = serde_json::to_string(&it.raw_fields).unwrap();
+            assert!(!raw.contains("Help text"), "Definition leaked into {}", it.section);
+        }
     }
 
     #[test]

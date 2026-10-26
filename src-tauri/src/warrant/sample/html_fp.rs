@@ -256,7 +256,13 @@ fn walk(doc: &Html, fp: &mut HtmlFingerprint) {
             }
             if let Some(id) = el.attr("id") {
                 let ids = fp.ids.entry(tag.clone()).or_default();
-                if ids.len() < MAX_IDS_PER_TAG {
+                // Pagination ids (`page_1` … `page_1692`) carry no structure
+                // but would fill the cap before any `property-*` section id
+                // is seen — which made a 2025+ Meta sample undiagnosable.
+                // Keep two as examples.
+                let crowding = is_pagination_id(id)
+                    && ids.iter().filter(|i| is_pagination_id(i)).count() >= 2;
+                if ids.len() < MAX_IDS_PER_TAG && !crowding {
                     ids.insert(id.to_string());
                 }
             }
@@ -563,6 +569,13 @@ fn reduce_text_counter(
     }
 }
 
+/// `page_<digits>` — Meta's per-page pagination anchors.
+fn is_pagination_id(id: &str) -> bool {
+    id.strip_prefix("page_")
+        .map(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
 /// Build a small structural blob for each id we captured. Only ids whose
 /// names are CSS-selector-safe (alnum + `-`/`_`, starting with a letter)
 /// are processed — anything else is silently skipped. Cap total entries.
@@ -576,6 +589,8 @@ fn build_id_skeletons(doc: &Html, fp: &mut HtmlFingerprint) {
     }
     all_ids.sort();
     all_ids.dedup();
+    // Section ids first: they are what a parser dispatches on.
+    all_ids.sort_by_key(|id| !id.starts_with("property-"));
 
     for id in all_ids {
         if fp.per_id_skeleton.len() >= MAX_ID_SKELETONS { break; }
@@ -996,6 +1011,27 @@ mod tests {
         assert!(div_classes.contains("message _2pi3"));
         assert!(div_classes.contains("message _2lej"));
         assert!(fp.ids.get("span").unwrap().contains("header"));
+    }
+
+    /// A 2025+ Meta return interleaves 1,000+ `page_N` anchors with its
+    /// `property-*` sections. Both caps used to fill with page ids, hiding
+    /// `property-unified_messages` from the sample entirely.
+    #[test]
+    fn pagination_ids_do_not_crowd_out_sections() {
+        let mut html = String::from("<html><body>");
+        for i in 1..=200 {
+            html.push_str(&format!(r#"<div id="page_{i}" class="pageBreak"></div>"#));
+        }
+        html.push_str(r#"<div id="property-unified_messages"><div class="t o"></div></div>"#);
+        html.push_str("</body></html>");
+        let fp = build(&html);
+        let div_ids = &fp.ids["div"];
+        assert!(div_ids.contains("property-unified_messages"));
+        assert_eq!(div_ids.iter().filter(|i| i.starts_with("page_")).count(), 2);
+        assert!(fp.per_id_skeleton.contains_key("property-unified_messages"));
+        assert!(!is_pagination_id("page_"));
+        assert!(!is_pagination_id("page_header"));
+        assert!(is_pagination_id("page_1692"));
     }
 
     #[test]
