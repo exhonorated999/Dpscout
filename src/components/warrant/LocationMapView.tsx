@@ -24,6 +24,15 @@ import {
 } from "react-leaflet";
 import type { Bucket, WarrantItem } from "./WarrantTriageView";
 
+// CARTO basemaps now require an API key. Without one every tile is a 200 OK
+// placeholder PNG reading "API KEY REQUIRED" — nothing errors, the map just
+// looks broken. The key is NOT a secret (it travels in every tile URL); it is
+// the same key the Intellect and Scout admin dashboards use. Rotate it here.
+const CARTO_BASEMAP_KEY = "cb1_3oqf_1_911980cf4189da1dfd1186b2";
+const CARTO_TILE_URL =
+  "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png?key=" +
+  CARTO_BASEMAP_KEY;
+
 interface MapPoint {
   id: string;
   lat: number;
@@ -109,7 +118,7 @@ export const LocationMapView: React.FC<LocationMapViewProps> = ({
       >
         <TileLayer
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+          url={CARTO_TILE_URL}
           subdomains="abcd"
         />
         <FitBounds points={points} />
@@ -211,7 +220,7 @@ export const LocationOverviewMap: React.FC<LocationOverviewMapProps> = ({
           attributionControl={false}
         >
           <TileLayer
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            url={CARTO_TILE_URL}
             subdomains="abcd"
           />
           <FitBounds points={points} />
