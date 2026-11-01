@@ -1641,6 +1641,12 @@ fn get_available_drives() -> Result<Vec<DriveInfo>, String> {
 
 #[tauri::command]
 fn get_usb_device_info(drive_letter: String) -> Result<scanner::usb_device::UsbDeviceInfo, String> {
+    // macOS portable: the "drive letter" is a mount path (`/Volumes/X`).
+    #[cfg(target_os = "macos")]
+    {
+        return scanner::usb_device::get_usb_device_info_macos(&drive_letter);
+    }
+    #[cfg(not(target_os = "macos"))]
     scanner::usb_device::get_usb_device_info(&drive_letter)
 }
 

@@ -4,6 +4,9 @@ import { clearThumbnailDataUrlCache } from "./utils/thumbnailLoader";
 import { listen } from "@tauri-apps/api/event";
 import { StartScreen, DeviceType } from "./components/StartScreen";
 import { resetSkippedProtected, MAC_PREVIEW, setPreviewSkippedProtected } from "./lib/hostPlatform";
+
+/** Warrant Triage is desktop-only; the portable edition (Windows + Mac) hides it. */
+const WARRANT_ENABLED = import.meta.env.VITE_PORTABLE !== 'true';
 import { ScanView } from "./components/ScanView";
 import { SettingsView } from "./components/SettingsView";
 import { ReportView } from "./components/ReportView";
@@ -876,9 +879,10 @@ function App() {
   // Dev-only (MAC_PREVIEW): play back canned macOS results with a short fake
   // progress so the results dashboard, the Mac tabs and the "Full Disk Access
   // required" section can be reviewed on Windows. Compiled out of builds.
-  async function runMacPreviewScan(modules: ScanModules) {
-    const { macPreviewResults } = await import("./lib/macPreviewFixtures");
+  async function runMacPreviewScan(modules: ScanModules, usbMount?: string) {
+    const { macPreviewResults, macPreviewUsbResults } = await import("./lib/macPreviewFixtures");
     const r = macPreviewResults();
+    const usb = usbMount ? macPreviewUsbResults(usbMount) : null;
     setScannedModules(modules);
     setState("results");
     setIsScanning(true);
@@ -892,10 +896,19 @@ function App() {
     setDeletedMediaResults([]);
     setSystemInfo(null);
     await resetSkippedProtected();
-    setPreviewSkippedProtected(r.skippedProtected);
+    setPreviewSkippedProtected(usb ? [] : r.skippedProtected);
 
     const step = (name: string, apply: () => void) =>
       new Promise<void>(res => { setCurrentScanModule(`${name} (preview)`); setTimeout(() => { apply(); res(); }, 600); });
+
+    if (usb) {
+      // USB Drive card on a Mac: only the volume is scanned (no apps/browsers/intrusion).
+      await step("USB Device Information", () => setSystemInfo(usb.systemInfo));
+      if (modules.keywordSearch) await step("Keyword Search", () => setKeywordMatches(usb.keywordMatches));
+      setCurrentScanModule("");
+      setIsScanning(false);
+      return;
+    }
 
     await step("System Information", () => setSystemInfo(r.systemInfo));
     if (modules.questionableApps) await step("Questionable Applications", () => setApps(r.apps));
@@ -932,6 +945,12 @@ function App() {
       // Dev-only Mac UI preview on a Windows box: the Windows backend would
       // read "/" as C:\, so show canned macOS results instead of scanning.
       await runMacPreviewScan(modules);
+      return;
+    }
+    if (import.meta.env.DEV && MAC_PREVIEW && selectedDeviceType === 'usb') {
+      // Same for the USB card on the mocked Mac ("/Volumes/X" isn't a Windows path).
+      if (keywordConfig?.selectedDrives) setSelectedDrives(keywordConfig.selectedDrives);
+      await runMacPreviewScan(modules, keywordConfig?.selectedDrives?.[0] ?? '/Volumes/EVIDENCE');
       return;
     }
     
@@ -983,8 +1002,10 @@ function App() {
       setIsLoadingSystemInfo(true);
       try {
         if (selectedDeviceType === 'usb' && keywordConfig?.selectedDrives && keywordConfig.selectedDrives.length > 0) {
-          // USB mode: skip heavy system info, just get drive name/size (instant)
-          const drive = keywordConfig.selectedDrives[0].replace(':', '').replace('\\', '').trim();
+          // USB mode: skip heavy system info, just get drive name/size (instant).
+          // Windows passes the bare letter; a Mac passes the mount path (/Volumes/X).
+          const sel = keywordConfig.selectedDrives[0];
+          const drive = sel.startsWith('/') ? sel : sel.replace(':', '').replace('\\', '').trim();
           const usbInfo = await invoke("get_usb_device_info", { driveLetter: drive });
           const minimalSysInfo: any = {
             scan_id: crypto.randomUUID?.() || Date.now().toString(),
@@ -1589,6 +1610,7 @@ function App() {
   }
 
   function openWarrant() {
+    if (!WARRANT_ENABLED) return;
     setState("warrant");
   }
 
@@ -2189,10 +2211,11 @@ function App() {
             <h2 style={{ color: '#ef4444', margin: 0 }}>License Expired</h2>
             <p style={{ color: 'var(--color-text-secondary)', maxWidth: '440px', lineHeight: 1.6 }}>
               Your trial or license has expired. Enter a valid license key in Settings to
-              restore full access. In the meantime, <strong>Warrant Triage</strong> stays
-              available for <strong>Meta</strong> and <strong>Google</strong> returns.
+              restore full access.{WARRANT_ENABLED && (<> In the meantime, <strong>Warrant Triage</strong> stays
+              available for <strong>Meta</strong> and <strong>Google</strong> returns.</>)}
             </p>
             <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', justifyContent: 'center' }}>
+              {WARRANT_ENABLED && (
               <button
                 onClick={openWarrant}
                 style={{
@@ -2210,6 +2233,7 @@ function App() {
               >
                 📋 Warrant Triage
               </button>
+              )}
               <button
                 onClick={openSettings}
                 style={{

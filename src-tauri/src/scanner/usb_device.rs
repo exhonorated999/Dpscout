@@ -17,7 +17,9 @@ pub struct UsbDeviceInfo {
     pub volume_id: String,
 }
 
-/// Get USB device information for a specific drive
+/// Get USB device information for a specific drive (Windows drive letter).
+/// macOS uses [`get_usb_device_info_macos`].
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn get_usb_device_info(drive_letter: &str) -> Result<UsbDeviceInfo, String> {
     // Validate drive exists
     let drive_path = format!("{}:\\", drive_letter.chars().next().unwrap());
@@ -61,6 +63,62 @@ pub fn get_usb_device_info(drive_letter: &str) -> Result<UsbDeviceInfo, String> 
         serial_number,
         volume_id,
     })
+}
+
+/// macOS portable: `UsbDeviceInfo` for an attached volume (`/Volumes/X`) from
+/// `diskutil info -plist <mount>`, with `df` sizes as the fallback.
+/// `drive_letter` carries the mount path. `serial_number` is the VolumeUUID
+/// and `volume_id` is the BSD device (`disk4s1`). Pure, so it is tested on Windows.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub fn usb_info_from_diskutil(xml: &[u8], mount: &str, df_total: u64, df_free: u64) -> UsbDeviceInfo {
+    let d = crate::system_info::macos::parse_diskutil_info(xml, mount, df_total, df_free);
+    let dict = plist::Value::from_reader_xml(xml).ok().and_then(|v| v.into_dictionary());
+    let s = |k: &str| {
+        dict.as_ref()
+            .and_then(|d| d.get(k))
+            .and_then(|v| v.as_string())
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+    };
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    let capacity_gb = d.total_space as f64 / GB;
+    let free_space_gb = d.free_space as f64 / GB;
+    UsbDeviceInfo {
+        drive_letter: mount.to_string(),
+        drive_name: d.label,
+        make: None,
+        model: s("MediaName"),
+        capacity_gb,
+        used_space_gb: (capacity_gb - free_space_gb).max(0.0),
+        free_space_gb,
+        file_count: 0,
+        serial_number: if d.serial_number.is_empty() { "Unknown".to_string() } else { d.serial_number },
+        volume_id: s("DeviceIdentifier").unwrap_or_else(|| "Unknown".to_string()),
+    }
+}
+
+/// macOS portable: device info for a USB/external volume mounted under `/Volumes`.
+/// Read-only, unprivileged (`df`, `diskutil info`) — nothing is written to the host.
+#[cfg(target_os = "macos")]
+pub fn get_usb_device_info_macos(mount: &str) -> Result<UsbDeviceInfo, String> {
+    if !mount.starts_with("/Volumes/") || !Path::new(mount).is_dir() {
+        return Err(format!("{} is not a mounted volume", mount));
+    }
+    let (total, free) = Command::new("/bin/df")
+        .args(["-kP", mount])
+        .output()
+        .ok()
+        .map(|o| crate::system_info::macos::parse_df(&String::from_utf8_lossy(&o.stdout)))
+        .and_then(|v| v.into_iter().next())
+        .map(|(_, t, f)| (t, f))
+        .unwrap_or((0, 0));
+    let xml = Command::new("/usr/sbin/diskutil")
+        .args(["info", "-plist", mount])
+        .output()
+        .map(|o| o.stdout)
+        .unwrap_or_default();
+    Ok(usb_info_from_diskutil(&xml, mount, total, free))
 }
 
 /// Get drive label using GetVolumeInformationW — instant, no subprocess
@@ -410,4 +468,46 @@ fn count_files_recursive(path: &Path) -> usize {
     }
     
     count.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diskutil_volume_maps_to_usb_info() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>VolumeName</key><string>EVIDENCE</string>
+<key>FilesystemName</key><string>ExFAT</string>
+<key>VolumeUUID</key><string>0E239BC6-F960-3107-89CF-1C97F78BB46B</string>
+<key>DeviceIdentifier</key><string>disk4s1</string>
+<key>MediaName</key><string> SanDisk Ultra </string>
+<key>TotalSize</key><integer>68719476736</integer>
+<key>FreeSpace</key><integer>17179869184</integer>
+</dict></plist>"#;
+        let u = usb_info_from_diskutil(xml, "/Volumes/EVIDENCE", 1, 1);
+        assert_eq!(u.drive_letter, "/Volumes/EVIDENCE");
+        assert_eq!(u.drive_name, "EVIDENCE");
+        assert_eq!(u.model.as_deref(), Some("SanDisk Ultra"));
+        assert_eq!(u.serial_number, "0E239BC6-F960-3107-89CF-1C97F78BB46B");
+        assert_eq!(u.volume_id, "disk4s1");
+        assert!((u.capacity_gb - 64.0).abs() < 1e-9);
+        assert!((u.free_space_gb - 16.0).abs() < 1e-9);
+        assert!((u.used_space_gb - 48.0).abs() < 1e-9);
+        assert_eq!(u.file_count, 0);
+    }
+
+    #[test]
+    fn diskutil_garbage_falls_back_to_df_and_mount_name() {
+        let gb = 1024u64 * 1024 * 1024;
+        let u = usb_info_from_diskutil(b"not a plist", "/Volumes/NO NAME", 8 * gb, 2 * gb);
+        assert_eq!(u.drive_name, "NO NAME");
+        assert_eq!(u.model, None);
+        assert_eq!(u.serial_number, "Unknown");
+        assert_eq!(u.volume_id, "Unknown");
+        assert!((u.capacity_gb - 8.0).abs() < 1e-9);
+        assert!((u.used_space_gb - 6.0).abs() < 1e-9);
+    }
 }

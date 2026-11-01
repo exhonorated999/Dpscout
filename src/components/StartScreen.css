@@ -429,6 +429,49 @@
   box-shadow: 0 0 30px rgba(108, 138, 237, 0.5);
 }
 
+/* Card for the other OS on a portable stick: visible, explains where to run it, not selectable. */
+.device-option.disabled {
+  cursor: not-allowed;
+}
+
+.device-option.disabled .device-card,
+.device-option.disabled:hover .device-card {
+  border-color: rgba(255, 255, 255, 0.15);
+  background: #0A0E1A !important;
+  box-shadow: none;
+  transform: none;
+}
+
+.device-option.disabled .device-icon,
+.device-option.disabled:hover .device-icon {
+  filter: grayscale(1);
+  opacity: 0.4;
+  transform: none;
+}
+
+.device-option.disabled .device-name,
+.device-option.disabled .device-description {
+  opacity: 0.45;
+  text-shadow: none;
+}
+
+.device-option.disabled .beta-badge {
+  opacity: 0.4;
+}
+
+.device-unavailable-note {
+  position: relative;
+  z-index: 1;
+  margin-top: 4px;
+  padding: 6px 8px;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: #ffb74d;
+  border: 1px dashed rgba(255, 183, 77, 0.45);
+  border-radius: 6px;
+  background: rgba(255, 183, 77, 0.06);
+}
+
 .device-icon {
   margin-bottom: 8px;
   position: relative;

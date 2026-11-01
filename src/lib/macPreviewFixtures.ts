@@ -174,3 +174,38 @@ export function macPreviewResults(): MacPreviewResults {
 
   return { systemInfo, apps, browsers, keywordMatches, intrusion, skippedProtected };
 }
+
+/**
+ * USB Drive card on a (mocked) Mac: what `get_usb_device_info` returns on
+ * macOS for `/Volumes/X` (usb_device.rs `usb_info_from_diskutil`), plus a
+ * keyword hit that lives on that volume.
+ */
+export function macPreviewUsbResults(mount: string): Pick<MacPreviewResults, 'systemInfo' | 'keywordMatches'> {
+  const vol = PREVIEW_MAC_DRIVES.find(d => d.letter === mount);
+  const total = (vol?.totalSpace ?? 64 * GB) / GB;
+  const free = (vol?.freeSpace ?? 41 * GB) / GB;
+  const systemInfo: SystemInfo = {
+    scan_id: 'preview-usb-0000',
+    scan_timestamp: now(),
+    computer_name: 'USB Scan',
+    os_version: '',
+    registered_owner: null,
+    registered_organization: null,
+    product_id: null,
+    domain: null,
+    usb_device_info: {
+      drive_letter: mount,
+      drive_name: vol?.label ?? mount.split('/').pop() ?? mount,
+      make: null,
+      model: 'SanDisk Ultra (UI PREVIEW — not real data)',
+      capacity_gb: total,
+      used_space_gb: total - free,
+      free_space_gb: free,
+      file_count: 0,
+      serial_number: '0E239BC6-F960-3107-89CF-1C97F78BB46B',
+      volume_id: 'disk4s1',
+    },
+  };
+  const keywordMatches = macPreviewResults().keywordMatches.filter(m => m.filePath.startsWith(`${mount}/`));
+  return { systemInfo, keywordMatches };
+}

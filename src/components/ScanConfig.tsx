@@ -94,7 +94,17 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
     },
   };
 
+  // Scanning a USB drive from a Mac: same modules as Windows USB, minus deleted
+  // media (raw /dev/rdisk reads need root; the portable Mac build never elevates).
+  const [hostIsMac, setHostIsMac] = useState<boolean>(false);
+  useEffect(() => {
+    let alive = true;
+    getHostPlatform().then(p => { if (alive) setHostIsMac(p.os === 'macos'); });
+    return () => { alive = false; };
+  }, []);
+
   const isModuleSupported = (module: keyof ScanModules) => {
+    if (module === 'deletedMedia' && hostIsMac) return false;
     return supportedModules[deviceType]?.[module] || false;
   };
 
@@ -158,9 +168,16 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
 
   const loadDrives = async () => {
     try {
-      const drives = import.meta.env.DEV && MAC_PREVIEW
+      const all = import.meta.env.DEV && MAC_PREVIEW
         ? (await import('../lib/macPreviewFixtures')).PREVIEW_MAC_DRIVES
         : await invoke<DriveInfo[]>('get_available_drives');
+      // USB mode on a Mac: only attached volumes under /Volumes (the Scout stick
+      // itself is already excluded by the backend). The system volume "/" is
+      // scanned through the Mac Computer card, not here.
+      const mac = (await getHostPlatform()).os === 'macos';
+      const drives = deviceType === 'usb' && mac
+        ? all.filter(d => d.letter.startsWith('/Volumes/'))
+        : all;
       setAvailableDrives(drives);
       
       // For Windows mode: auto-select C: drive
@@ -457,7 +474,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
             <p className="options-description">
               {deviceType === 'macos'
                 ? 'Choose which volumes to include ("/" scans every user\'s home folders; other volumes are scanned whole). The Scout stick itself is not listed.'
-                : `Choose which drives to include in the scan (showing ${deviceType === 'windows' ? 'all drives' : 'all drives except C:'})`}
+                : deviceType === 'usb' && hostIsMac
+                  ? 'Choose which attached drives under /Volumes to scan (each is scanned whole). The Mac\'s own disk and the Scout stick are not listed.'
+                  : `Choose which drives to include in the scan (showing ${deviceType === 'windows' ? 'all drives' : 'all drives except C:'})`}
             </p>
             {deviceType === 'macos' && hasFullDiskAccess === false && (
               <div className="warning-box">
@@ -497,7 +516,11 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
             {availableDrives.filter(drive => deviceType === 'usb' ? drive.letter !== 'C:' : true).length === 0 && (
               <div className="warning-box">
                 <strong>⚠️ No drives available</strong>
-                <p>{deviceType === 'usb' ? 'Only C: drive detected. Connect additional drives to scan.' : 'Unable to detect any drives on this system.'}</p>
+                <p>{deviceType === 'usb'
+                  ? (hostIsMac
+                      ? 'No external drives detected under /Volumes. Connect the drive to this Mac and go back to refresh.'
+                      : 'Only C: drive detected. Connect additional drives to scan.')
+                  : 'Unable to detect any drives on this system.'}</p>
               </div>
             )}
 
@@ -1206,8 +1229,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
                 }
                 
                 // For USB mode, ensure apps and browser history are disabled
+                // (and deleted media on a Mac, which would need root).
                 const scanModules = deviceType === 'usb' 
-                  ? { ...modules, questionableApps: false, browserHistory: false }
+                  ? { ...modules, questionableApps: false, browserHistory: false, ...(hostIsMac ? { deletedMedia: false } : {}) }
                   : modules;
                 
                 const configWithLists = {

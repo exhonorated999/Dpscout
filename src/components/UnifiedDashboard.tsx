@@ -905,9 +905,9 @@ const DeviceInfoView: React.FC<{
       const fetchUsbInfo = async () => {
         setLoadingUsbInfo(true);
         try {
-          // Get the first selected drive (remove colon and backslash if present)
+          // Get the first selected drive (Windows: strip colon/backslash; Mac: keep the /Volumes path)
           let drive = selectedDrives[0];
-          drive = drive.replace(':', '').replace('\\', '').trim();
+          if (!drive.startsWith('/')) drive = drive.replace(':', '').replace('\\', '').trim();
           console.log('Fetching USB info for drive:', drive);
           
           const info = await invoke<UsbDeviceInfo>('get_usb_device_info', { driveLetter: drive });
@@ -960,7 +960,9 @@ const DeviceInfoView: React.FC<{
           <div className="info-grid">
             <div className="info-card">
               <div className="info-label">Drive</div>
-              <div className="info-value">{usbDeviceInfo.drive_letter}:</div>
+              <div className="info-value">
+                {usbDeviceInfo.drive_letter.startsWith('/') ? usbDeviceInfo.drive_letter : `${usbDeviceInfo.drive_letter}:`}
+              </div>
             </div>
             <div className="info-card">
               <div className="info-label">USB Name</div>
