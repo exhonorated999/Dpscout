@@ -34,15 +34,22 @@
 //! soundness problem, so [`data_root`] probes for writability once and
 //! fails loudly with a message the officer can act on.
 //!
-//! # Deliberately not routed through here
+//! # The secure DB stays beside the install, not under `ScoutData`
 //!
-//! `security::auth::init_security_db` keeps `hindsight_secure.db` next to the
-//! executable.  On the portable build that is already the USB drive, so the
-//! encrypted-report store and trial state travel with the stick as intended —
-//! moving it under `ScoutData` would orphan the data of everyone already
-//! running a portable drive.  On desktop it sits in the install directory,
-//! which is a separate pre-existing concern and is left alone here so this
-//! change cannot disturb existing installations.
+//! `security::auth` keeps `hindsight_secure.db` next to the executable
+//! ([`secure_db_path`]).  On the portable build that is already the USB drive,
+//! so the encrypted-report store and trial state travel with the stick as
+//! intended — moving it under `ScoutData` would orphan the data of everyone
+//! already running a portable drive.  On macOS "next to the executable" means
+//! next to the `.app` ([`install_dir`]): the bundle is code-signed and must
+//! never be written to.
+//!
+//! # macOS portable
+//!
+//! The Mac build is portable-only.  It walks out of `*.app/Contents/MacOS`,
+//! shares a sibling Windows install's `ScoutData` on the same stick (see
+//! [`choose_portable_root`]), and routes scratch files through
+//! [`scratch_dir`] so nothing — not even temp copies — lands on the host.
 
 use std::path::PathBuf;
 
@@ -60,7 +67,155 @@ const PORTABLE_DATA_DIR: &str = "ScoutData";
 // Root resolution
 // ---------------------------------------------------------------------------
 
-/// Portable: `<exe_dir>\ScoutData`, verified writable.
+/// Name of the Windows executable inside a portable install folder.  Used by
+/// the macOS build to recognise a sibling Windows install on the same stick.
+#[cfg(feature = "portable")]
+const WINDOWS_EXE_NAME: &str = "datapilot-scout.exe";
+
+// ---------------------------------------------------------------------------
+// Install location (pure path math — no I/O)
+// ---------------------------------------------------------------------------
+
+/// The folder Scout is "installed" in, derived from the executable path.
+///
+/// * Windows / Linux: the executable's own directory (unchanged behaviour).
+/// * macOS bundle: `…/X/DataPilot Scout.app/Contents/MacOS/datapilot-scout`
+///   → `…/X`.  Everything inside the `.app` is code-signed and must never be
+///   written to, so state that historically lived "next to the exe" lives
+///   next to the bundle instead — which, on a stick, is the same folder the
+///   Windows `datapilot-scout.exe` sits in.
+pub(crate) fn install_dir_from_exe(exe: &std::path::Path) -> Option<PathBuf> {
+    let exe_dir = exe.parent()?;
+    if let Some(bundle) = bundle_of_exe_dir(exe_dir) {
+        if let Some(outer) = bundle.parent() {
+            return Some(outer.to_path_buf());
+        }
+    }
+    Some(exe_dir.to_path_buf())
+}
+
+/// `Some(<…>.app)` when `exe_dir` is a bundle's `Contents/MacOS`.
+fn bundle_of_exe_dir(exe_dir: &std::path::Path) -> Option<&std::path::Path> {
+    if exe_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents = exe_dir.parent()?;
+    if contents.file_name()? != "Contents" {
+        return None;
+    }
+    let bundle = contents.parent()?;
+    let is_app = bundle
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("app"))
+        .unwrap_or(false);
+    is_app.then_some(bundle)
+}
+
+/// Directories that may hold bundled resources (`external/ffmpeg`, JSON
+/// tables), most specific first.  Tauri maps `../external/**` resources to
+/// `_up_/external/**`, inside `Contents/Resources` on macOS and the install
+/// folder on Windows.
+pub(crate) fn resource_roots_from_exe(exe: &std::path::Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    let Some(exe_dir) = exe.parent() else {
+        return roots;
+    };
+    roots.push(exe_dir.to_path_buf());
+    roots.push(exe_dir.join("_up_"));
+    if let Some(bundle) = bundle_of_exe_dir(exe_dir) {
+        let res = bundle.join("Contents").join("Resources");
+        roots.push(res.join("_up_"));
+        roots.push(res);
+    }
+    roots
+}
+
+/// Install folder for the running executable (see [`install_dir_from_exe`]).
+pub fn install_dir() -> Result<PathBuf, String> {
+    let exe = std::env::current_exe()
+        .map_err(|e| format!("Cannot determine Scout's location: {}", e))?;
+    install_dir_from_exe(&exe)
+        .ok_or_else(|| "Cannot determine Scout's install folder.".to_string())
+}
+
+/// Resource search roots for the running executable.
+pub fn resource_roots() -> Vec<PathBuf> {
+    std::env::current_exe()
+        .map(|exe| resource_roots_from_exe(&exe))
+        .unwrap_or_default()
+}
+
+/// Encrypted-report / USB-login store.  Historically `<exe_dir>\hindsight_secure.db`;
+/// that is still exactly where Windows resolves it.  macOS resolves beside
+/// the `.app` (never inside the signed bundle).
+pub fn secure_db_path() -> Result<PathBuf, String> {
+    Ok(install_dir()?.join("hindsight_secure.db"))
+}
+
+// ---------------------------------------------------------------------------
+// Portable root selection
+// ---------------------------------------------------------------------------
+
+/// Pick the portable `ScoutData` folder.
+///
+/// 1. `<install>/ScoutData` if it already exists (normal case, both OSes).
+/// 2. macOS only (`stick` is `Some`): a sibling Windows install on the same
+///    stick — a folder (or the stick root) holding both `datapilot-scout.exe`
+///    and `ScoutData` — so the Mac build sees the same hash lists, keyword
+///    lists, settings and cases as the Windows build on that drive.
+/// 3. Otherwise `<install>/ScoutData` (created by the caller).
+#[cfg(feature = "portable")]
+pub(crate) fn choose_portable_root(
+    install: &std::path::Path,
+    stick: Option<&std::path::Path>,
+) -> PathBuf {
+    let own = install.join(PORTABLE_DATA_DIR);
+    if own.is_dir() {
+        return own;
+    }
+    if let Some(stick) = stick {
+        let mut candidates = vec![stick.to_path_buf()];
+        if let Ok(rd) = std::fs::read_dir(stick) {
+            let mut subs: Vec<PathBuf> = rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .filter(|p| {
+                    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    !name.starts_with('.') && !name.to_ascii_lowercase().ends_with(".app")
+                })
+                .collect();
+            subs.sort();
+            candidates.extend(subs);
+        }
+        for c in candidates {
+            let data = c.join(PORTABLE_DATA_DIR);
+            if data.is_dir() && c.join(WINDOWS_EXE_NAME).is_file() {
+                return data;
+            }
+        }
+    }
+    own
+}
+
+/// Resolved (not yet probed) portable root, cached for the process so every
+/// accessor — fallible or not — agrees on one folder.
+#[cfg(feature = "portable")]
+fn portable_root_path() -> Option<PathBuf> {
+    static PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        let install = install_dir_from_exe(&exe)?;
+        #[cfg(target_os = "macos")]
+        let stick = crate::security::stick_identity::stick_root().ok();
+        #[cfg(not(target_os = "macos"))]
+        let stick: Option<PathBuf> = None;
+        Some(choose_portable_root(&install, stick.as_deref()))
+    })
+    .clone()
+}
+
+/// Portable: `<install>\ScoutData`, verified writable.
 ///
 /// The writability probe runs once per process and is cached — it creates and
 /// deletes a temporary marker file.  We probe rather than trusting metadata
@@ -71,21 +226,31 @@ fn portable_root() -> Result<PathBuf, String> {
     static ROOT: OnceLock<Result<PathBuf, String>> = OnceLock::new();
 
     ROOT.get_or_init(|| {
-        let exe_path = std::env::current_exe()
-            .map_err(|e| format!("Cannot determine Scout's location on the drive: {}", e))?;
-        let exe_dir = exe_path
-            .parent()
+        let root = portable_root_path()
             .ok_or_else(|| "Cannot determine Scout's folder on the drive.".to_string())?;
-        let root = exe_dir.join(PORTABLE_DATA_DIR);
+        let parent = root
+            .parent()
+            .map(PathBuf::from)
+            .ok_or_else(|| "Cannot determine Scout's folder on the drive.".to_string())?;
 
         if !root.exists() {
-            std::fs::create_dir_all(&root).map_err(|e| read_only_message(exe_dir, &e))?;
+            std::fs::create_dir_all(&root).map_err(|e| read_only_message(&parent, &e))?;
         }
 
         // Prove we can actually write, not just that the directory exists.
         let probe = root.join(".scout_write_test");
-        std::fs::write(&probe, b"scout").map_err(|e| read_only_message(exe_dir, &e))?;
+        std::fs::write(&probe, b"scout").map_err(|e| read_only_message(&parent, &e))?;
         let _ = std::fs::remove_file(&probe);
+
+        // Keep Spotlight from indexing the stick (its index would otherwise
+        // be built from our case data). Lives on the stick, best effort.
+        #[cfg(target_os = "macos")]
+        if let Ok(stick) = crate::security::stick_identity::stick_root() {
+            let marker = stick.join(".metadata_never_index");
+            if !marker.exists() {
+                let _ = std::fs::write(&marker, b"");
+            }
+        }
 
         Ok(root)
     })
@@ -208,9 +373,25 @@ pub fn telemetry_opt_out_path() -> Result<PathBuf, String> {
 /// [`data_root`].
 #[cfg(feature = "portable")]
 fn portable_root_unchecked() -> PathBuf {
-    match std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from)) {
-        Some(exe_dir) => exe_dir.join(PORTABLE_DATA_DIR),
-        None => PathBuf::from(r"\\?\SCOUT-PORTABLE-DRIVE-UNAVAILABLE"),
+    portable_root_path().unwrap_or_else(|| PathBuf::from(r"\\?\SCOUT-PORTABLE-DRIVE-UNAVAILABLE"))
+}
+
+/// Scratch space for short-lived working copies (locked browser databases,
+/// thumbnails, decrypted report previews).
+///
+/// * macOS portable → `ScoutData/tmp` on the stick.  The Mac build's contract
+///   is zero writes to the host, and `$TMPDIR` is the host's disk.
+/// * everything else → `std::env::temp_dir()`, exactly as before.
+pub fn scratch_dir() -> PathBuf {
+    #[cfg(all(feature = "portable", target_os = "macos"))]
+    {
+        let dir = portable_root_unchecked().join("tmp");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+    #[cfg(not(all(feature = "portable", target_os = "macos")))]
+    {
+        std::env::temp_dir()
     }
 }
 
@@ -367,5 +548,96 @@ mod tests {
         let root = data_root().expect("desktop root resolves");
         let expected = PathBuf::from(std::env::var("APPDATA").unwrap()).join("Hindsight");
         assert_eq!(root, expected);
+    }
+
+    #[test]
+    fn install_dir_is_exe_dir_outside_a_bundle() {
+        let exe = std::path::Path::new("E:/DatpilotScout/datapilot-scout.exe");
+        assert_eq!(install_dir_from_exe(exe).unwrap(), PathBuf::from("E:/DatpilotScout"));
+        // A folder merely *named* MacOS is not a bundle.
+        let exe = std::path::Path::new("/Volumes/S/MacOS/datapilot-scout");
+        assert_eq!(install_dir_from_exe(exe).unwrap(), PathBuf::from("/Volumes/S/MacOS"));
+        let exe = std::path::Path::new("/Volumes/S/Contents/MacOS/datapilot-scout");
+        assert_eq!(install_dir_from_exe(exe).unwrap(), PathBuf::from("/Volumes/S/Contents/MacOS"));
+    }
+
+    #[test]
+    fn install_dir_walks_out_of_a_mac_bundle() {
+        let exe = std::path::Path::new(
+            "/Volumes/SCOUT/DatpilotScout/DataPilot Scout.app/Contents/MacOS/datapilot-scout",
+        );
+        assert_eq!(
+            install_dir_from_exe(exe).unwrap(),
+            PathBuf::from("/Volumes/SCOUT/DatpilotScout")
+        );
+        let exe = std::path::Path::new("/Volumes/SCOUT/X.APP/Contents/MacOS/x");
+        assert_eq!(install_dir_from_exe(exe).unwrap(), PathBuf::from("/Volumes/SCOUT"));
+    }
+
+    #[test]
+    fn resource_roots_cover_bundle_resources() {
+        let exe = std::path::Path::new("/Volumes/S/A.app/Contents/MacOS/a");
+        let roots = resource_roots_from_exe(exe);
+        assert_eq!(roots[0], PathBuf::from("/Volumes/S/A.app/Contents/MacOS"));
+        assert!(roots.contains(&PathBuf::from("/Volumes/S/A.app/Contents/Resources/_up_")));
+        assert!(roots.contains(&PathBuf::from("/Volumes/S/A.app/Contents/Resources")));
+
+        // Windows: exe dir first, then Tauri's `_up_` mapping — nothing else.
+        let exe = std::path::Path::new("C:/Datapilot Scout/datapilot-scout.exe");
+        assert_eq!(
+            resource_roots_from_exe(exe),
+            vec![
+                PathBuf::from("C:/Datapilot Scout"),
+                PathBuf::from("C:/Datapilot Scout/_up_")
+            ]
+        );
+    }
+
+    #[test]
+    fn scratch_dir_is_host_temp_off_mac() {
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(scratch_dir(), std::env::temp_dir());
+    }
+
+    #[cfg(feature = "portable")]
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("scout_ap_{}_{}", tag, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[cfg(feature = "portable")]
+    #[test]
+    fn choose_root_prefers_own_scoutdata() {
+        let stick = fresh_dir("own");
+        std::fs::create_dir_all(stick.join("ScoutData")).unwrap();
+        std::fs::create_dir_all(stick.join("Win").join("ScoutData")).unwrap();
+        std::fs::write(stick.join("Win").join(WINDOWS_EXE_NAME), b"x").unwrap();
+        assert_eq!(choose_portable_root(&stick, Some(&stick)), stick.join("ScoutData"));
+        let _ = std::fs::remove_dir_all(&stick);
+    }
+
+    #[cfg(feature = "portable")]
+    #[test]
+    fn choose_root_finds_sibling_windows_install() {
+        let stick = fresh_dir("sib");
+        let win = stick.join("DatpilotScout");
+        std::fs::create_dir_all(win.join("ScoutData")).unwrap();
+        std::fs::write(win.join(WINDOWS_EXE_NAME), b"x").unwrap();
+        // ScoutData without the exe beside it is not a Scout install.
+        std::fs::create_dir_all(stick.join("Backups").join("ScoutData")).unwrap();
+        assert_eq!(choose_portable_root(&stick, Some(&stick)), win.join("ScoutData"));
+        // Without a stick (Windows / Linux) there is no search.
+        assert_eq!(choose_portable_root(&stick, None), stick.join("ScoutData"));
+        let _ = std::fs::remove_dir_all(&stick);
+    }
+
+    #[cfg(feature = "portable")]
+    #[test]
+    fn choose_root_defaults_to_own_when_nothing_found() {
+        let stick = fresh_dir("none");
+        std::fs::create_dir_all(stick.join("Backups").join("ScoutData")).unwrap();
+        assert_eq!(choose_portable_root(&stick, Some(&stick)), stick.join("ScoutData"));
+        let _ = std::fs::remove_dir_all(&stick);
     }
 }

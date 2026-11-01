@@ -623,7 +623,7 @@ fn generate_video_thumbnail(
 
 /// Get temporary directory for thumbnails
 fn get_temp_thumbnail_dir() -> Result<PathBuf, String> {
-    let temp = std::env::temp_dir();
+    let temp = crate::app_paths::scratch_dir();
     let thumb_dir = temp.join("hindsight_thumbnails");
     
     if !thumb_dir.exists() {
@@ -636,33 +636,31 @@ fn get_temp_thumbnail_dir() -> Result<PathBuf, String> {
 
 /// Get path to bundled ffmpeg executable
 fn get_ffmpeg_path() -> Result<String, String> {
-    // Try to get the bundled ffmpeg from external folder
-    let exe_dir = std::env::current_exe()
-        .map_err(|e| format!("Failed to get exe directory: {}", e))?
-        .parent()
-        .ok_or("Failed to get parent directory")?
-        .to_path_buf();
-    
-    // Check for bundled ffmpeg in external/ffmpeg/ (direct path)
-    let bundled_ffmpeg = exe_dir.join("external").join("ffmpeg").join("ffmpeg.exe");
-    if bundled_ffmpeg.exists() {
-        eprintln!("Found ffmpeg at: {}", bundled_ffmpeg.display());
-        return Ok(bundled_ffmpeg.to_string_lossy().to_string());
-    }
-    
-    // Check for ffmpeg in subdirectories (e.g., ffmpeg-8.0.1-essentials_build/bin/)
-    let ffmpeg_dir = exe_dir.join("external").join("ffmpeg");
-    if ffmpeg_dir.exists() {
-        // Search for ffmpeg.exe in subdirectories
-        if let Some(entry) = walkdir::WalkDir::new(&ffmpeg_dir)
-            .max_depth(3)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .find(|e| e.file_name() == "ffmpeg.exe") 
-        {
-            let path = entry.path().to_path_buf();
-            eprintln!("Found ffmpeg in subdirectory: {}", path.display());
-            return Ok(path.to_string_lossy().to_string());
+    let bin = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+
+    // exe dir first (historical Windows location), then Tauri's `_up_`
+    // resource mapping and, on macOS, the bundle's Contents/Resources.
+    for root in crate::app_paths::resource_roots() {
+        // Check for bundled ffmpeg in external/ffmpeg/ (direct path)
+        let bundled_ffmpeg = root.join("external").join("ffmpeg").join(bin);
+        if bundled_ffmpeg.exists() {
+            eprintln!("Found ffmpeg at: {}", bundled_ffmpeg.display());
+            return Ok(bundled_ffmpeg.to_string_lossy().to_string());
+        }
+
+        // Check for ffmpeg in subdirectories (e.g., ffmpeg-8.0.1-essentials_build/bin/)
+        let ffmpeg_dir = root.join("external").join("ffmpeg");
+        if ffmpeg_dir.exists() {
+            if let Some(entry) = walkdir::WalkDir::new(&ffmpeg_dir)
+                .max_depth(3)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .find(|e| e.file_name() == bin && e.file_type().is_file())
+            {
+                let path = entry.path().to_path_buf();
+                eprintln!("Found ffmpeg in subdirectory: {}", path.display());
+                return Ok(path.to_string_lossy().to_string());
+            }
         }
     }
     

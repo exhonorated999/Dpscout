@@ -296,7 +296,7 @@ fn scan_chromium_browser(
 /// Read history from Chromium-based browser
 fn read_chromium_history(db_path: &PathBuf) -> SqlResult<Vec<HistoryEntry>> {
     // Create a temporary copy to avoid locking issues
-    let temp_path = std::env::temp_dir().join(format!("history_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("history_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;
@@ -335,7 +335,7 @@ fn read_chromium_history(db_path: &PathBuf) -> SqlResult<Vec<HistoryEntry>> {
 /// Read download history from Chromium-based browser
 fn read_chromium_downloads(db_path: &PathBuf) -> SqlResult<Vec<DownloadEntry>> {
     // Create a temporary copy to avoid locking issues
-    let temp_path = std::env::temp_dir().join(format!("downloads_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("downloads_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;
@@ -474,7 +474,7 @@ fn read_chromium_bookmarks(bookmarks_path: &PathBuf) -> Result<Vec<BookmarkEntry
 
 /// Read credentials from Chromium-based browser
 fn read_chromium_credentials(db_path: &PathBuf) -> SqlResult<Vec<CredentialEntry>> {
-    let temp_path = std::env::temp_dir().join(format!("login_data_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("login_data_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;
@@ -575,7 +575,7 @@ fn scan_firefox_browser(
 
 /// Read Firefox history
 fn read_firefox_history(db_path: &PathBuf) -> SqlResult<Vec<HistoryEntry>> {
-    let temp_path = std::env::temp_dir().join(format!("places_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("places_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;
@@ -614,7 +614,7 @@ fn read_firefox_history(db_path: &PathBuf) -> SqlResult<Vec<HistoryEntry>> {
 
 /// Read Firefox bookmarks
 fn read_firefox_bookmarks(db_path: &PathBuf) -> SqlResult<Vec<BookmarkEntry>> {
-    let temp_path = std::env::temp_dir().join(format!("places_bookmarks_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("places_bookmarks_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;
@@ -648,7 +648,7 @@ fn read_firefox_bookmarks(db_path: &PathBuf) -> SqlResult<Vec<BookmarkEntry>> {
 
 /// Read Firefox downloads
 fn read_firefox_downloads(db_path: &PathBuf) -> SqlResult<Vec<DownloadEntry>> {
-    let temp_path = std::env::temp_dir().join(format!("places_downloads_temp_{}.db", std::process::id()));
+    let temp_path = crate::app_paths::scratch_dir().join(format!("places_downloads_temp_{}.db", std::process::id()));
     let _ = std::fs::copy(db_path, &temp_path);
 
     let conn = Connection::open(&temp_path)?;

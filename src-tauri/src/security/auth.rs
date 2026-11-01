@@ -11,13 +11,7 @@ pub struct User {
 
 /// Initialize the security database
 pub fn init_security_db() -> Result<PathBuf, String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Failed to get executable path: {}", e))?;
-    
-    let exe_dir = exe_path.parent()
-        .ok_or("Failed to get executable directory")?;
-    
-    let db_path = exe_dir.join("hindsight_secure.db");
+    let db_path = crate::app_paths::secure_db_path()?;
     
     let conn = Connection::open(&db_path)
         .map_err(|e| format!("Failed to open security database: {}", e))?;
@@ -59,10 +53,7 @@ pub fn is_registered() -> Result<bool, String> {
     let exe_path = std::env::current_exe()
         .map_err(|e| format!("Failed to get executable path: {}", e))?;
     
-    let exe_dir = exe_path.parent()
-        .ok_or("Failed to get executable directory")?;
-    
-    let db_path = exe_dir.join("hindsight_secure.db");
+    let db_path = crate::app_paths::secure_db_path()?;
     
     eprintln!("========================================");
     eprintln!("REGISTRATION CHECK");

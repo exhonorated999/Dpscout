@@ -13,7 +13,9 @@ pub struct CategoryMappings {
 impl CategoryMappings {
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
         let app_path = std::env::current_exe()?;
-        let app_dir = app_path.parent().unwrap();
+        // Windows: the exe dir. macOS: beside the .app (where `save` writes),
+        // then the bundle's Resources.
+        let app_dir = crate::app_paths::install_dir()?;
         
         eprintln!("=== LOADING CATEGORY MAPPINGS ===");
         eprintln!("App exe: {}", app_path.display());
@@ -21,12 +23,19 @@ impl CategoryMappings {
         eprintln!("Current dir: {}", std::env::current_dir()?.display());
         
         // Try multiple locations
-        let possible_paths = vec![
-            app_dir.join("app_categories.json"),
+        let own = app_dir.join("app_categories.json");
+        let mut possible_paths = vec![own.clone()];
+        possible_paths.extend(
+            crate::app_paths::resource_roots()
+                .into_iter()
+                .map(|r| r.join("app_categories.json"))
+                .filter(|p| p != &own),
+        );
+        possible_paths.extend([
             PathBuf::from("app_categories.json"),
             PathBuf::from("../app_categories.json"),
             PathBuf::from("../../app_categories.json"),
-        ];
+        ]);
         
         eprintln!("Trying paths:");
         for path in &possible_paths {
@@ -46,9 +55,8 @@ impl CategoryMappings {
     }
     
     pub fn save(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let app_path = std::env::current_exe()?;
-        let app_dir = app_path.parent().unwrap();
-        let path = app_dir.join("app_categories.json");
+        // Never inside a signed .app bundle — install_dir walks out of it.
+        let path = crate::app_paths::install_dir()?.join("app_categories.json");
         
         let json = serde_json::to_string_pretty(self)?;
         fs::write(&path, json)?;

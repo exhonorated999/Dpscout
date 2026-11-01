@@ -28,7 +28,7 @@ pub fn log_path() -> PathBuf {
     if let Some(path) = crate::app_paths::diag_log_path() {
         return path;
     }
-    std::env::temp_dir().join("Scout-Diagnostic-Log.txt")
+    crate::app_paths::scratch_dir().join("Scout-Diagnostic-Log.txt")
 }
 
 /// Truncate the existing log and write a fresh header. Call this when

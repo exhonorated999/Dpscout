@@ -2302,8 +2302,8 @@ fn open_encrypted_report(report_id: i64, password: String) -> Result<(), String>
     // Load and decrypt the PDF
     let pdf_data = security::load_encrypted_report(report_id, password)?;
     
-    // Save to temp file
-    let temp_dir = std::env::temp_dir();
+    // Save to scratch (host temp on Windows; the stick on macOS portable)
+    let temp_dir = crate::app_paths::scratch_dir();
     let temp_path = temp_dir.join(format!("hindsight_report_{}.pdf", report_id));
     
     std::fs::write(&temp_path, pdf_data)

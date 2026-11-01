@@ -11,7 +11,7 @@ const THUMBNAIL_QUALITY: u8 = 85; // Balance between quality and file size
 
 /// Get the thumbnail cache directory
 fn get_thumbnail_cache_dir() -> Result<PathBuf, String> {
-    let cache_dir = std::env::temp_dir().join("datapilot_scout_thumbnails");
+    let cache_dir = crate::app_paths::scratch_dir().join("datapilot_scout_thumbnails");
     
     if !cache_dir.exists() {
         fs::create_dir_all(&cache_dir)
