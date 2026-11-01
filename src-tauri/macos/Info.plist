@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated Info.plist of the macOS portable .app
+  (referenced from tauri.conf.macos-portable.json).
+
+  Scout's in-app picker and scanners refuse TCC-protected folders when Full
+  Disk Access is not granted, so these prompts should never appear. They are
+  here so that, if macOS ever does prompt, the examiner sees why.
+-->
+<plist version="1.0">
+<dict>
+  <key>NSDesktopFolderUsageDescription</key>
+  <string>Datapilot Scout reads files on the Desktop only when you include it in a scan. Nothing is written to this Mac.</string>
+  <key>NSDocumentsFolderUsageDescription</key>
+  <string>Datapilot Scout reads files in Documents only when you include it in a scan. Nothing is written to this Mac.</string>
+  <key>NSDownloadsFolderUsageDescription</key>
+  <string>Datapilot Scout reads files in Downloads only when you include it in a scan. Nothing is written to this Mac.</string>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>Datapilot Scout runs from a USB stick and saves its results there. It reads other removable drives only when you select them.</string>
+  <key>NSNetworkVolumesUsageDescription</key>
+  <string>Datapilot Scout reads network volumes only when you select them for a scan. Nothing is written to them.</string>
+</dict>
+</plist>

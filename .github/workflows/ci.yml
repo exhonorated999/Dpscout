@@ -1,7 +1,8 @@
 # DataPilot Scout CI — compile + unit-test gate for Windows desktop/portable and
-# the macOS portable build (RFD 0001 rev 2). No signing, bundling or releases
-# here; installers are still built and signed locally (build-desktop.ps1 /
-# build-portable.ps1).
+# the macOS portable build (RFD 0001 rev 2). No signing or releases here;
+# installers are still built and signed locally (build-desktop.ps1 /
+# build-portable.ps1 / scripts/build-macos-portable.sh). The only bundle CI
+# produces is an ad-hoc-signed macOS .app artifact for testing.
 name: CI
 
 on:
@@ -76,10 +77,45 @@ jobs:
         run: >-
           cargo test --features demo,portable --lib --
           walker macos stick_identity browser:: keyword:: system_info:: mac_drive_list warrant::
+          fs_browse net_policy licensing::
       - name: Full lib tests (informational — Windows-shaped tests may not port)
         working-directory: src-tauri
         continue-on-error: true
         run: cargo test --features demo,portable --lib -- $KNOWN_FAILING
+
+  # Unsigned (ad-hoc) universal .app for hands-on testing. NOT a release:
+  # ad-hoc builds only open via right-click → Open, and never on an offline Mac.
+  # Signed + notarized builds come from scripts/build-macos-portable.sh run
+  # locally with Apple credentials.
+  macos-portable-app:
+    name: macOS portable .app (unsigned artifact)
+    needs: macos-portable
+    if: github.event_name != 'pull_request'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-portable-app
+      - name: Build (ad-hoc signed, universal)
+        run: bash scripts/build-macos-portable.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: datapilot-scout-portable-macos-unsigned
+          path: |
+            dist-macos/*.zip
+            dist-macos/*.sha256
+          retention-days: 14
+          if-no-files-found: error
 
   windows:
     name: Windows desktop + portable (check + tests)
