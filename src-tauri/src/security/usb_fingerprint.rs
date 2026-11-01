@@ -228,12 +228,35 @@ fn search_all_removable_drives_for_match(registered: &UsbFingerprint) -> Result<
     Ok(false)
 }
 
-#[cfg(not(windows))]
+/// macOS: no WMI and no raw volume access, so the fingerprint is the stick
+/// identity (`security::stick_identity`). `volume_id` matches the Windows
+/// format (`%08X` of the volume serial), and verification compares only
+/// that, as the Windows removable-drive fallback already does.
+#[cfg(target_os = "macos")]
 pub fn get_usb_fingerprint() -> Result<UsbFingerprint, String> {
-    Err("USB fingerprinting only supported on Windows".to_string())
+    use super::stick_identity;
+    let tag = stick_identity::current_tag()?;
+    let serial = stick_identity::parse_tag(&tag).ok_or("Invalid stick identity")?;
+    let root = stick_identity::stick_root()?;
+    Ok(UsbFingerprint {
+        serial_number: tag,
+        volume_id: format!("{:08X}", serial),
+        drive_letter: root.to_string_lossy().to_string(),
+    })
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn verify_usb_fingerprint(registered: &UsbFingerprint) -> Result<bool, String> {
+    let current = get_usb_fingerprint()?;
+    Ok(current.volume_id.eq_ignore_ascii_case(&registered.volume_id))
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn get_usb_fingerprint() -> Result<UsbFingerprint, String> {
+    Err("USB fingerprinting only supported on Windows and macOS".to_string())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn verify_usb_fingerprint(_registered: &UsbFingerprint) -> Result<bool, String> {
-    Err("USB fingerprinting only supported on Windows".to_string())
+    Err("USB fingerprinting only supported on Windows and macOS".to_string())
 }

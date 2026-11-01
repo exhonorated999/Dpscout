@@ -238,12 +238,8 @@ pub fn get_machine_id() -> Result<String, String> {
     // Portable build: derive identity from the USB drive serial number
     #[cfg(feature = "portable")]
     {
-        use sha2::{Sha256, Digest};
         let serial = get_usb_drive_serial()?;
-        let mut hasher = Sha256::new();
-        hasher.update(serial.as_bytes());
-        let result = hasher.finalize();
-        return Ok(hex::encode(result));
+        return Ok(crate::security::stick_identity::machine_id_for_tag(&serial));
     }
 
     // Desktop build: hardware fingerprint (motherboard + user)
@@ -319,55 +315,12 @@ pub fn get_legacy_machine_id() -> Option<String> {
     }
 }
 
-/// Get the volume serial number of the drive this exe is running from.
-/// Used as the stable USB identity for portable licensing.
+/// `USB-VOL-%08X` of the stick this build runs from — the portable licence
+/// identity. Windows reads the volume serial directly; macOS verifies the
+/// serial recorded on the stick (see `security::stick_identity`).
 #[cfg(feature = "portable")]
 fn get_usb_drive_serial() -> Result<String, String> {
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("Cannot find exe path: {}", e))?;
-    let drive_root = exe_path
-        .components()
-        .next()
-        .ok_or_else(|| "Cannot determine drive letter".to_string())?
-        .as_os_str()
-        .to_string_lossy()
-        .to_string();
-    // Ensure it ends with backslash (e.g. "E:\")
-    let root = if drive_root.ends_with('\\') {
-        drive_root
-    } else {
-        format!("{}\\", drive_root)
-    };
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::ffi::OsStr;
-        use std::os::windows::ffi::OsStrExt;
-        let wide: Vec<u16> = OsStr::new(&root)
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-        let mut serial: u32 = 0;
-        let ok = unsafe {
-            winapi::um::fileapi::GetVolumeInformationW(
-                wide.as_ptr(),
-                std::ptr::null_mut(), 0,
-                &mut serial,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(), 0,
-            )
-        };
-        if ok == 0 {
-            return Err(format!("GetVolumeInformationW failed for {}", root));
-        }
-        Ok(format!("USB-VOL-{:08X}", serial))
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        Err("Portable USB serial only supported on Windows".to_string())
-    }
+    crate::security::stick_identity::current_tag()
 }
 
 // ---------------------------------------------------------------------------
