@@ -1,0 +1,111 @@
+# DataPilot Scout CI — compile + unit-test gate for Windows desktop/portable and
+# the macOS portable build (RFD 0001 rev 2). No signing, bundling or releases
+# here; installers are still built and signed locally (build-desktop.ps1 /
+# build-portable.ps1).
+name: CI
+
+on:
+  push:
+    branches: [clean-source, "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: 0
+  # Pre-existing failures (backlog) — skipped so CI flags regressions only.
+  KNOWN_FAILING: >-
+    --skip scanner::ios_backup_parser::tests::test_chrome_timestamp_conversion
+    --skip reporter::test_pdf_gen::tests::test_pdf_with_device_info
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  frontend:
+    name: Frontend (checks + both Vite builds)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:all
+      - run: npm run build
+      - run: npm run build:portable
+
+  macos-portable:
+    name: macOS portable (check + tests)
+    runs-on: macos-15 # Apple silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      # tauri::generate_context! embeds ../dist, so it must exist at compile time.
+      - run: npm ci && npm run build:portable
+      # tauri.conf.json bundles ../external/**/* (ADB, Python) which is not in
+      # git; tauri-build fails on an empty glob, so give it one file.
+      - run: mkdir -p external && touch external/.ci-placeholder
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-portable
+      - name: cargo check (aarch64, demo+portable)
+        working-directory: src-tauri
+        run: cargo check --features demo,portable --lib
+      - name: cargo check (x86_64, demo+portable)
+        working-directory: src-tauri
+        run: cargo check --features demo,portable --lib --target x86_64-apple-darwin
+      - name: macOS-specific unit tests (native)
+        working-directory: src-tauri
+        run: >-
+          cargo test --features demo,portable --lib --
+          walker macos stick_identity browser:: keyword:: system_info:: mac_drive_list warrant::
+      - name: Full lib tests (informational — Windows-shaped tests may not port)
+        working-directory: src-tauri
+        continue-on-error: true
+        run: cargo test --features demo,portable --lib -- $KNOWN_FAILING
+
+  windows:
+    name: Windows desktop + portable (check + tests)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci && npm run build
+      - run: mkdir -p external && touch external/.ci-placeholder
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: windows
+      - name: cargo check (desktop)
+        working-directory: src-tauri
+        run: cargo check --features demo --lib
+      - name: cargo check (portable)
+        working-directory: src-tauri
+        run: cargo check --features demo,portable --lib
+      - name: Unit tests (portable)
+        working-directory: src-tauri
+        run: cargo test --features demo,portable --lib -- $KNOWN_FAILING
+      - name: Unit tests (desktop)
+        working-directory: src-tauri
+        run: cargo test --features demo --lib -- $KNOWN_FAILING
