@@ -3,8 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import './StartScreen.css';
 import { BugReportModal } from './BugReportModal';
+import { getHostPlatform, guessHostOs } from '../lib/hostPlatform';
 
-export type DeviceType = 'windows' | 'usb' | 'android' | 'ios';
+export type DeviceType = 'windows' | 'usb' | 'android' | 'ios' | 'macos';
 
 const IS_PORTABLE = import.meta.env.VITE_PORTABLE === 'true';
 
@@ -93,9 +94,22 @@ const AppleIcon = () => (
 );
 
 export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSettings, onOpenWarrant }) => {
-  const [selectedDevice, setSelectedDevice] = useState<DeviceType>('windows');
+  // A Mac can only scan itself (the macOS card); a Windows host never offers it.
+  const [hostIsMac, setHostIsMac] = useState<boolean>(() => guessHostOs() === 'macos');
+  const [selectedDevice, setSelectedDevice] = useState<DeviceType>(() => (guessHostOs() === 'macos' ? 'macos' : 'windows'));
   const [trialStatus, setTrialStatus] = useState<TrialStatus | null>(null);
   const [showBugReport, setShowBugReport] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    getHostPlatform().then(p => {
+      if (!alive) return;
+      const mac = p.os === 'macos';
+      setHostIsMac(mac);
+      setSelectedDevice(prev => (mac ? 'macos' : prev === 'macos' ? 'windows' : prev));
+    });
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     loadTrialStatus();
@@ -181,6 +195,27 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
           <p className="selector-description">Choose the type of device you want to scan for forensic triage</p>
           
           <div className="device-options">
+            {hostIsMac && (
+            <label className={`device-option ${selectedDevice === 'macos' ? 'selected' : ''}`}>
+              <input
+                type="radio"
+                name="deviceType"
+                value="macos"
+                checked={selectedDevice === 'macos'}
+                onChange={(e) => setSelectedDevice(e.target.value as DeviceType)}
+              />
+              <div className="device-card">
+                <div className="device-icon">
+                  <AppleIcon />
+                </div>
+                <span className="beta-badge">BETA</span>
+                <span className="device-name">Mac Computer</span>
+                <span className="device-description">This Mac and any attached volumes — runs from the Scout stick</span>
+              </div>
+            </label>
+            )}
+
+            {!hostIsMac && (
             <label className={`device-option ${selectedDevice === 'windows' ? 'selected' : ''}`}>
               <input
                 type="radio"
@@ -197,7 +232,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
                 <span className="device-description">Desktop or laptop running Windows OS</span>
               </div>
             </label>
+            )}
 
+            {!hostIsMac && (
             <label className={`device-option ${selectedDevice === 'usb' ? 'selected' : ''}`}>
               <input
                 type="radio"
@@ -214,8 +251,9 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
                 <span className="device-description">External storage device or thumb drive</span>
               </div>
             </label>
+            )}
 
-            {!IS_PORTABLE && (
+            {!IS_PORTABLE && !hostIsMac && (
             <label className={`device-option ${selectedDevice === 'android' ? 'selected' : ''}`}>
               <input
                 type="radio"
@@ -234,7 +272,7 @@ export const StartScreen: React.FC<StartScreenProps> = ({ onBeginScan, onOpenSet
             </label>
             )}
 
-            {!IS_PORTABLE && (
+            {!IS_PORTABLE && !hostIsMac && (
             <label className={`device-option ${selectedDevice === 'ios' ? 'selected' : ''}`}>
               <input
                 type="radio"

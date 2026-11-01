@@ -213,6 +213,8 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
 
     let base_path = if let Some(drive) = &options.target_drive {
         PathBuf::from(drive)
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from("/")
     } else {
         PathBuf::from("C:\\")
     };
@@ -356,6 +358,13 @@ pub fn scan_intrusion_artifacts(options: IntrusionScanOptions) -> Result<Intrusi
             }
             Err(e) => eprintln!("⚠ Browser hijacking scan error: {}", e),
         }
+    }
+
+    // macOS host: launchd persistence, shell history, remote access and
+    // security settings (the Windows collectors above find nothing there).
+    #[cfg(target_os = "macos")]
+    if options.target_drive.is_none() {
+        super::macos_intrusion::collect_into(&mut results, &options);
     }
 
     // Generate summary
@@ -1410,7 +1419,7 @@ fn is_suspicious_registry_value(value: &str) -> bool {
 }
 
 /// Check if a command is suspicious
-fn is_suspicious_command(command: &str) -> bool {
+pub(crate) fn is_suspicious_command(command: &str) -> bool {
     let cmd_lower = command.to_lowercase();
     
     // PowerShell obfuscation and evasion

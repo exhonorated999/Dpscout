@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import { DriveInfo, formatBytes } from '../types/drive';
 import { DeviceType } from './StartScreen';
+import { getHostPlatform } from '../lib/hostPlatform';
 // ItunesBackupScanner removed — iOS now uses MTP live scan instead of backup
 import './ScanConfig.css';
 
@@ -80,6 +81,17 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       hashMatching: true,       // Hash matching on media files
       intrusionDetection: false,
     },
+    // macOS portable (scanning the Mac Scout is running on). Deleted media
+    // needs raw /dev/rdisk reads (root) — the portable Mac build never elevates.
+    macos: {
+      questionableApps: true,   // /Applications Info.plist + InstallHistory + Homebrew
+      browserHistory: true,     // Safari (needs Full Disk Access), Chrome/Edge/Brave/Firefox/Arc…
+      mediaScan: true,
+      keywordSearch: true,
+      hashMatching: true,
+      intrusionDetection: true, // launchd persistence, shell history, SIP/Gatekeeper/firewall
+      deletedMedia: false,
+    },
   };
 
   const isModuleSupported = (module: keyof ScanModules) => {
@@ -87,7 +99,7 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
   };
 
   const [modules, setModules] = useState<ScanModules>({
-    questionableApps: deviceType === 'windows' || deviceType === 'android',
+    questionableApps: deviceType === 'windows' || deviceType === 'android' || deviceType === 'macos',
     browserHistory: false,
     mediaScan: deviceType === 'ios',         // iOS MTP: media scan on by default
     keywordSearch: false,
@@ -116,9 +128,18 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
   const [androidDevices, setAndroidDevices] = useState<string[]>([]);
   // Deleted-media (unallocated space) scanning needs raw volume reads → Administrator.
   const [isElevated, setIsElevated] = useState<boolean | null>(null);
+  // macOS: Full Disk Access (TCC). null = unknown / not a Mac.
+  const [hasFullDiskAccess, setHasFullDiskAccess] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (deviceType === 'windows' || deviceType === 'usb') {
+    if (deviceType !== 'macos') return;
+    let alive = true;
+    getHostPlatform(true).then(p => { if (alive) setHasFullDiskAccess(p.os === 'macos' ? p.fullDiskAccess : null); });
+    return () => { alive = false; };
+  }, [deviceType]);
+
+  useEffect(() => {
+    if (deviceType === 'windows' || deviceType === 'usb' || deviceType === 'macos') {
       loadDrives();
     } else if (deviceType === 'ios') {
       detectIosBackups();
@@ -144,6 +165,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
       // For USB mode: don't auto-select any drives
       if (deviceType === 'windows') {
         setSelectedDrives(drives.filter(d => d.letter === 'C:').map(d => d.letter));
+      } else if (deviceType === 'macos') {
+        // macOS: auto-select the system volume ("/"); external volumes opt-in.
+        setSelectedDrives(drives.filter(d => d.letter === '/').map(d => d.letter));
       } else {
         setSelectedDrives([]);
       }
@@ -425,10 +449,24 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
         </div>
 
         {/* Device-specific selection UI */}
-        {(deviceType === 'windows' || deviceType === 'usb') && (
+        {(deviceType === 'windows' || deviceType === 'usb' || deviceType === 'macos') && (
           <div className="drive-selector-panel">
             <h3>💾 Select Drives to Scan</h3>
-            <p className="options-description">Choose which drives to include in the scan (showing {deviceType === 'windows' ? 'all drives' : 'all drives except C:'})</p>
+            <p className="options-description">
+              {deviceType === 'macos'
+                ? 'Choose which volumes to include ("/" scans every user\'s home folders; other volumes are scanned whole). The Scout stick itself is not listed.'
+                : `Choose which drives to include in the scan (showing ${deviceType === 'windows' ? 'all drives' : 'all drives except C:'})`}
+            </p>
+            {deviceType === 'macos' && hasFullDiskAccess === false && (
+              <div className="warning-box">
+                <strong>Full Disk Access not granted.</strong>
+                <p>
+                  Safari history and each user's Desktop, Documents and Downloads are protected by macOS. Grant access in
+                  System Settings → Privacy &amp; Security → Full Disk Access, then relaunch Scout. Without it, the scan
+                  still runs and lists every skipped folder in the results.
+                </p>
+              </div>
+            )}
             
             <div className="drives-grid">
               {availableDrives
@@ -802,7 +840,11 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               <div className="module-icon">🌐</div>
               <div className="module-content">
                 <h3>Browser History Scanner</h3>
-                <p>Extract browsing history, bookmarks, and saved credentials from Chrome, Edge, Firefox, Brave, Opera, and Vivaldi</p>
+                <p>
+                  {deviceType === 'macos'
+                    ? 'Extract browsing history, bookmarks, and downloads from Safari, Chrome, Edge, Firefox, Brave, Opera, Vivaldi, and Arc for every user on this Mac'
+                    : 'Extract browsing history, bookmarks, and saved credentials from Chrome, Edge, Firefox, Brave, Opera, and Vivaldi'}
+                </p>
                 <div className="module-meta">
                   <span className="meta-badge">⚡ Fast</span>
                   <span className="meta-badge">🎯 High Value</span>
@@ -1030,8 +1072,8 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
             </div>
           )}
 
-          {/* Intrusion Detection - Windows only */}
-          {deviceType === 'windows' && (
+          {/* Intrusion Detection - Windows and macOS */}
+          {(deviceType === 'windows' || deviceType === 'macos') && (
             <div 
               className={`module-card ${modules.intrusionDetection ? 'selected' : ''}`}
               onClick={() => setModules({...modules, intrusionDetection: !modules.intrusionDetection})}
@@ -1044,10 +1086,14 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               <div className="module-icon">⚠️</div>
               <div className="module-content">
                 <h3>Intrusion Detection</h3>
-                <p>Analyze Windows event logs, persistence mechanisms, and command history for signs of unauthorized access or malicious activity</p>
+                <p>
+                  {deviceType === 'macos'
+                    ? 'Check launchd persistence (LaunchAgents/Daemons), shell history, remote-access tools, SSH keys, and SIP / Gatekeeper / firewall status'
+                    : 'Analyze Windows event logs, persistence mechanisms, and command history for signs of unauthorized access or malicious activity'}
+                </p>
                 <div className="module-meta">
                   <span className="meta-badge">⏱️ Moderate</span>
-                  <span className="meta-badge">🎯 Windows Only</span>
+                  <span className="meta-badge">{deviceType === 'macos' ? '🍎 macOS' : '🎯 Windows Only'}</span>
                 </div>
               </div>
             </div>
@@ -1178,19 +1224,19 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
               disabled={
                 (deviceType === 'ios' && !selectedBackup && iosBackups.length === 0) ||
                 (deviceType === 'android' && androidDevices.length === 0) ||
-                ((deviceType === 'windows' || deviceType === 'usb') && selectedDrives.length === 0)
+                ((deviceType === 'windows' || deviceType === 'usb' || deviceType === 'macos') && selectedDrives.length === 0)
               }
               glow={
                 (deviceType === 'ios' && (selectedBackup || iosBackups.length > 0)) ||
                 (deviceType === 'android' && androidDevices.length > 0) ||
-                ((deviceType === 'windows' || deviceType === 'usb') && selectedDrives.length > 0)
+                ((deviceType === 'windows' || deviceType === 'usb' || deviceType === 'macos') && selectedDrives.length > 0)
               }
             >
               {deviceType === 'ios' && selectedBackup && `▶ Scan iOS Device`}
               {deviceType === 'ios' && !selectedBackup && iosBackups.length > 0 && `▶ Scan iOS Device`}
               {deviceType === 'ios' && !selectedBackup && iosBackups.length === 0 && `▶ Scan iOS`}
               {deviceType === 'android' && `▶ Scan Android Device (${androidDevices.length} connected)`}
-              {(deviceType === 'windows' || deviceType === 'usb') && `▶ Start Scan (${selectedCount} module${selectedCount !== 1 ? 's' : ''}) on ${selectedDrives.length} drive${selectedDrives.length !== 1 ? 's' : ''}`}
+              {(deviceType === 'windows' || deviceType === 'usb' || deviceType === 'macos') && `▶ Start Scan (${selectedCount} module${selectedCount !== 1 ? 's' : ''}) on ${selectedDrives.length} drive${selectedDrives.length !== 1 ? 's' : ''}`}
             </Button>
           </div>
         </div>

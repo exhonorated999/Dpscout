@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { clearThumbnailDataUrlCache } from "./utils/thumbnailLoader";
 import { listen } from "@tauri-apps/api/event";
 import { StartScreen, DeviceType } from "./components/StartScreen";
+import { resetSkippedProtected } from "./lib/hostPlatform";
 import { ScanView } from "./components/ScanView";
 import { SettingsView } from "./components/SettingsView";
 import { ReportView } from "./components/ReportView";
@@ -878,8 +879,8 @@ function App() {
       return;
     }
     
-    // Windows and USB drive scanning only
-    if (selectedDeviceType !== 'windows' && selectedDeviceType !== 'usb') {
+    // Windows, USB drive and macOS (portable on a Mac) scanning
+    if (selectedDeviceType !== 'windows' && selectedDeviceType !== 'usb' && selectedDeviceType !== 'macos') {
       alert('Invalid device type selected');
       return;
     }
@@ -914,6 +915,9 @@ function App() {
       await invoke('reset_scan_cancellation');
     } catch (err) {
       console.warn('reset_scan_cancellation invoke failed (non-fatal):', err);
+    }
+    if (selectedDeviceType === 'macos') {
+      await resetSkippedProtected();
     }
     setCurrentScanModule("System Information");
     
@@ -1029,7 +1033,11 @@ function App() {
         const isExternalDriveScan = selectedDeviceType === 'usb' || 
           (selectedDeviceType === 'windows' && keywordConfig?.selectedDrives && 
            keywordConfig.selectedDrives.length > 0 && 
-           !keywordConfig.selectedDrives.some((d: string) => d.toUpperCase().startsWith('C')));
+           !keywordConfig.selectedDrives.some((d: string) => d.toUpperCase().startsWith('C'))) ||
+          // macOS: host scan (all /Users homes) unless only external volumes are selected
+          (selectedDeviceType === 'macos' && keywordConfig?.selectedDrives &&
+           keywordConfig.selectedDrives.length > 0 &&
+           !keywordConfig.selectedDrives.includes('/'));
         
         const result = await invoke<BrowserData[]>("scan_browser_history", {
           targetDrives: isExternalDriveScan && keywordConfig?.selectedDrives 
@@ -1299,13 +1307,14 @@ function App() {
           if (keywordConfig?.selectedDrives && keywordConfig.selectedDrives.length > 0) {
             // Convert drive letters to root paths for the tiered scanner
             hashScanPaths = keywordConfig.selectedDrives.map((d: string) => {
+              if (d.startsWith('/')) return d; // macOS mount point ("/", "/Volumes/X")
               if (d.endsWith('\\') || d.endsWith('/')) return d;
               if (d.endsWith(':')) return d + '\\';
               return d + ':\\';
             });
           } else {
-            // Default: scan C:\ drive root
-            hashScanPaths = ['C:\\'];
+            // Default: scan the system drive root
+            hashScanPaths = [selectedDeviceType === 'macos' ? '/' : 'C:\\'];
           }
           
           const selectedHashListNames = hashConfig?.selectedHashLists

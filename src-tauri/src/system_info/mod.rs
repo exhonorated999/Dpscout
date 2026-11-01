@@ -5,6 +5,7 @@ mod accounts;
 mod bitlocker;
 mod hardware;
 mod emails;
+pub(crate) mod macos;
 mod usb_history;
 
 pub use accounts::*;
@@ -74,7 +75,14 @@ pub struct NetworkInfo {
     pub public_ip: Option<String>,
 }
 
+/// Collect all system identification information (macOS host).
+#[cfg(target_os = "macos")]
+pub fn collect_system_info() -> Result<SystemInfo, String> {
+    macos::collect()
+}
+
 /// Collect all system identification information
+#[cfg(not(target_os = "macos"))]
 pub fn collect_system_info() -> Result<SystemInfo, String> {
     let scan_id = uuid::Uuid::new_v4().to_string();
     let scan_timestamp = Utc::now().to_rfc3339();

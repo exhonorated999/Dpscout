@@ -16,6 +16,7 @@ import { ReportConfigModal } from './ReportConfigModal';
 import { IosTriageView } from './IosTriageView';
 import { MediaGallery } from './MediaGallery';
 import { DeviceType } from './StartScreen';
+import { refreshSkippedProtected } from '../lib/hostPlatform';
 import SmsConversationView from './SmsConversationView';
 import { DeletedMediaPanel } from './DeletedMediaPanel';
 import { useDialog, DialogModal } from './ConfirmDialog';
@@ -353,7 +354,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
     // Only show tabs for modules that were actually scanned
     if (scannedModules) {
       // Applications (Windows, Android, or iOS, if scanned)
-      if ((deviceType === 'windows' || deviceType === 'android' || deviceType === 'ios') && scannedModules.questionableApps) {
+      if ((deviceType === 'windows' || deviceType === 'macos' || deviceType === 'android' || deviceType === 'ios') && scannedModules.questionableApps) {
         const label = deviceType === 'android' ? 'ANDROID\nAPPLICATIONS' 
                     : deviceType === 'ios' ? 'iOS\nAPPLICATIONS'
                     : 'INSTALLED\nAPPLICATIONS';
@@ -367,7 +368,7 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
       }
 
       // Browser History (Windows, Android, or iOS, if scanned)
-      if ((deviceType === 'windows' || deviceType === 'android' || deviceType === 'ios') && scannedModules.browserHistory) {
+      if ((deviceType === 'windows' || deviceType === 'macos' || deviceType === 'android' || deviceType === 'ios') && scannedModules.browserHistory) {
         items.push({
           id: 'browser-history' as ViewType,
           label: 'BROWSER\nHISTORY',
@@ -442,8 +443,8 @@ export const UnifiedDashboard: React.FC<UnifiedDashboardProps> = ({
         });
       }
 
-      // Intrusion artifacts (Windows only, if scanned or currently scanning)
-      if (deviceType === 'windows' && (scannedModules.intrusionDetection || isScanningIntrusion)) {
+      // Intrusion artifacts (Windows / macOS, if scanned or currently scanning)
+      if ((deviceType === 'windows' || deviceType === 'macos') && (scannedModules.intrusionDetection || isScanningIntrusion)) {
         const count = intrusionResults 
           ? (intrusionResults.eventLogAnomalies.length + 
              intrusionResults.persistenceItems.length + 
@@ -814,6 +815,15 @@ const DeviceInfoView: React.FC<{
 }> = ({ systemInfo, deviceType, selectedDrives = [], isScanning = false, scanProgress = [], totalFilesScanned, liveMediaCount = 0, mediaScanRan = false, deletedMediaResults = [], deletedMediaRan = false }) => {
   const [usbDeviceInfo, setUsbDeviceInfo] = React.useState<UsbDeviceInfo | null>(null);
   const [loadingUsbInfo, setLoadingUsbInfo] = React.useState(false);
+
+  // macOS: folders skipped for lack of Full Disk Access (reported, never hidden).
+  const [skippedProtected, setSkippedProtected] = React.useState<string[]>([]);
+  React.useEffect(() => {
+    if (deviceType !== 'macos') return;
+    let alive = true;
+    refreshSkippedProtected().then(list => { if (alive) setSkippedProtected(list); });
+    return () => { alive = false; };
+  }, [deviceType, isScanning]);
 
   // ---- BitLocker Tier D: full-drive sweep (Beta) -------------------------
   // Deliberately user-triggered rather than automatic. The inline scan only
@@ -1216,6 +1226,19 @@ const DeviceInfoView: React.FC<{
   return (
     <div className="content-view">
       <h2 className="view-title">DEVICE INFORMATION</h2>
+
+      {deviceType === 'macos' && skippedProtected.length > 0 && (
+        <div className="info-section">
+          <h3 className="section-subtitle">NOT SCANNED — FULL DISK ACCESS REQUIRED</h3>
+          <div style={{ color: '#ffb74d', fontSize: '0.9rem', marginBottom: '0.5rem' }}>
+            macOS blocked these {skippedProtected.length} location(s). Grant Scout Full Disk Access in
+            System Settings → Privacy &amp; Security, relaunch, and rescan to include them.
+          </div>
+          <ul style={{ margin: 0, paddingLeft: '1.2rem', fontFamily: 'monospace', fontSize: '0.85rem' }}>
+            {skippedProtected.map(p => <li key={p}>{p}</li>)}
+          </ul>
+        </div>
+      )}
       
       <div className="info-section">
         <h3 className="section-subtitle">SYSTEM IDENTIFICATION</h3>

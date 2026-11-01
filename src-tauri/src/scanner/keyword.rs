@@ -483,6 +483,12 @@ fn scan_file(
 
 /// Get default scan paths (common hiding places)
 pub fn get_default_scan_paths() -> Vec<String> {
+    #[cfg(target_os = "macos")]
+    {
+        return unix_scan_paths_for_mount("/", Path::new("/Users"));
+    }
+
+    #[allow(unreachable_code)]
     let mut paths = Vec::new();
 
     if let Ok(user_profile) = std::env::var("USERPROFILE") {
@@ -514,6 +520,16 @@ pub fn get_scan_paths_for_drives(drive_letters: Vec<String>) -> Vec<String> {
     let mut paths = Vec::new();
 
     for drive in drive_letters {
+        // macOS mount points (`/`, `/Volumes/<name>`) from the Mac drive picker.
+        if drive.starts_with('/') {
+            for p in unix_scan_paths_for_mount(&drive, Path::new("/Users")) {
+                if !paths.contains(&p) {
+                    paths.push(p);
+                }
+            }
+            continue;
+        }
+
         let drive_root = if drive.ends_with(':') {
             format!("{}\\", drive)
         } else if drive.ends_with('\\') {
@@ -582,4 +598,76 @@ pub fn get_scan_paths_for_drives(drive_letters: Vec<String>) -> Vec<String> {
 
     eprintln!("[Scan Paths] Resolved {} triage paths: {:?}", paths.len(), paths);
     paths
+}
+
+/// Per-user triage folders on a macOS system volume, relative to the home.
+/// TCC-protected ones (Desktop/Documents/Downloads, iCloud Drive) are filtered
+/// by `scanner::walker` when Scout lacks Full Disk Access.
+const MAC_TRIAGE_DIRS: &[&str] = &[
+    "Downloads",
+    "Pictures",
+    "Movies",
+    "Desktop",
+    "Documents",
+    "Music",
+    ".Trash",
+    "Library/Mobile Documents/com~apple~CloudDocs",
+];
+
+/// macOS mount point → triage paths. The system volume (`/`) yields the media
+/// folders of every real account under `users_root`; any other mount
+/// (`/Volumes/<name>`) is scanned whole, like a non-system Windows drive.
+pub fn unix_scan_paths_for_mount(mount: &str, users_root: &Path) -> Vec<String> {
+    let mut paths = Vec::new();
+    if mount == "/" {
+        for (_, home) in super::walker::mac_home_dirs(users_root) {
+            for dir in MAC_TRIAGE_DIRS {
+                let p = home.join(dir);
+                if p.exists() {
+                    paths.push(p.to_string_lossy().to_string());
+                }
+            }
+        }
+    } else if Path::new(mount).exists() {
+        paths.push(mount.trim_end_matches('/').to_string());
+    }
+    paths
+}
+
+#[cfg(test)]
+mod unix_scan_path_tests {
+    use super::*;
+
+    fn tmp(tag: &str) -> std::path::PathBuf {
+        let d = std::env::temp_dir().join(format!("scout_kwpaths_{}_{}", tag, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn system_volume_yields_user_media_dirs() {
+        let root = tmp("sys");
+        let users = root.join("Users");
+        for d in ["alice/Downloads", "alice/Movies", "alice/.Trash", "Shared/Downloads", "bob/Documents"] {
+            std::fs::create_dir_all(users.join(d)).unwrap();
+        }
+        let got = unix_scan_paths_for_mount("/", &users);
+        let rel: Vec<String> = got
+            .iter()
+            .map(|p| p.replace('\\', "/").rsplit("Users/").next().unwrap().to_string())
+            .collect();
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(rel, vec!["alice/Downloads", "alice/Movies", "alice/.Trash", "bob/Documents"]);
+    }
+
+    #[test]
+    fn other_mount_is_scanned_whole_and_missing_is_dropped() {
+        let root = tmp("vol");
+        let m = root.to_string_lossy().to_string();
+        let got = unix_scan_paths_for_mount(&m, &root);
+        let missing = unix_scan_paths_for_mount("/Volumes/__nope__", &root);
+        let _ = std::fs::remove_dir_all(&root);
+        assert_eq!(got, vec![m.trim_end_matches('/').to_string()]);
+        assert!(missing.is_empty());
+    }
 }

@@ -4,7 +4,9 @@ export type BrowserType =
   | 'Firefox' 
   | 'Brave' 
   | 'Opera' 
-  | 'Vivaldi';
+  | 'Vivaldi'
+  | 'Arc'
+  | 'Safari';
 
 export interface BrowserData {
   browserType: BrowserType;

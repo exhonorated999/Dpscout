@@ -11,6 +11,10 @@ pub enum BrowserType {
     Brave,
     Opera,
     Vivaldi,
+    /// Chromium-based (The Browser Company), macOS/Windows.
+    Arc,
+    /// macOS only: `~/Library/Safari` (History.db needs Full Disk Access).
+    Safari,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,6 +91,9 @@ fn get_browser_paths_for_drives(target_drives: Option<&[String]>) -> Vec<(Browse
             for drive in drives {
                 let drive_root = if drive.ends_with('\\') || drive.ends_with('/') {
                     drive.clone()
+                } else if !cfg!(windows) {
+                    // e.g. "/Volumes/Target" — no drive-letter suffix
+                    format!("{}/", drive)
                 } else if drive.ends_with(':') {
                     format!("{}\\", drive)
                 } else {
@@ -157,10 +164,17 @@ fn get_browser_paths_for_drives(target_drives: Option<&[String]>) -> Vec<(Browse
                             paths.push((BrowserType::Firefox, label, firefox_path));
                         }
                     }
+
+                    // macOS home layout (a Mac volume attached as a target)
+                    paths.extend(mac_user_browser_paths(&user_path, &user_name));
                 }
             }
         }
         None => {
+            // macOS host: every readable home under /Users
+            #[cfg(target_os = "macos")]
+            paths.extend(mac_host_browser_paths(std::path::Path::new("/Users")));
+
             // Scanning the host system — use environment variables
             if let Ok(local_appdata) = std::env::var("LOCALAPPDATA") {
                 // Chrome
@@ -221,6 +235,292 @@ fn get_browser_paths_for_drives(target_drives: Option<&[String]>) -> Vec<(Browse
     }
 
     paths
+}
+
+/// Chromium-family browsers under `~/Library/Application Support` on macOS.
+/// Each base holds `Default`/`Profile N` like the Windows `User Data` dir.
+const MAC_CHROMIUM_BROWSERS: &[(BrowserType, &str, &str)] = &[
+    (BrowserType::Chrome, "Google Chrome", "Google/Chrome"),
+    (BrowserType::Edge, "Microsoft Edge", "Microsoft Edge"),
+    (BrowserType::Brave, "Brave Browser", "BraveSoftware/Brave-Browser"),
+    (BrowserType::Opera, "Opera", "com.operasoftware.Opera"),
+    (BrowserType::Vivaldi, "Vivaldi", "Vivaldi"),
+    (BrowserType::Arc, "Arc", "Arc/User Data"),
+];
+
+/// Browser data dirs in one macOS home (`/Users/<name>`).  Returns nothing for
+/// a Windows profile (no `Library`), so it is safe to call on any home dir.
+fn mac_user_browser_paths(user_path: &std::path::Path, user_name: &str) -> Vec<(BrowserType, String, PathBuf)> {
+    let mut paths = Vec::new();
+    let library = user_path.join("Library");
+    let app_support = library.join("Application Support");
+
+    for (browser_type, browser_name, rel) in MAC_CHROMIUM_BROWSERS {
+        let base = app_support.join(rel);
+        if base.is_dir() {
+            paths.push((browser_type.clone(), format!("{} ({})", browser_name, user_name), base));
+        }
+    }
+
+    let firefox = app_support.join("Firefox").join("Profiles");
+    if firefox.is_dir() {
+        paths.push((BrowserType::Firefox, format!("Mozilla Firefox ({})", user_name), firefox));
+    }
+
+    // Stat on the TCC-protected dir itself works without Full Disk Access;
+    // reading inside it is what fails (handled in scan_safari_browser).
+    let safari = library.join("Safari");
+    if safari.is_dir() {
+        paths.push((BrowserType::Safari, format!("Safari ({})", user_name), safari));
+    }
+
+    paths
+}
+
+/// All homes under `users_root` (normally `/Users`).  Other users' homes are
+/// usually unreadable without root; those simply yield nothing.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mac_host_browser_paths(users_root: &std::path::Path) -> Vec<(BrowserType, String, PathBuf)> {
+    crate::scanner::walker::mac_home_dirs(users_root)
+        .iter()
+        .flat_map(|(name, path)| mac_user_browser_paths(path, name))
+        .collect()
+}
+
+/// Copy a SQLite DB plus its `-wal`/`-shm` side files into the scratch dir so
+/// recent (un-checkpointed) rows are visible and the live DB is never locked.
+fn copy_sqlite_to_scratch(src: &std::path::Path, stem: &str) -> std::io::Result<PathBuf> {
+    let dst = crate::app_paths::scratch_dir().join(format!("{}_{}.db", stem, std::process::id()));
+    std::fs::copy(src, &dst)?;
+    for sfx in ["-wal", "-shm"] {
+        let side = |p: &std::path::Path| {
+            let mut o = p.as_os_str().to_owned();
+            o.push(sfx);
+            PathBuf::from(o)
+        };
+        let (s, d) = (side(src), side(&dst));
+        if s.is_file() {
+            let _ = std::fs::copy(&s, &d);
+        } else {
+            let _ = std::fs::remove_file(&d);
+        }
+    }
+    Ok(dst)
+}
+
+fn remove_sqlite_copy(dst: &std::path::Path) {
+    let _ = std::fs::remove_file(dst);
+    for sfx in ["-wal", "-shm"] {
+        let mut o = dst.as_os_str().to_owned();
+        o.push(sfx);
+        let _ = std::fs::remove_file(PathBuf::from(o));
+    }
+}
+
+/// Seconds between 1970-01-01 and 2001-01-01 (Apple "Mac absolute time").
+const MAC_EPOCH_OFFSET: f64 = 978_307_200.0;
+
+/// Mac absolute time (seconds since 2001-01-01 UTC) → `YYYY-MM-DD HH:MM:SS`.
+fn mac_absolute_to_string(secs: f64) -> String {
+    if secs == 0.0 || !secs.is_finite() {
+        return "Never".to_string();
+    }
+    match chrono::DateTime::from_timestamp((secs + MAC_EPOCH_OFFSET).floor() as i64, 0) {
+        Some(dt) => dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+        None => "Invalid date".to_string(),
+    }
+}
+
+fn plist_date_to_string(v: Option<&plist::Value>) -> String {
+    match v.and_then(|v| v.as_date()) {
+        Some(d) => {
+            let st: std::time::SystemTime = d.into();
+            chrono::DateTime::<chrono::Utc>::from(st).format("%Y-%m-%d %H:%M:%S").to_string()
+        }
+        None => String::new(),
+    }
+}
+
+/// Safari: `History.db` (history_items + history_visits), `Bookmarks.plist`,
+/// `Downloads.plist`.  Without Full Disk Access the directory can't be listed;
+/// that is recorded with the walk policy so the UI can say what was skipped.
+fn scan_safari_browser(browser_name: &str, base: &std::path::Path) -> Result<Vec<BrowserData>, Box<dyn std::error::Error>> {
+    if let Err(e) = std::fs::read_dir(base) {
+        if e.kind() == std::io::ErrorKind::PermissionDenied {
+            crate::scanner::walker::host_policy().record_protected(base);
+            return Ok(Vec::new());
+        }
+        return Err(e.into());
+    }
+
+    let mut data = BrowserData {
+        browser_type: BrowserType::Safari,
+        browser_name: browser_name.to_string(),
+        profile_name: "Default".to_string(),
+        history: Vec::new(),
+        bookmarks: Vec::new(),
+        credentials: Vec::new(),
+        downloads: Vec::new(),
+        install_path: "/Applications/Safari.app".to_string(),
+        profile_path: base.to_string_lossy().to_string(),
+    };
+
+    let history = base.join("History.db");
+    if history.is_file() {
+        match read_safari_history(&history) {
+            Ok(h) => data.history = h,
+            Err(e) => eprintln!("[Browser Scan] Safari history unreadable: {}", e),
+        }
+    }
+    let bookmarks = base.join("Bookmarks.plist");
+    if bookmarks.is_file() {
+        match plist::Value::from_file(&bookmarks) {
+            Ok(root) => walk_safari_bookmarks(&root, "", &mut data.bookmarks),
+            Err(e) => eprintln!("[Browser Scan] Safari bookmarks unreadable: {}", e),
+        }
+    }
+    let downloads = base.join("Downloads.plist");
+    if downloads.is_file() {
+        match plist::Value::from_file(&downloads) {
+            Ok(root) => data.downloads = read_safari_downloads(&root),
+            Err(e) => eprintln!("[Browser Scan] Safari downloads unreadable: {}", e),
+        }
+    }
+
+    if data.history.is_empty() && data.bookmarks.is_empty() && data.downloads.is_empty() {
+        return Ok(Vec::new());
+    }
+    Ok(vec![data])
+}
+
+fn read_safari_history(db_path: &std::path::Path) -> Result<Vec<HistoryEntry>, Box<dyn std::error::Error>> {
+    let copy = copy_sqlite_to_scratch(db_path, "safari_history")?;
+    let result = (|| -> SqlResult<Vec<HistoryEntry>> {
+        let conn = Connection::open(&copy)?;
+        // SQLite returns the bare `title` from the row that supplied MAX().
+        let mut stmt = conn.prepare(
+            "SELECT hi.url, hv.title, hi.visit_count, MAX(hv.visit_time)
+             FROM history_items hi
+             JOIN history_visits hv ON hv.history_item = hi.id
+             GROUP BY hi.id
+             ORDER BY MAX(hv.visit_time) DESC
+             LIMIT 5000",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                let url: String = row.get(0)?;
+                let title: Option<String> = row.get(1).unwrap_or(None);
+                let visit_count: i64 = row.get(2).unwrap_or(0);
+                let visit_time: f64 = row.get(3).unwrap_or(0.0);
+                Ok(HistoryEntry {
+                    url,
+                    title: title.unwrap_or_default(),
+                    visit_count: visit_count.clamp(0, i32::MAX as i64) as i32,
+                    last_visit: mac_absolute_to_string(visit_time),
+                    typed_count: 0,
+                })
+            })?
+            .filter_map(|e| e.ok())
+            .collect();
+        Ok(rows)
+    })();
+    remove_sqlite_copy(&copy);
+    Ok(result?)
+}
+
+/// Safari bookmark tree: `WebBookmarkTypeList` (folder, `Children`) and
+/// `WebBookmarkTypeLeaf` (`URLString`, `URIDictionary.title`).  Proxies (the
+/// History pseudo-folder) are skipped.
+fn walk_safari_bookmarks(node: &plist::Value, folder: &str, out: &mut Vec<BookmarkEntry>) {
+    let Some(d) = node.as_dictionary() else { return };
+    let kind = d.get("WebBookmarkType").and_then(|v| v.as_string());
+    match kind {
+        Some("WebBookmarkTypeLeaf") => {
+            let url = d.get("URLString").and_then(|v| v.as_string()).unwrap_or("");
+            if url.is_empty() {
+                return;
+            }
+            let title = d
+                .get("URIDictionary")
+                .and_then(|v| v.as_dictionary())
+                .and_then(|u| u.get("title"))
+                .and_then(|v| v.as_string())
+                .unwrap_or("");
+            let date_added = plist_date_to_string(
+                d.get("ReadingList")
+                    .and_then(|v| v.as_dictionary())
+                    .and_then(|r| r.get("DateAdded")),
+            );
+            out.push(BookmarkEntry {
+                url: url.to_string(),
+                title: title.to_string(),
+                date_added,
+                folder: folder.to_string(),
+            });
+        }
+        Some("WebBookmarkTypeList") | None => {
+            let title = d.get("Title").and_then(|v| v.as_string()).unwrap_or("");
+            let shown = match title {
+                "BookmarksBar" => "Favorites",
+                "BookmarksMenu" => "Bookmarks Menu",
+                "com.apple.ReadingList" => "Reading List",
+                t => t,
+            };
+            let sub = match (folder.is_empty(), shown.is_empty()) {
+                (_, true) => folder.to_string(),
+                (true, false) => shown.to_string(),
+                (false, false) => format!("{}/{}", folder, shown),
+            };
+            if let Some(children) = d.get("Children").and_then(|v| v.as_array()) {
+                for c in children {
+                    walk_safari_bookmarks(c, &sub, out);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn read_safari_downloads(root: &plist::Value) -> Vec<DownloadEntry> {
+    let Some(list) = root
+        .as_dictionary()
+        .and_then(|d| d.get("DownloadHistory"))
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    let num = |d: &plist::Dictionary, k: &str| -> i64 {
+        match d.get(k) {
+            Some(plist::Value::Integer(i)) => i.as_signed().unwrap_or(0),
+            Some(plist::Value::Real(r)) => *r as i64,
+            _ => 0,
+        }
+    };
+    list.iter()
+        .filter_map(|v| v.as_dictionary())
+        .map(|d| {
+            let s = |k: &str| d.get(k).and_then(|v| v.as_string()).unwrap_or("").to_string();
+            let total = num(d, "DownloadEntryProgressTotalToLoad");
+            let so_far = num(d, "DownloadEntryProgressBytesSoFar");
+            let finished = d.get("DownloadEntryDateFinishedKey").is_some();
+            let state = if finished && (total == 0 || so_far >= total) {
+                "Complete"
+            } else {
+                "Incomplete"
+            };
+            DownloadEntry {
+                target_path: s("DownloadEntryPath"),
+                url: s("DownloadEntryURL"),
+                start_time: plist_date_to_string(d.get("DownloadEntryDateAddedKey")),
+                end_time: plist_date_to_string(d.get("DownloadEntryDateFinishedKey")),
+                total_bytes: total,
+                danger_type: "Unknown".to_string(),
+                state: state.to_string(),
+                mime_type: String::new(),
+                referrer_url: String::new(),
+            }
+        })
+        .collect()
 }
 
 /// Scan Chromium-based browser (Chrome, Edge, Brave, etc.)
@@ -799,6 +1099,12 @@ pub fn scan_all_browsers_for_drives(target_drives: Option<&[String]>) -> Result<
         eprintln!("Scanning {} at {:?}", browser_name, path);
         
         match browser_type {
+            BrowserType::Safari => {
+                match scan_safari_browser(&browser_name, &path) {
+                    Ok(mut data) => all_browser_data.append(&mut data),
+                    Err(e) => eprintln!("Error scanning Safari: {}", e),
+                }
+            }
             BrowserType::Firefox => {
                 match scan_firefox_browser(&path) {
                     Ok(mut data) => all_browser_data.append(&mut data),
@@ -816,4 +1122,215 @@ pub fn scan_all_browsers_for_drives(target_drives: Option<&[String]>) -> Result<
     }
 
     Ok(all_browser_data)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn fresh_dir(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("scout_browser_{}_{}", tag, uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    fn mkdirs(root: &Path, rel: &str) -> PathBuf {
+        let p = root.join(rel);
+        std::fs::create_dir_all(&p).unwrap();
+        p
+    }
+
+    fn kinds(v: &[(BrowserType, String, PathBuf)]) -> Vec<String> {
+        v.iter().map(|(_, label, _)| label.clone()).collect()
+    }
+
+    #[test]
+    fn mac_home_layout_is_detected() {
+        let home = fresh_dir("home");
+        mkdirs(&home, "Library/Application Support/Google/Chrome/Default");
+        mkdirs(&home, "Library/Application Support/Arc/User Data/Default");
+        mkdirs(&home, "Library/Application Support/Firefox/Profiles/abc.default");
+        mkdirs(&home, "Library/Safari");
+        let got = kinds(&mac_user_browser_paths(&home, "alice"));
+        assert_eq!(
+            got,
+            vec!["Google Chrome (alice)", "Arc (alice)", "Mozilla Firefox (alice)", "Safari (alice)"]
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn windows_profile_yields_no_mac_paths() {
+        let home = fresh_dir("winprof");
+        mkdirs(&home, "AppData/Local/Google/Chrome/User Data/Default");
+        assert!(mac_user_browser_paths(&home, "bob").is_empty());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn mac_host_scan_skips_shared_guest_and_hidden() {
+        let users = fresh_dir("users");
+        for u in ["zed", "alice", "Shared", "Guest", ".localized"] {
+            mkdirs(&users, &format!("{}/Library/Safari", u));
+        }
+        let got = kinds(&mac_host_browser_paths(&users));
+        assert_eq!(got, vec!["Safari (alice)", "Safari (zed)"]);
+        let _ = std::fs::remove_dir_all(&users);
+    }
+
+    #[test]
+    fn mac_absolute_time_converts_from_2001_epoch() {
+        assert_eq!(mac_absolute_to_string(0.0), "Never");
+        assert_eq!(mac_absolute_to_string(700_000_000.0), "2023-03-08 20:26:40");
+        assert_eq!(mac_absolute_to_string(750_000_000.75), "2024-10-07 13:20:00");
+    }
+
+    fn write_safari_history(dir: &Path) {
+        let conn = Connection::open(dir.join("History.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE history_items (id INTEGER PRIMARY KEY, url TEXT, visit_count INTEGER);
+             CREATE TABLE history_visits (id INTEGER PRIMARY KEY, history_item INTEGER, visit_time REAL, title TEXT);
+             INSERT INTO history_items VALUES (1, 'https://old.example/', 1);
+             INSERT INTO history_items VALUES (2, 'https://news.example/', 3);
+             INSERT INTO history_visits VALUES (10, 1, 700000000.0, 'Old');
+             INSERT INTO history_visits VALUES (20, 2, 700000100.0, 'News v1');
+             INSERT INTO history_visits VALUES (21, 2, 750000000.75, 'News latest');
+             INSERT INTO history_visits VALUES (22, 2, 710000000.0, NULL);",
+        )
+        .unwrap();
+    }
+
+    fn date(unix: u64) -> plist::Value {
+        let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(unix);
+        plist::Value::Date(plist::Date::from(t))
+    }
+
+    fn dict(pairs: Vec<(&str, plist::Value)>) -> plist::Value {
+        let mut d = plist::Dictionary::new();
+        for (k, v) in pairs {
+            d.insert(k.to_string(), v);
+        }
+        plist::Value::Dictionary(d)
+    }
+
+    fn s(v: &str) -> plist::Value {
+        plist::Value::String(v.to_string())
+    }
+
+    fn leaf(url: &str, title: &str) -> plist::Value {
+        dict(vec![
+            ("WebBookmarkType", s("WebBookmarkTypeLeaf")),
+            ("URLString", s(url)),
+            ("URIDictionary", dict(vec![("title", s(title))])),
+        ])
+    }
+
+    fn list(title: &str, children: Vec<plist::Value>) -> plist::Value {
+        dict(vec![
+            ("WebBookmarkType", s("WebBookmarkTypeList")),
+            ("Title", s(title)),
+            ("Children", plist::Value::Array(children)),
+        ])
+    }
+
+    #[test]
+    fn safari_history_bookmarks_and_downloads() {
+        let dir = fresh_dir("safari");
+        write_safari_history(&dir);
+
+        let mut reading = leaf("https://later.example/", "Later");
+        if let plist::Value::Dictionary(d) = &mut reading {
+            d.insert("ReadingList".into(), dict(vec![("DateAdded", date(1_700_000_000))]));
+        }
+        let bookmarks = dict(vec![
+            ("WebBookmarkType", s("WebBookmarkTypeList")),
+            ("Title", s("")),
+            (
+                "Children",
+                plist::Value::Array(vec![
+                    dict(vec![("WebBookmarkType", s("WebBookmarkTypeProxy")), ("Title", s("History"))]),
+                    list("BookmarksBar", vec![leaf("https://bar.example/", "Bar"), list("Work", vec![leaf("https://w.example/", "W")])]),
+                    list("com.apple.ReadingList", vec![reading]),
+                ]),
+            ),
+        ]);
+        bookmarks.to_file_xml(dir.join("Bookmarks.plist")).unwrap();
+
+        let downloads = dict(vec![(
+            "DownloadHistory",
+            plist::Value::Array(vec![
+                dict(vec![
+                    ("DownloadEntryURL", s("https://dl.example/a.zip")),
+                    ("DownloadEntryPath", s("/Users/alice/Downloads/a.zip")),
+                    ("DownloadEntryProgressTotalToLoad", plist::Value::Integer(100i64.into())),
+                    ("DownloadEntryProgressBytesSoFar", plist::Value::Integer(100i64.into())),
+                    ("DownloadEntryDateAddedKey", date(1_700_000_000)),
+                    ("DownloadEntryDateFinishedKey", date(1_700_000_060)),
+                ]),
+                dict(vec![
+                    ("DownloadEntryURL", s("https://dl.example/b.iso")),
+                    ("DownloadEntryProgressTotalToLoad", plist::Value::Integer(500i64.into())),
+                    ("DownloadEntryProgressBytesSoFar", plist::Value::Integer(20i64.into())),
+                ]),
+            ]),
+        )]);
+        downloads.to_file_binary(dir.join("Downloads.plist")).unwrap();
+
+        let out = scan_safari_browser("Safari (alice)", &dir).unwrap();
+        assert_eq!(out.len(), 1);
+        let b = &out[0];
+        assert!(matches!(b.browser_type, BrowserType::Safari));
+
+        let h: Vec<(&str, &str, i32, &str)> = b
+            .history
+            .iter()
+            .map(|e| (e.url.as_str(), e.title.as_str(), e.visit_count, e.last_visit.as_str()))
+            .collect();
+        assert_eq!(
+            h,
+            vec![
+                ("https://news.example/", "News latest", 3, "2024-10-07 13:20:00"),
+                ("https://old.example/", "Old", 1, "2023-03-08 20:26:40"),
+            ]
+        );
+
+        let bm: Vec<(&str, &str, &str, &str)> = b
+            .bookmarks
+            .iter()
+            .map(|e| (e.url.as_str(), e.title.as_str(), e.folder.as_str(), e.date_added.as_str()))
+            .collect();
+        assert_eq!(
+            bm,
+            vec![
+                ("https://bar.example/", "Bar", "Favorites", ""),
+                ("https://w.example/", "W", "Favorites/Work", ""),
+                ("https://later.example/", "Later", "Reading List", "2023-11-14 22:13:20"),
+            ]
+        );
+
+        let dl: Vec<(&str, &str, i64, &str)> = b
+            .downloads
+            .iter()
+            .map(|e| (e.url.as_str(), e.state.as_str(), e.total_bytes, e.end_time.as_str()))
+            .collect();
+        assert_eq!(
+            dl,
+            vec![
+                ("https://dl.example/a.zip", "Complete", 100, "2023-11-14 22:14:20"),
+                ("https://dl.example/b.iso", "Incomplete", 500, ""),
+            ]
+        );
+
+        // Scratch copies are cleaned up; the source DB is untouched.
+        assert!(dir.join("History.db").is_file());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn safari_empty_dir_yields_nothing() {
+        let dir = fresh_dir("safari_empty");
+        assert!(scan_safari_browser("Safari (x)", &dir).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

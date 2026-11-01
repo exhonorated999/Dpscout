@@ -157,6 +157,38 @@ async fn get_system_info() -> Result<SystemInfo, String> {
     }).await.map_err(|e| format!("System info thread panicked: {}", e))?
 }
 
+/// What Scout is running on, so the UI enables the matching computer card
+/// (Windows vs macOS) and can explain macOS Full Disk Access.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HostPlatform {
+    /// "windows" | "macos" | "linux"
+    os: String,
+    portable: bool,
+    /// macOS: whether Full Disk Access is granted (always true elsewhere).
+    full_disk_access: bool,
+}
+
+#[tauri::command]
+fn get_host_platform() -> HostPlatform {
+    HostPlatform {
+        os: std::env::consts::OS.to_string(),
+        portable: cfg!(feature = "portable"),
+        full_disk_access: scanner::walker::host_policy().full_disk_access(),
+    }
+}
+
+/// Protected macOS locations skipped (no Full Disk Access) since the last
+/// call.  Drains the record; empty on Windows.
+#[tauri::command]
+fn take_skipped_protected_paths() -> Vec<String> {
+    scanner::walker::host_policy()
+        .take_skipped_protected()
+        .into_iter()
+        .map(|p| p.to_string_lossy().to_string())
+        .collect()
+}
+
 #[derive(Clone, Serialize)]
 struct BitLockerSweepProgress {
     stage: String,
@@ -1741,7 +1773,62 @@ fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
     Ok(drives)
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
+    // `/` plus every mounted `/Volumes/*`, minus the Scout stick itself so an
+    // examiner can't accidentally scan (and hash) our own evidence store.
+    let stick = security::stick_identity::stick_root().ok();
+    Ok(mac_drive_list(system_info::macos::mounted_volumes(), stick.as_deref()))
+}
+
+/// Map macOS volumes to picker entries: `/` is the "Fixed" system volume,
+/// everything under `/Volumes` is "Removable"; the volume at `stick` is dropped.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn mac_drive_list(vols: Vec<system_info::DriveInfo>, stick: Option<&std::path::Path>) -> Vec<DriveInfo> {
+    let stick = stick.map(|p| p.to_string_lossy().trim_end_matches('/').to_string());
+    let mut out: Vec<DriveInfo> = vols
+        .into_iter()
+        .filter(|v| stick.as_deref() != Some(v.letter.trim_end_matches('/')))
+        .map(|v| DriveInfo {
+            drive_type: if v.letter == "/" { "Fixed".into() } else { "Removable".into() },
+            label: if v.letter == "/" { format!("{} (System)", v.label) } else { v.label },
+            letter: v.letter,
+            total_space: v.total_space,
+            free_space: v.free_space,
+        })
+        .collect();
+    out.sort_by_key(|d| (d.letter != "/", d.letter.clone()));
+    out
+}
+
+#[cfg(test)]
+mod mac_drive_list_tests {
+    use super::*;
+
+    fn vol(m: &str, label: &str) -> system_info::DriveInfo {
+        system_info::DriveInfo {
+            letter: m.into(),
+            label: label.into(),
+            serial_number: String::new(),
+            filesystem: "apfs".into(),
+            total_space: 10,
+            free_space: 5,
+        }
+    }
+
+    #[test]
+    fn system_first_stick_dropped() {
+        let vols = vec![vol("/Volumes/SCOUT", "SCOUT"), vol("/Volumes/EVIDENCE", "EVIDENCE"), vol("/", "Macintosh HD")];
+        let got = mac_drive_list(vols, Some(std::path::Path::new("/Volumes/SCOUT")));
+        let ids: Vec<(&str, &str, &str)> = got.iter().map(|d| (d.letter.as_str(), d.label.as_str(), d.drive_type.as_str())).collect();
+        assert_eq!(
+            ids,
+            vec![("/", "Macintosh HD (System)", "Fixed"), ("/Volumes/EVIDENCE", "EVIDENCE", "Removable")]
+        );
+    }
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
 fn get_system_drives() -> Result<Vec<DriveInfo>, String> {
     // For non-Windows systems, return root and common mount points
     Ok(vec![
@@ -2701,6 +2788,8 @@ pub fn run() {
             add_category_mapping,
             remove_category_mapping,
             get_system_info,
+            get_host_platform,
+            take_skipped_protected_paths,
             sweep_bitlocker_key_files,
             // start_progressive_scan,  // Temporarily disabled
             import_vic_hash_list,

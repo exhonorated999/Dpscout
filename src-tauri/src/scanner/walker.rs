@@ -195,7 +195,7 @@ impl WalkPolicy {
         std::mem::take(&mut *set).into_iter().collect()
     }
 
-    fn record_protected(&self, dir: &Path) {
+    pub fn record_protected(&self, dir: &Path) {
         let mut set = self.skipped_protected.lock().unwrap_or_else(|e| e.into_inner());
         if set.insert(dir.to_path_buf()) {
             eprintln!("[Walk] Skipped (needs Full Disk Access): {}", dir.display());
@@ -280,6 +280,34 @@ pub fn host_policy() -> &'static WalkPolicy {
 /// Shorthand: `host_policy().scope(root)`.
 pub fn host_scope(root: &Path) -> WalkScope {
     host_policy().scope(root)
+}
+
+/// Real user homes under a macOS `/Users` dir, sorted by name.  Skips
+/// `Shared`, `Guest` and dot entries (`.localized`).  Other users' homes are
+/// listed but usually unreadable without root; callers just find nothing.
+pub fn mac_home_dirs(users_root: &Path) -> Vec<(String, PathBuf)> {
+    let mut homes: Vec<(String, PathBuf)> = match std::fs::read_dir(users_root) {
+        Ok(rd) => rd
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.starts_with('.')
+                    || name.eq_ignore_ascii_case("Shared")
+                    || name.eq_ignore_ascii_case("Guest")
+                {
+                    return None;
+                }
+                let p = e.path();
+                p.is_dir().then_some((name, p))
+            })
+            .collect(),
+        Err(e) => {
+            eprintln!("[Walk] Cannot list {}: {}", users_root.display(), e);
+            Vec::new()
+        }
+    };
+    homes.sort();
+    homes
 }
 
 #[cfg(test)]

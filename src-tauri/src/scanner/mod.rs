@@ -25,6 +25,7 @@ pub mod simple_categorizer;
 pub mod usb_device;
 pub mod deleted_media;
 pub mod macos_apps;
+pub mod macos_intrusion;
 
 use serde::{Deserialize, Serialize};
 
