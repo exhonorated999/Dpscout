@@ -2500,32 +2500,32 @@ fn generate_forensic_report(
     Err("Forensic reports only available in bootable Linux mode".to_string())
 }
 
-// Stub implementations for Windows (these commands only work on Linux)
-#[cfg(target_os = "windows")]
+// Stub implementations for Windows/macOS (these commands only work on Linux)
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn detect_forensic_targets() -> Result<Vec<TargetSystem>, String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn get_forensic_system_info(_target: TargetSystem) -> Result<platform::SystemInfo, String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn get_forensic_apps(_target: TargetSystem) -> Result<Vec<platform::AppInfo>, String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn get_forensic_browser_history(_target: TargetSystem) -> Result<Vec<platform::BrowserHistoryEntry>, String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())
 }
 
-#[cfg(target_os = "windows")]
+#[cfg(not(target_os = "linux"))]
 #[tauri::command]
 fn unmount_forensic_target(_target: TargetSystem) -> Result<(), String> {
     Err("Forensic mode only available in bootable Linux environment".to_string())

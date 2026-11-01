@@ -50,7 +50,6 @@ tar = "0.4"
 flate2 = "1.0"
 crossbeam-channel = "0.5"
 bloomfilter = "1.0"
-wmi = "0.14"
 ureq = "2.9"
 
 # Warrant Triage (search-warrant return parsers — Meta MVP, more providers TBD)
@@ -60,6 +59,7 @@ calamine = "0.26"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
 [target.'cfg(windows)'.dependencies]
+wmi = "0.14"
 winreg = "0.52"
 winapi = { version = "0.3", features = [
     "fileapi", "winbase", "minwindef", "winnt",

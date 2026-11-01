@@ -131,6 +131,7 @@ fn get_physical_drive_serial(drive_letter: &str) -> Result<String, String> {
 
 /// Verify that the current USB matches the registered fingerprint
 /// Now searches all removable drives, not just the current drive letter
+#[cfg(windows)]
 pub fn verify_usb_fingerprint(registered: &UsbFingerprint) -> Result<bool, String> {
     eprintln!("Verifying USB fingerprint:");
     eprintln!("  Looking for: {} / {}", registered.serial_number, registered.volume_id);

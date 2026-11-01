@@ -1,8 +1,11 @@
 use super::{AppCategory, QuestionableApp};
 use super::simple_categorizer::CategoryMappings;
 use std::collections::HashMap;
+#[cfg(windows)]
 use winreg::enums::*;
+#[cfg(windows)]
 use winreg::RegKey;
+#[cfg(windows)]
 use std::process::Command;
 
 /// Get artifact paths for a given application name
@@ -355,7 +358,28 @@ fn get_questionable_apps_database_DEPRECATED() -> HashMap<&'static str, (AppCate
     db
 }
 
+/// Scan installed applications on macOS (bundles, receipts, Homebrew).
+/// Same signature and output shape as the Windows registry scan so
+/// `scan_questionable_apps` and the categoriser are unchanged.
+#[cfg(target_os = "macos")]
+pub fn scan_installed_apps() -> Result<Vec<QuestionableApp>, Box<dyn std::error::Error>> {
+    let mappings = CategoryMappings::load()?;
+    let mut found_apps = super::macos_apps::scan_installed_apps_macos(&mappings, |name, publisher| {
+        (categorize_application(name, publisher), get_artifact_paths(name))
+    });
+    found_apps.sort_by(|a, b| a.name.cmp(&b.name));
+    found_apps.dedup_by(|a, b| a.name == b.name && a.install_path == b.install_path);
+    Ok(found_apps)
+}
+
+/// Other non-Windows targets: no live installed-app source.
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn scan_installed_apps() -> Result<Vec<QuestionableApp>, Box<dyn std::error::Error>> {
+    Ok(Vec::new())
+}
+
 /// Scan Windows registry for ALL installed applications
+#[cfg(windows)]
 pub fn scan_installed_apps() -> Result<Vec<QuestionableApp>, Box<dyn std::error::Error>> {
     let mut found_apps = Vec::new();
 
@@ -404,6 +428,8 @@ pub fn scan_installed_apps() -> Result<Vec<QuestionableApp>, Box<dyn std::error:
 }
 
 /// Scan Windows Store (UWP) apps using PowerShell
+#[cfg(windows)]
+#[allow(dead_code)]
 fn scan_windows_store_apps(mappings: &CategoryMappings) -> Result<Vec<QuestionableApp>, Box<dyn std::error::Error>> {
     let mut cmd = Command::new("powershell");
     
@@ -488,6 +514,7 @@ fn scan_windows_store_apps(mappings: &CategoryMappings) -> Result<Vec<Questionab
 }
 
 /// Parse an application from registry and categorize it
+#[cfg(windows)]
 fn parse_application_from_registry(app_key: &RegKey, mappings: &CategoryMappings) -> Option<QuestionableApp> {
     let display_name: String = app_key.get_value("DisplayName").ok()?;
     

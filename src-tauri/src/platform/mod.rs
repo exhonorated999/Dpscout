@@ -111,6 +111,13 @@ pub fn get_scanner() -> Result<Box<dyn PlatformScanner>, String> {
         // For MVP, use first detected target
         Ok(Box::new(linux::LinuxForensicScanner::new(targets[0].clone())?))
     }
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux")))]
+    {
+        // macOS live scanning goes through the scanner modules directly
+        // (scanner::macos_apps etc.); there is no PlatformScanner for it yet.
+        Err("Platform scanner not available on this OS".to_string())
+    }
 }
 
 /// Platform-specific initialization
