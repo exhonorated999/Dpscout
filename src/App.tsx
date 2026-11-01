@@ -182,6 +182,16 @@ function App() {
       console.error('❌ Failed to check registration, showing registration screen:', error);
       registered = false;
     }
+
+    // Dev-only Mac UI preview: skip registration + licence gates so the Mac
+    // screens can be reviewed. Folds to `false` in any `vite build`.
+    if (import.meta.env.DEV && MAC_PREVIEW) {
+      console.log('🍎 Mac UI preview: registration bypassed');
+      setIsAgencyRegistered(true);
+      setLicenseExpired(false);
+      return;
+    }
+
     setIsAgencyRegistered(registered);
 
     if (registered) {
