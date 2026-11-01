@@ -47,6 +47,9 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const SRC = join(ROOT, 'src');
 
+/** The only module allowed to import tauri-plugin-dialog (it wraps open/save). */
+const FILE_PICKER = join('src', 'lib', 'filePicker.ts');
+
 /** Files allowed to mention the banned globals in real code. */
 const ALLOWLIST = new Set([
   join('src', 'lib', 'appDialog.ts'), // defines the patch
@@ -171,7 +174,23 @@ const RULES = [
     re: /\{[^}]*\b(?:message|confirm|ask)\b[^}]*\}\s*=\s*await\s+import\s*\(\s*['"]@tauri-apps\/plugin-dialog['"]\s*\)/g,
     msg: 'plugin-dialog message/confirm/ask draw an OS box with no Copy/Report actions — use appAlert/appConfirm, or useDialog().showConfirm in a component. (open/save file pickers are fine.)',
   },
+  {
+    // G10: every file/folder picker goes through src/lib/filePicker.ts, which
+    // swaps in the in-app picker on macOS (the native NSOpenPanel writes
+    // recents/prefs into the examined Mac's ~/Library).  Type-only imports
+    // are harmless and allowed.
+    view: 'withStrings',
+    re: /import\s+(?!type\b)[^;]*?from\s*['"]@tauri-apps\/plugin-dialog['"]|import\s*\(\s*['"]@tauri-apps\/plugin-dialog['"]\s*\)/g,
+    allowIn: [join('src', 'lib', 'filePicker.ts')],
+    msg: 'Pick files through src/lib/filePicker (pickOpen/pickSave, or `const { open } = await import(\'../lib/filePicker\')`) — the native picker leaves traces on a Mac.',
+  },
 ];
+
+function ruleAllows(rule, rel) {
+  if (!rule.allowIn) return false;
+  const norm = rel.split('/').join(sep);
+  return rule.allowIn.includes(rel) || rule.allowIn.includes(norm);
+}
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -198,6 +217,7 @@ function check() {
       withStrings: stripNonCode(raw, false),
     };
     for (const rule of RULES) {
+      if (ruleAllows(rule, rel)) continue;
       const code = views[rule.view];
       rule.re.lastIndex = 0;
       let m;
@@ -227,23 +247,28 @@ function selfTest() {
     ['const s = `window.confirm(`;', 0, 'template string'],
     ["const s = 'a\\'b'; window.confirm(1);", 1, 'escaped quote then real call'],
     ['window.alert = () => {};', 1, 'global reassignment'],
-    ["import { message } from '@tauri-apps/plugin-dialog';", 1, 'banned import'],
+    ["import { message } from '@tauri-apps/plugin-dialog';", 2, 'banned import (also bypasses filePicker)'],
     ["// import { message } from '@tauri-apps/plugin-dialog';", 0, 'commented-out banned import'],
     ["/* import { ask } from '@tauri-apps/plugin-dialog'; */", 0, 'block-commented banned import'],
-    ["import { open as o } from '@tauri-apps/plugin-dialog';", 0, 'file picker allowed'],
-    ["const { open, ask } = await import('@tauri-apps/plugin-dialog');", 1, 'banned dynamic import'],
-    ["const { open, save } = await import('@tauri-apps/plugin-dialog');", 0, 'allowed dynamic import'],
+    ["import { open as o } from '@tauri-apps/plugin-dialog';", 1, 'native picker outside filePicker.ts'],
+    ["import { open as o } from '@tauri-apps/plugin-dialog';", 0, 'native picker inside filePicker.ts', FILE_PICKER],
+    ["import type { DialogFilter } from '@tauri-apps/plugin-dialog';", 0, 'type-only import'],
+    ["const { open, ask } = await import('@tauri-apps/plugin-dialog');", 2, 'banned dynamic import (also bypasses filePicker)'],
+    ["const { open, save } = await import('@tauri-apps/plugin-dialog');", 1, 'dynamic native picker outside filePicker.ts'],
+    ["const dlg = await import('@tauri-apps/plugin-dialog');", 0, 'dynamic native picker inside filePicker.ts', FILE_PICKER],
+    ["const { open } = await import('../lib/filePicker');", 0, 'the approved picker'],
     ["// const { ask } = await import('@tauri-apps/plugin-dialog');", 0, 'commented dynamic import'],
     ['await appConfirm("really?");', 0, 'the approved call'],
   ];
   let failed = 0;
-  for (const [src, want, label] of cases) {
+  for (const [src, want, label, file = join('src', 'x.tsx')] of cases) {
     const views = {
       code: stripNonCode(src, true),
       withStrings: stripNonCode(src, false),
     };
     let got = 0;
     for (const rule of RULES) {
+      if (ruleAllows(rule, file)) continue;
       rule.re.lastIndex = 0;
       got += (views[rule.view].match(rule.re) || []).length;
     }

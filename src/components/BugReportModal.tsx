@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { pickOpen as openDialog } from '../lib/filePicker';
 import './BugReportModal.css';
+import { useOfflineHost, OfflineHostNotice } from './OfflineHostNotice';
 
 interface BugReportModalProps {
   onClose: () => void;
@@ -130,6 +131,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose, prefill
   // without re-stat'ing every render. Keyed by path. Populated on add.
   const [attachmentSizes, setAttachmentSizes] = useState<Record<string, number>>({});
   const [submitting, setSubmitting] = useState(false);
+  const offline = useOfflineHost();
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [bugId, setBugId] = useState<number | null>(null);
@@ -388,6 +390,12 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose, prefill
 
             {error && <div className="bugreport-error">{error}</div>}
 
+            {offline && (
+              <OfflineHostNotice what="send this report from Windows">
+                Copy what you wrote, then send it from Scout Portable on Windows. On the Mac, drafts last only until Scout closes.
+              </OfflineHostNotice>
+            )}
+
             <div className="bugreport-actions">
               <button type="button" className="bugreport-btn bugreport-btn-secondary" onClick={handleClose}>
                 Cancel
@@ -395,7 +403,7 @@ export const BugReportModal: React.FC<BugReportModalProps> = ({ onClose, prefill
               <button
                 type="submit"
                 className="bugreport-btn bugreport-btn-primary"
-                disabled={submitting || !title.trim() || !description.trim()}
+                disabled={submitting || !!offline || !title.trim() || !description.trim()}
               >
                 {submitting ? 'Submitting…' : 'Submit Report'}
               </button>

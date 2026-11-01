@@ -103,7 +103,7 @@ export const ReportsManager: React.FC = () => {
     try {
       // Use Tauri save dialog to let user choose destination
       // This ensures portable USB users save to their USB drive, not the suspect machine
-      const { save } = await import('@tauri-apps/plugin-dialog');
+      const { save } = await import('../lib/filePicker');
       const destination = await save({
         title: `Export ${report.report_name}`,
         defaultPath: `${report.report_name}.pdf`,

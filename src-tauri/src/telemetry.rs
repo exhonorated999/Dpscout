@@ -72,7 +72,11 @@ fn opt_out_flag_path() -> Result<PathBuf, String> {
 }
 
 /// Returns true if telemetry is currently enabled (default = ON).
+/// Always false where the offline policy forbids egress (G9, macOS).
 pub fn is_enabled() -> bool {
+    if !crate::net_policy::network_allowed() {
+        return false;
+    }
     match opt_out_flag_path() {
         Ok(p) => !p.exists(),
         Err(_) => true,

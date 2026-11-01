@@ -12,6 +12,8 @@ mod thumbnail_generator;
 mod licensing;
 mod warrant;
 mod telemetry;
+mod net_policy;
+mod fs_browse;
 pub mod diag_log;
 
 use scanner::QuestionableApp;
@@ -167,6 +169,8 @@ struct HostPlatform {
     portable: bool,
     /// macOS: whether Full Disk Access is granted (always true elsewhere).
     full_disk_access: bool,
+    /// G9: no network egress at all on this host (the macOS build).
+    offline: bool,
 }
 
 #[tauri::command]
@@ -175,6 +179,7 @@ fn get_host_platform() -> HostPlatform {
         os: std::env::consts::OS.to_string(),
         portable: cfg!(feature = "portable"),
         full_disk_access: scanner::walker::host_policy().full_disk_access(),
+        offline: !net_policy::network_allowed(),
     }
 }
 
@@ -2790,6 +2795,8 @@ pub fn run() {
             get_system_info,
             get_host_platform,
             take_skipped_protected_paths,
+            fs_browse::fs_list_dir,
+            fs_browse::fs_places,
             sweep_bitlocker_key_files,
             // start_progressive_scan,  // Temporarily disabled
             import_vic_hash_list,

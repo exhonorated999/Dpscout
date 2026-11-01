@@ -167,7 +167,7 @@ export const HashResults: React.FC<HashResultsProps> = ({
       return;
     }
 
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('../lib/filePicker');
     const selected = await open({
       title: `Select the .txt hash file to remove ${group.hashes.length} false positives from`,
       filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],

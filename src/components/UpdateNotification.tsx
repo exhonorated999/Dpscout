@@ -17,6 +17,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import './UpdateNotification.css';
+import { getHostPlatform } from '../lib/hostPlatform';
 
 const DISMISS_KEY = 'scout_update_dismissed_version';
 // Small delay so the check doesn't compete with the app's own startup work
@@ -56,6 +57,8 @@ export default function UpdateNotification() {
     let cancelled = false;
     const timer = setTimeout(async () => {
       try {
+        // G9: the Mac edition never phones home — not even to look.
+        if ((await getHostPlatform()).offline) return;
         const { check } = await import('@tauri-apps/plugin-updater');
         const result = await check();
         if (cancelled || !result) return;

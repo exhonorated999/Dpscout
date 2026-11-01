@@ -23,6 +23,7 @@ import {
   useMap,
 } from "react-leaflet";
 import type { Bucket, WarrantItem } from "./WarrantTriageView";
+import { useOfflineHost } from "../OfflineHostNotice";
 
 // CARTO basemaps now require an API key. Without one every tile is a 200 OK
 // placeholder PNG reading "API KEY REQUIRED" — nothing errors, the map just
@@ -99,6 +100,8 @@ export const LocationMapView: React.FC<LocationMapViewProps> = ({
     for (const b of buckets) m[b.id] = b;
     return m;
   }, [buckets]);
+  // G9: no basemap tiles on an offline host (null = not known yet → don't fetch).
+  const offline = useOfflineHost();
 
   if (points.length === 0) {
     return (
@@ -116,11 +119,13 @@ export const LocationMapView: React.FC<LocationMapViewProps> = ({
         style={{ width: "100%", height: "100%" }}
         scrollWheelZoom
       >
-        <TileLayer
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-          url={CARTO_TILE_URL}
-          subdomains="abcd"
-        />
+        {offline === false && (
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
+            url={CARTO_TILE_URL}
+            subdomains="abcd"
+          />
+        )}
         <FitBounds points={points} />
         <PanToSelected points={points} selectedId={selectedId} />
         {points.map((p) => {
@@ -175,6 +180,11 @@ export const LocationMapView: React.FC<LocationMapViewProps> = ({
       </MapContainer>
       <div className="wt-map-legend">
         <span className="wt-map-legend-count">{points.length} locations</span>
+        {offline && (
+          <span className="wt-map-legend-count" title="The Mac edition makes no network connections, so no basemap is downloaded.">
+            {" "}· 🍎 offline — no basemap
+          </span>
+        )}
       </div>
     </div>
   );
@@ -193,6 +203,7 @@ export const LocationOverviewMap: React.FC<LocationOverviewMapProps> = ({
 }) => {
   const points = useMemo(() => parsePoints(items), [items]);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const offline = useOfflineHost();
 
   if (points.length === 0) return null;
 
@@ -219,10 +230,12 @@ export const LocationOverviewMap: React.FC<LocationOverviewMapProps> = ({
           zoomControl={false}
           attributionControl={false}
         >
-          <TileLayer
-            url={CARTO_TILE_URL}
-            subdomains="abcd"
-          />
+          {offline === false && (
+            <TileLayer
+              url={CARTO_TILE_URL}
+              subdomains="abcd"
+            />
+          )}
           <FitBounds points={points} />
           {points.map((p) => (
             <CircleMarker

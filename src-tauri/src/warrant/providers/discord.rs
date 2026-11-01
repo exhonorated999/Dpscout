@@ -749,7 +749,10 @@ fn emit_messages(sources: &DiscordSources, ctx: &mut ParseCtx, media_extract_dir
                 // (Discord signs with `?ex={hex_unix_ts}`).
                 let already_expired = url_signed_expired(url);
 
-                if !already_expired {
+                if !already_expired && !crate::net_policy::network_allowed() {
+                    // G9 (macOS): no CDN fetch — keep the link only
+                    // ("url_only" renders as an "offline" badge).
+                } else if !already_expired {
                     if let Ok(resp) = ureq::get(url)
                         .timeout(std::time::Duration::from_secs(8))
                         .call()

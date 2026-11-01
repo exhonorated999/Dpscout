@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './SubmitWarrantSample.css';
+import { useOfflineHost, OfflineHostNotice } from '../OfflineHostNotice';
 
 /**
  * Submit Warrant Sample — UI for the "structural fingerprint" submission flow.
@@ -55,6 +56,7 @@ interface SubmitResp {
 export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClose }) => {
   const [phase, setPhase] = useState<Phase>('pick');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const offline = useOfflineHost();
 
   // ─── form fields ──────────────────────────────────────────────────────
   const [rootPath, setRootPath] = useState<string>('');
@@ -85,7 +87,7 @@ export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClos
   async function pickFolder() {
     setErrorMsg('');
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../../lib/filePicker');
       const sel = await open({
         title: 'Select unsupported warrant folder',
         directory: true,
@@ -103,7 +105,7 @@ export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClos
   async function pickZip() {
     setErrorMsg('');
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../../lib/filePicker');
       const sel = await open({
         title: 'Select unsupported warrant .zip',
         filters: [{ name: 'Archive', extensions: ['zip'] }],
@@ -357,6 +359,12 @@ export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClos
 
             {errorMsg && <div className="sws-error">{errorMsg}</div>}
 
+            {offline && (
+              <OfflineHostNotice what="send samples from Windows">
+                Copy the JSON envelope above if you want to keep it, then submit the same return from Scout Portable on Windows.
+              </OfflineHostNotice>
+            )}
+
             <div className="sws-actions">
               <button className="sws-btn ghost" onClick={() => setPhase('pick')}>
                 ← Back
@@ -364,7 +372,7 @@ export const SubmitWarrantSample: React.FC<SubmitWarrantSampleProps> = ({ onClos
               <button
                 className="sws-btn primary"
                 onClick={submitEnvelope}
-                disabled={!consented}
+                disabled={!consented || !!offline}
               >
                 Send to Datapilot →
               </button>

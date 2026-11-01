@@ -1,6 +1,6 @@
 import React from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { open } from '@tauri-apps/plugin-dialog';
+import { pickOpen as open } from '../lib/filePicker';
 import { Button } from './Button';
 import './ScanConfig.css';
 

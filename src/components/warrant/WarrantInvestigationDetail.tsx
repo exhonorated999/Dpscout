@@ -102,7 +102,7 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
       // has no Copy/Report actions and looks nothing like the rest of Scout.
       // Cancel means "Zip file" here, which is also what dismissing does —
       // there is no answer that silently drops the user's click.
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../../lib/filePicker');
       const useFolder = await showConfirm(
         'Is the warrant data already extracted into a folder?\n\n' +
           '• Folder → pick the extracted folder\n' +
@@ -218,7 +218,7 @@ export const WarrantInvestigationDetail: React.FC<Props> = ({
       return;
     }
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../../lib/filePicker');
       const selected = await open({
         title:
           "Pick a parent folder (e.g. detective's USB root) — Scout will create the investigation folder inside it.",

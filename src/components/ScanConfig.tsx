@@ -3,7 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { Button } from './Button';
 import { DriveInfo, formatBytes } from '../types/drive';
 import { DeviceType } from './StartScreen';
-import { getHostPlatform } from '../lib/hostPlatform';
+import { getHostPlatform, MAC_PREVIEW } from '../lib/hostPlatform';
 // ItunesBackupScanner removed — iOS now uses MTP live scan instead of backup
 import './ScanConfig.css';
 
@@ -158,7 +158,9 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
 
   const loadDrives = async () => {
     try {
-      const drives = await invoke<DriveInfo[]>('get_available_drives');
+      const drives = import.meta.env.DEV && MAC_PREVIEW
+        ? (await import('../lib/macPreviewFixtures')).PREVIEW_MAC_DRIVES
+        : await invoke<DriveInfo[]>('get_available_drives');
       setAvailableDrives(drives);
       
       // For Windows mode: auto-select C: drive

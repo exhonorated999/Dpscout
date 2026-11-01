@@ -636,6 +636,7 @@ pub struct SubmitSampleResponse {
 pub async fn warrant_submit_sample_envelope(
     args: SubmitSampleArgs,
 ) -> Result<SubmitSampleResponse, String> {
+    crate::net_policy::require_network("Submitting a parser sample")?;
     let endpoint = if args.endpoint.trim().is_empty() {
         SAMPLE_SUBMIT_DEFAULT_URL.to_string()
     } else {

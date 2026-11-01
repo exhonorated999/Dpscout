@@ -6,6 +6,7 @@ import { AppSettings, KeywordList, HashList, CustomAppDefinition, ScanOptions } 
 import { ReportsManager } from './ReportsManager';
 import { ScanDocumentationPanel } from './ScanDocumentation';
 import { RegistrationScreen } from './RegistrationScreen';
+import { useOfflineHost, OfflineHostNotice } from './OfflineHostNotice';
 import './SettingsView.css';
 
 interface SettingsViewProps {
@@ -252,6 +253,7 @@ interface ActivateResponse {
 // (opt-out, not opt-in) — matches the product decision recorded in the
 // project notes.
 const PrivacyPanel: React.FC = () => {
+  const offline = useOfflineHost();
   const [enabled, setEnabled] = React.useState<boolean>(true);
   const [loading, setLoading] = React.useState<boolean>(true);
   const [saving, setSaving] = React.useState<boolean>(false);
@@ -328,6 +330,11 @@ const PrivacyPanel: React.FC = () => {
         </p>
       </div>
 
+      {offline ? (
+        <OfflineHostNotice what="telemetry is always off">
+          Nothing is collected or sent while Scout runs on a Mac, whatever this setting says on Windows.
+        </OfflineHostNotice>
+      ) : (
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -379,6 +386,7 @@ const PrivacyPanel: React.FC = () => {
           }} />
         </label>
       </div>
+      )}
 
       {status && (
         <div style={{
@@ -428,7 +436,9 @@ const DiagRow: React.FC<{ label: string; value: string; mono?: boolean; hint?: s
   </div>
 );
 
-const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = React.useState<LicenseInfo | null>(null);
+const LicensePanel: React.FC = () => {
+  const offline = useOfflineHost();
+  const [licenseInfo, setLicenseInfo] = React.useState<LicenseInfo | null>(null);
   const [updateInfo, setUpdateInfo] = React.useState<UpdateInfo | null>(null);
   const [licenseKey, setLicenseKey] = React.useState('');
   const [activating, setActivating] = React.useState(false);
@@ -561,6 +571,7 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
   };
 
   const handleCheckAndInstallUpdate = async () => {
+    if (offline) return; // Mac edition never reaches the network (G9)
     setUpdateProgress({ phase: 'checking', percent: 0, message: 'Checking for updates...' });
     setUpdateInfo(null);
     setManualFallback(null);
@@ -821,6 +832,12 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
         <h4 style={{ color: 'var(--color-text-primary)', marginTop: 0, marginBottom: '16px' }}>
           🔑 Activate License Key
         </h4>
+        {offline ? (
+          <OfflineHostNotice what="activate on Windows">
+            Activate or renew this stick from Scout on a Windows computer. The Mac reads the licence that the stick
+            already carries, and counts down to its expiry date.
+          </OfflineHostNotice>
+        ) : (
         <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
           <div style={{ flex: 1 }}>
             <label style={{ display: 'block', color: 'var(--color-text-secondary)', fontSize: '12px', marginBottom: '6px', textTransform: 'uppercase' }}>
@@ -866,6 +883,7 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
             {activating ? 'Activating...' : 'Activate'}
           </button>
         </div>
+        )}
 
         {error && (
           <div style={{
@@ -1010,6 +1028,11 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
           🔄 Software Updates
         </h4>
 
+        {offline ? (
+          <OfflineHostNotice what="updates are installed from Windows">
+            Update the stick by running Scout Portable on Windows. The Mac app on the stick is replaced with it.
+          </OfflineHostNotice>
+        ) : (
         <button
           onClick={handleCheckAndInstallUpdate}
           disabled={updateProgress.phase !== 'idle' && updateProgress.phase !== 'error'}
@@ -1027,6 +1050,7 @@ const LicensePanel: React.FC = () => {  const [licenseInfo, setLicenseInfo] = Re
         >
           {updateProgress.phase === 'checking' ? 'Checking...' : '🔍 Check for Updates'}
         </button>
+        )}
 
         {/* Download / install progress bar */}
         {(updateProgress.phase === 'downloading' || updateProgress.phase === 'installing' || updateProgress.phase === 'done') && (
@@ -1319,7 +1343,7 @@ const KeywordListsPanel: React.FC<{
     setIsImporting(true);
     try {
       // Use Tauri's file dialog
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../lib/filePicker');
       const selected = await open({
         multiple: false,
         filters: [{
@@ -1735,7 +1759,7 @@ const HashListsPanel: React.FC<{
     try {
       setIsImporting(true);
       setImportProgress(null);
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../lib/filePicker');
       const { invoke } = await import('@tauri-apps/api/core');
       const { listen } = await import('@tauri-apps/api/event');
       
@@ -1800,7 +1824,7 @@ const HashListsPanel: React.FC<{
 
   const importTxtHashList = async () => {
     try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
+      const { open } = await import('../lib/filePicker');
       const selected = await open({
         multiple: false,
         directory: false,

@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { clearThumbnailDataUrlCache } from "./utils/thumbnailLoader";
 import { listen } from "@tauri-apps/api/event";
 import { StartScreen, DeviceType } from "./components/StartScreen";
-import { resetSkippedProtected } from "./lib/hostPlatform";
+import { resetSkippedProtected, MAC_PREVIEW, setPreviewSkippedProtected } from "./lib/hostPlatform";
 import { ScanView } from "./components/ScanView";
 import { SettingsView } from "./components/SettingsView";
 import { ReportView } from "./components/ReportView";
@@ -863,6 +863,39 @@ function App() {
     }
   }
 
+  // Dev-only (MAC_PREVIEW): play back canned macOS results with a short fake
+  // progress so the results dashboard, the Mac tabs and the "Full Disk Access
+  // required" section can be reviewed on Windows. Compiled out of builds.
+  async function runMacPreviewScan(modules: ScanModules) {
+    const { macPreviewResults } = await import("./lib/macPreviewFixtures");
+    const r = macPreviewResults();
+    setScannedModules(modules);
+    setState("results");
+    setIsScanning(true);
+    setScanStopped(false);
+    setApps([]);
+    setBrowsers([]);
+    setMediaFiles([]);
+    setKeywordMatches([]);
+    setHashMatches([]);
+    setIntrusionResults(null);
+    setDeletedMediaResults([]);
+    setSystemInfo(null);
+    await resetSkippedProtected();
+    setPreviewSkippedProtected(r.skippedProtected);
+
+    const step = (name: string, apply: () => void) =>
+      new Promise<void>(res => { setCurrentScanModule(`${name} (preview)`); setTimeout(() => { apply(); res(); }, 600); });
+
+    await step("System Information", () => setSystemInfo(r.systemInfo));
+    if (modules.questionableApps) await step("Questionable Applications", () => setApps(r.apps));
+    if (modules.browserHistory) await step("Browser History", () => setBrowsers(r.browsers));
+    if (modules.keywordSearch) await step("Keyword Search", () => setKeywordMatches(r.keywordMatches));
+    if (modules.intrusionDetection) await step("Intrusion Detection", () => setIntrusionResults(r.intrusion));
+    setCurrentScanModule("");
+    setIsScanning(false);
+  }
+
   async function startScan(modules: ScanModules, keywordConfig?: KeywordScanConfig, hashConfig?: any) {
     // Capture priority order (enabled lists only, in user-chosen order) for results grouping.
     captureListPriority(keywordConfig, hashConfig);
@@ -882,6 +915,13 @@ function App() {
     // Windows, USB drive and macOS (portable on a Mac) scanning
     if (selectedDeviceType !== 'windows' && selectedDeviceType !== 'usb' && selectedDeviceType !== 'macos') {
       alert('Invalid device type selected');
+      return;
+    }
+
+    if (import.meta.env.DEV && MAC_PREVIEW && selectedDeviceType === 'macos') {
+      // Dev-only Mac UI preview on a Windows box: the Windows backend would
+      // read "/" as C:\, so show canned macOS results instead of scanning.
+      await runMacPreviewScan(modules);
       return;
     }
     
@@ -1590,7 +1630,7 @@ function App() {
 
   async function handleWarrantExport(caseId: string) {
     try {
-      const { open } = await import("@tauri-apps/plugin-dialog");
+      const { open } = await import("./lib/filePicker");
       const selected = await open({
         title:
           "Pick a parent folder (e.g. the detective's USB root) — Scout will create a uniquely-named report folder inside it.",

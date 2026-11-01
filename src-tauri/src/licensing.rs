@@ -517,6 +517,7 @@ fn ureq_error_message(context: &str, err: ureq::Error) -> String {
 }
 
 pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, String> {
+    crate::net_policy::require_network("Agency registration")?;
     let machine_id = get_machine_id()?;
     let app_version = env!("CARGO_PKG_VERSION").to_string();
 
@@ -628,6 +629,13 @@ const DEV_LICENSE_DAYS: i64 = 9999;
 fn check_license_with_server() -> Result<LicenseInfo, String> {
     let machine_id = get_machine_id()?;
 
+    // G9: the macOS build never phones home — status comes from the cache the
+    // stick carries from its last online check on Windows.
+    if !crate::net_policy::network_allowed() {
+        eprintln!("[Licensing] offline policy: using cached license data only");
+        return cached_license_status(chrono::Utc::now());
+    }
+
     // Try online check first
     let body = serde_json::json!({ "machine_id": machine_id, "platform": get_platform() });
 
@@ -664,8 +672,113 @@ fn check_license_with_server() -> Result<LicenseInfo, String> {
     }
 }
 
+/// Licence status from the cache alone, with the countdown brought up to
+/// `now`. Used when the offline policy forbids asking the server (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn cached_license_status(now: chrono::DateTime<chrono::Utc>) -> Result<LicenseInfo, String> {
+    Ok(match load_cached_license()? {
+        Some(cached) => age_cached_license(cached, now),
+        None => LicenseInfo {
+            registered: is_registration_saved(),
+            agency_name: None,
+            plan: None,
+            status: None,
+            expires_at: None,
+            days_remaining: 0,
+            is_expired: true,
+        },
+    })
+}
+
+/// A cached `days_remaining` is frozen at the last online check, so a stick
+/// that never goes back online would count down forever. Recompute it from
+/// `expires_at`. This can only TIGHTEN the licence: never extend
+/// `days_remaining`, never clear `is_expired` (the server may have expired or
+/// revoked it for reasons the date doesn't show). Unparseable dates leave the
+/// cache as-is.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn age_cached_license(mut info: LicenseInfo, now: chrono::DateTime<chrono::Utc>) -> LicenseInfo {
+    let Some(exp) = info.expires_at.as_deref().and_then(parse_expiry) else {
+        return info;
+    };
+    let secs = (exp - now).num_seconds();
+    let days = if secs <= 0 { 0 } else { (secs + 86_399) / 86_400 };
+    info.days_remaining = info.days_remaining.min(days);
+    info.is_expired = info.is_expired || secs <= 0;
+    info
+}
+
+/// Server expiry stamps: RFC 3339, naive ISO datetime (taken as UTC), or a bare date (end of that day, UTC).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn parse_expiry(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{NaiveDate, NaiveDateTime, TimeZone, Utc};
+    let s = s.trim();
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    for fmt in ["%Y-%m-%dT%H:%M:%S%.f", "%Y-%m-%d %H:%M:%S%.f"] {
+        if let Ok(n) = NaiveDateTime::parse_from_str(s, fmt) {
+            return Some(Utc.from_utc_datetime(&n));
+        }
+    }
+    NaiveDate::parse_from_str(s, "%Y-%m-%d")
+        .ok()
+        .and_then(|d| d.and_hms_opt(23, 59, 59))
+        .map(|n| Utc.from_utc_datetime(&n))
+}
+
+#[cfg(test)]
+mod offline_license_tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn lic(exp: Option<&str>, days: i64, expired: bool) -> LicenseInfo {
+        LicenseInfo {
+            registered: true,
+            agency_name: Some("A".into()),
+            plan: Some("annual".into()),
+            status: Some("active".into()),
+            expires_at: exp.map(str::to_string),
+            days_remaining: days,
+            is_expired: expired,
+        }
+    }
+
+    fn at(y: i32, m: u32, d: u32) -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn countdown_advances_from_expiry() {
+        // Cached 300 days on the last online check; 10 days of real time left now.
+        let got = age_cached_license(lic(Some("2027-01-11T12:00:00Z"), 300, false), at(2027, 1, 1));
+        assert_eq!((got.days_remaining, got.is_expired), (10, false));
+    }
+
+    #[test]
+    fn past_expiry_expires_and_formats_parse() {
+        for s in ["2026-12-31T00:00:00+00:00", "2026-12-31T00:00:00", "2026-12-31 00:00:00.123", "2026-12-31"] {
+            let got = age_cached_license(lic(Some(s), 40, false), at(2027, 1, 2));
+            assert_eq!((got.days_remaining, got.is_expired), (0, true), "{}", s);
+        }
+    }
+
+    #[test]
+    fn never_loosens_the_cache() {
+        // Server said expired/revoked even though the date is in the future.
+        let got = age_cached_license(lic(Some("2030-01-01"), 0, true), at(2027, 1, 1));
+        assert_eq!((got.days_remaining, got.is_expired), (0, true));
+        // Unparseable or missing date: cache untouched.
+        let got = age_cached_license(lic(Some("soon"), 12, false), at(2027, 1, 1));
+        assert_eq!((got.days_remaining, got.is_expired), (12, false));
+        let got = age_cached_license(lic(None, 12, false), at(2027, 1, 1));
+        assert_eq!((got.days_remaining, got.is_expired), (12, false));
+    }
+}
+
 /// Activate a license key
 pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, String> {
+    crate::net_policy::require_network("License activation")?;
     let machine_id = get_machine_id()?;
 
     let body = serde_json::json!({
@@ -739,7 +852,9 @@ pub fn get_license_diagnostics() -> LicenseDiagnostics {
 }
 
 /// Check for software updates
-pub fn check_for_updates() -> Result<UpdateInfo, String> {    let current = env!("CARGO_PKG_VERSION");
+pub fn check_for_updates() -> Result<UpdateInfo, String> {
+    crate::net_policy::require_network("Update check")?;
+    let current = env!("CARGO_PKG_VERSION");
 
     let url = format!("{}/api/updates/check?current_version={}", SERVER_URL, current);
 
@@ -857,6 +972,7 @@ pub struct BugReportResponse {
 
 /// Submit bug report to both Scout server and Intellect LE Command Center.
 pub fn submit_bug_report(data: BugReportData) -> Result<BugReportResponse, String> {
+    crate::net_policy::require_network("Sending a bug report")?;
     let machine_id = get_machine_id().unwrap_or_default();
     let app_version = env!("CARGO_PKG_VERSION").to_string();
 

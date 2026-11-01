@@ -1971,7 +1971,7 @@ const CSAMHashView: React.FC<{
       return;
     }
 
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('../lib/filePicker');
     const selected = await open({
       title: `Select the .txt hash file to remove ${selectedHashes.length} false positives from`,
       filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],
@@ -2016,7 +2016,7 @@ const CSAMHashView: React.FC<{
       return;
     }
 
-    const { open } = await import('@tauri-apps/plugin-dialog');
+    const { open } = await import('../lib/filePicker');
     const selected = await open({
       title: `Select the .txt hash file to remove ALL ${group.hashes.length} from "${listSource}"`,
       filters: [{ name: 'Text Hash Files', extensions: ['txt'] }],

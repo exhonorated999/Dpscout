@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import './RegistrationScreen.css';
+import { useOfflineHost, OfflineHostNotice } from './OfflineHostNotice';
 
 interface RegistrationScreenProps {
   onRegistrationComplete: () => void;
@@ -36,6 +37,7 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
   const [zipCode, setZipCode] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const offline = useOfflineHost();
 
   const handleRegister = async () => {
     setError('');
@@ -182,6 +184,14 @@ export const RegistrationScreen: React.FC<RegistrationScreenProps> = ({ onRegist
               />
             </div>
           </div>
+
+          {offline && (
+            <OfflineHostNotice what="register on Windows">
+              The Mac edition never connects to the internet. Plug this stick
+              into a Windows computer, run Scout Portable there to register,
+              then bring it back to the Mac.
+            </OfflineHostNotice>
+          )}
 
           {initError && (
             <div className="error-message">

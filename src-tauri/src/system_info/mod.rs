@@ -321,6 +321,9 @@ fn get_ip_addresses() -> Vec<String> {
 
 /// Get public IP address from external API
 fn get_public_ip() -> Option<String> {
+    if !crate::net_policy::network_allowed() {
+        return None;
+    }
     // Try multiple services for reliability
     let services = [
         "https://api.ipify.org",
