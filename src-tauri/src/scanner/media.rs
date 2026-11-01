@@ -136,10 +136,12 @@ pub fn scan_media_files(
 
         println!("Scanning directory: {}", scan_path);
         
+        let scope = crate::scanner::walker::host_scope(Path::new(scan_path));
         for entry in WalkDir::new(scan_path)
             .follow_links(false)
             .max_depth(10)
             .into_iter()
+            .filter_entry(|e| scope.allows_entry(e.path(), e.file_type().is_dir()))
             .filter_map(|e| e.ok())
         {
             let path = entry.path();
@@ -244,10 +246,12 @@ where
         println!("Scanning directory: {}", scan_path);
         
         let mut walked = 0usize;
+        let scope = crate::scanner::walker::host_scope(Path::new(scan_path));
         for entry in WalkDir::new(scan_path)
             .follow_links(false)
             .max_depth(10)
             .into_iter()
+            .filter_entry(|e| scope.allows_entry(e.path(), e.file_type().is_dir()))
             .filter_map(|e| e.ok())
         {
             // Periodic cancel check during deep walk

@@ -3,6 +3,7 @@ pub mod media;
 pub mod browser;
 pub mod keyword;
 pub mod hash_scan;
+pub mod walker;
 pub mod android;
 pub mod android_sms;
 pub mod android_messages_multisilo;

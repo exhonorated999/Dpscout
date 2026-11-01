@@ -151,6 +151,7 @@ pub fn scan_keywords(options: KeywordScanOptions) -> Result<Vec<KeywordMatch>, B
 
         // Determine if we're explicitly scanning Recycle Bin
         let scanning_recycle_bin = scan_path.to_uppercase().contains("$RECYCLE.BIN");
+        let scope = crate::scanner::walker::host_scope(&path);
 
         // Collect all files to scan (skip system directories to prevent crashes)
         let files: Vec<PathBuf> = WalkDir::new(&path)
@@ -160,6 +161,7 @@ pub fn scan_keywords(options: KeywordScanOptions) -> Result<Vec<KeywordMatch>, B
             .filter_entry(|e| {
                 let path_str = e.path().to_string_lossy();
                 should_scan_path(&path_str, scanning_recycle_bin)
+                    && scope.allows_entry(e.path(), e.file_type().is_dir())
             })
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
@@ -233,9 +235,11 @@ where
             continue;
         }
 
+        let count_scope = crate::scanner::walker::host_scope(&path);
         let file_count = WalkDir::new(&path)
             .follow_links(false)
             .into_iter()
+            .filter_entry(|e| count_scope.allows_entry(e.path(), e.file_type().is_dir()))
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())
             .count();
@@ -258,6 +262,7 @@ where
 
         // Determine if we're explicitly scanning Recycle Bin
         let scanning_recycle_bin = scan_path.to_uppercase().contains("$RECYCLE.BIN");
+        let scope = crate::scanner::walker::host_scope(&path);
 
         // Collect all files to scan (skip system directories to prevent crashes)
         let files: Vec<PathBuf> = WalkDir::new(&path)
@@ -267,6 +272,7 @@ where
             .filter_entry(|e| {
                 let path_str = e.path().to_string_lossy();
                 should_scan_path(&path_str, scanning_recycle_bin)
+                    && scope.allows_entry(e.path(), e.file_type().is_dir())
             })
             .filter_map(|e| e.ok())
             .filter(|e| e.file_type().is_file())

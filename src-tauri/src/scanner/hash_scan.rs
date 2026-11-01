@@ -127,6 +127,28 @@ const SKIP_DIRS: &[&str] = &[
 const TIER1_DIRS: &[&str] = &[
     "Downloads", "Desktop", "Documents", "Pictures", "Videos",
     "Music", "Saved Pictures", "Camera Roll",
+    "Movies", // macOS's "Videos"
+];
+
+/// macOS: per-user locations relative to `/Users/<u>` (Tier 1).
+/// TCC-protected entries are filtered by `scanner::walker` when Scout lacks
+/// Full Disk Access.
+#[cfg(target_os = "macos")]
+const TIER1_MAC_HOME_DIRS: &[&str] = &[
+    ".Trash",
+    "Library/Application Support/Telegram Desktop",
+    "Library/Group Containers/6N38VWS5BX.ru.keepcoder.Telegram",
+    "Library/Containers/ru.keepcoder.Telegram",
+    "Library/Group Containers/group.net.whatsapp.WhatsApp.shared",
+    "Library/Containers/net.whatsapp.WhatsApp",
+    "Library/Application Support/WhatsApp",
+    "Library/Application Support/Signal",
+    "Library/Application Support/discord",
+    "Library/Application Support/Google/Chrome",
+    "Library/Application Support/Microsoft Edge",
+    "Library/Application Support/Firefox/Profiles",
+    "Library/Application Support/qBittorrent",
+    "Library/Application Support/Transmission",
 ];
 
 /// Tier 1 also includes app cache directories (messaging apps)
@@ -511,12 +533,14 @@ fn discover_usb_files(
     let mut deep_count: usize = 0;
     
     let mut entry_count: usize = 0;
+    let scope = crate::scanner::walker::host_scope(Path::new(scan_root));
+    if !scope.allows_dir(Path::new(scan_root)) { return; }
     
     for entry in jwalk::WalkDir::new(scan_root)
         .skip_hidden(false)
         .follow_links(false)
         .max_depth(50)
-        .process_read_dir(|_depth, _path, _state, children| {
+        .process_read_dir(move |_depth, _path, _state, children| {
             children.retain(|child_result| {
                 if let Ok(child) = child_result {
                     if child.file_type().is_dir() {
@@ -527,7 +551,7 @@ fn discover_usb_files(
                                 "node_modules" | ".git" | ".svn" | "__pycache__" | ".venv" |
                                 "target" | ".cargo" | ".rustup"
                             );
-                            return !skip;
+                            return !skip && scope.allows_dir(&child.path());
                         }
                     }
                 }
@@ -606,6 +630,7 @@ fn discover_tier1_files(
     _known_sizes: &Option<HashSet<u64>>,
 ) {
     let root = PathBuf::from(scan_root);
+    let scope = crate::scanner::walker::host_scope(&root);
     
     // For system drive, enumerate user profiles
     let users_dir = root.join("Users");
@@ -624,7 +649,7 @@ fn discover_tier1_files(
                 for dir_name in TIER1_DIRS {
                     let dir_path = user_path.join(dir_name);
                     if dir_path.exists() {
-                        send_directory_files(&dir_path, 1, 15, tx, counter);
+                        send_directory_files(&dir_path, 1, 15, tx, counter, &scope);
                     }
                 }
                 
@@ -636,15 +661,24 @@ fn discover_tier1_files(
                     for base in [&local_appdata, &roaming_appdata] {
                         let app_path = base.join(appdata_dir);
                         if app_path.exists() {
-                            send_directory_files(&app_path, 1, 10, tx, counter);
+                            send_directory_files(&app_path, 1, 10, tx, counter, &scope);
                         }
+                    }
+                }
+
+                // macOS equivalents (Trash, ~/Library app data)
+                #[cfg(target_os = "macos")]
+                for rel in TIER1_MAC_HOME_DIRS {
+                    let app_path = user_path.join(rel);
+                    if app_path.exists() {
+                        send_directory_files(&app_path, 1, 10, tx, counter, &scope);
                     }
                 }
                 
                 // Recycle bin for this drive
                 let recycle_bin = root.join("$Recycle.Bin");
                 if recycle_bin.exists() {
-                    send_directory_files(&recycle_bin, 1, 10, tx, counter);
+                    send_directory_files(&recycle_bin, 1, 10, tx, counter, &scope);
                 }
             }
         }
@@ -653,14 +687,16 @@ fn discover_tier1_files(
         for dir_name in TIER1_DIRS {
             let dir_path = root.join(dir_name);
             if dir_path.exists() {
-                send_directory_files(&dir_path, 1, 15, tx, counter);
+                send_directory_files(&dir_path, 1, 15, tx, counter, &scope);
             }
         }
         
-        // Also check Recycle Bin
-        let recycle_bin = root.join("$Recycle.Bin");
-        if recycle_bin.exists() {
-            send_directory_files(&recycle_bin, 1, 10, tx, counter);
+        // Also check Recycle Bin (Windows) / volume Trash (macOS)
+        for bin in ["$Recycle.Bin", ".Trashes"] {
+            let recycle_bin = root.join(bin);
+            if recycle_bin.exists() {
+                send_directory_files(&recycle_bin, 1, 10, tx, counter, &scope);
+            }
         }
     }
 }
@@ -673,6 +709,7 @@ fn discover_tier2_files(
     _known_sizes: &Option<HashSet<u64>>,
 ) {
     let root = PathBuf::from(scan_root);
+    let scope = crate::scanner::walker::host_scope(&root);
     
     if let Ok(entries) = fs::read_dir(&root) {
         for entry in entries.flatten() {
@@ -688,7 +725,7 @@ fn discover_tier2_files(
             if name.starts_with('.') { continue; }
             
             // This catches user-created folders like "Photos", "Work", "Backup", etc.
-            send_directory_files(&path, 2, 15, tx, counter);
+            send_directory_files(&path, 2, 15, tx, counter, &scope);
         }
     }
 }
@@ -704,16 +741,18 @@ fn discover_tier3_files(
     if !Path::new(scan_root).exists() { return; }
     
     // Walk the entire drive with max depth, but skip dirs we already covered
+    let scope = crate::scanner::walker::host_scope(Path::new(scan_root));
+    if !scope.allows_dir(Path::new(scan_root)) { return; }
     for entry in jwalk::WalkDir::new(scan_root)
         .skip_hidden(false)
         .follow_links(false)
         .max_depth(20)
-        .process_read_dir(|_depth, _path, _state, children| {
+        .process_read_dir(move |_depth, _path, _state, children| {
             children.retain(|child_result| {
                 if let Ok(child) = child_result {
                     if child.file_type().is_dir() {
                         if let Some(name) = child.file_name.to_str() {
-                            return !should_skip_dir(name);
+                            return !should_skip_dir(name) && scope.allows_dir(&child.path());
                         }
                     }
                 }
@@ -794,7 +833,11 @@ fn send_directory_files(
     max_depth: usize,
     tx: &Sender<FileCandidate>,
     counter: &Arc<AtomicUsize>,
+    scope: &crate::scanner::walker::WalkScope,
 ) {
+    if !scope.allows_dir(dir) { return; }
+    let scope = scope.clone();
+
     // Collect files from this directory
     let mut candidates: Vec<(PathBuf, u64)> = Vec::new();
     
@@ -802,12 +845,12 @@ fn send_directory_files(
         .skip_hidden(false)
         .follow_links(false)
         .max_depth(max_depth)
-        .process_read_dir(|_depth, _path, _state, children| {
+        .process_read_dir(move |_depth, _path, _state, children| {
             children.retain(|child_result| {
                 if let Ok(child) = child_result {
                     if child.file_type().is_dir() {
                         if let Some(name) = child.file_name.to_str() {
-                            return !should_skip_dir(name);
+                            return !should_skip_dir(name) && scope.allows_dir(&child.path());
                         }
                     }
                 }
