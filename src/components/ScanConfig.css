@@ -302,6 +302,35 @@
   color: var(--color-text-primary);
 }
 
+/* Drive tiles must contain long macOS mount paths ("/Volumes/EVIDENCE"):
+   let the info column shrink, wrap the header, and break the path. */
+.drives-grid .drive-info {
+  min-width: 0;
+}
+
+.drives-grid .drive-header {
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  margin-bottom: 0;
+}
+
+.drives-grid .drive-letter {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  line-height: 1.25;
+}
+
+.drives-grid .drive-letter.mount-path {
+  font-size: 0.95rem;
+  padding: 3px 8px;
+}
+
+.drives-grid .drive-type-badge {
+  flex-shrink: 0;
+}
+
 .drive-type-badge {
   padding: 2px 8px;
   background-color: var(--color-bg-secondary);

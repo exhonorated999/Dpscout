@@ -501,7 +501,12 @@ export const ScanConfig: React.FC<ScanConfigProps> = ({ onStartScan, onBack, dev
                   />
                   <div className="drive-info">
                     <div className="drive-header">
-                      <span className="drive-letter">{drive.letter}</span>
+                      <span
+                        className={`drive-letter ${drive.letter.length > 3 ? 'mount-path' : ''}`}
+                        title={drive.letter}
+                      >
+                        {drive.letter}
+                      </span>
                       <span className="drive-type-badge">{drive.driveType}</span>
                     </div>
                     <div className="drive-label">{drive.label || 'Local Disk'}</div>
