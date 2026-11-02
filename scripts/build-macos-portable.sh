@@ -78,6 +78,21 @@ done
 # Config merge order (later wins): tauri.conf.json → tauri.conf.portable.json
 # (name, identifier, portable frontend build) → tauri.conf.macos-portable.json
 # (.app target, incognito webview, asset scope, Info.plist, entitlements).
+#
+# src-tauri/macos/entitlements.plist is deliberately an EMPTY dict (hardened
+# runtime, not sandboxed): no App Sandbox (Scout reads arbitrary folders and
+# /Volumes, and a sandbox container under ~/Library/Containers would break the
+# zero-host-writes rule) and no com.apple.security.cs.* exceptions (no unsigned
+# code, no JIT in our process, no DYLD vars). Only add an exception after a
+# signed build demonstrably fails without it.
+# codesign parses entitlements with AMFIUnserializeXML, which rejects XML
+# comments and CRLF ("syntax error near line 1") — keep the file bare and LF.
+ENT="src-tauri/macos/entitlements.plist"
+if grep -q '<!--' "$ENT" || grep -q $'\r' "$ENT"; then
+  die "$ENT must have no XML comments and LF line endings (codesign's AMFI parser rejects them)."
+fi
+plutil -lint "$ENT" >/dev/null || die "$ENT is not a valid plist."
+
 note "Building Datapilot Scout Portable $VERSION for $TRIPLE"
 npx tauri build \
   --target "$TRIPLE" \

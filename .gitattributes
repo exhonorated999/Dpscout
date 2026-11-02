@@ -1,2 +1,4 @@
 # Shell scripts run on macOS/Linux; a CRLF breaks bash ($'\r': command not found).
 *.sh text eol=lf
+# codesign's entitlements parser (AMFIUnserializeXML) rejects CRLF.
+*.plist text eol=lf

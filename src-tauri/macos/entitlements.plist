@@ -1,18 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!--
-  Entitlements for the macOS portable .app (hardened runtime, NOT sandboxed).
-
-  Deliberately empty:
-  - No App Sandbox: Scout must read arbitrary user folders and /Volumes, and a
-    sandboxed app would also create a container under ~/Library/Containers,
-    which breaks the zero-host-writes rule.
-  - No com.apple.security.cs.* exceptions: Scout loads no unsigned code, needs
-    no JIT in its own process (WKWebView JIT runs in WebKit's processes), and
-    no DYLD variables. Every exception weakens the hardened runtime, so only add
-    one after a signed build demonstrably fails without it.
--->
 <plist version="1.0">
-<dict>
-</dict>
+<dict/>
 </plist>
