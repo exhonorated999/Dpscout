@@ -288,11 +288,15 @@ pub fn get_machine_id() -> Result<String, String> {
     }
 
     // Desktop build: the ID the server last confirmed for this Windows
-    // install + user, else the hardware fingerprint.
+    // install + user; else the ID the previous release was actually using
+    // (if this machine can still derive it); else the hardware fingerprint.
     #[cfg(not(feature = "portable"))]
     {
         if let Some(pinned) = pinned_machine_id() {
             return Ok(pinned);
+        }
+        if let Some(adopted) = adopted_cached_machine_id() {
+            return Ok(adopted);
         }
         fingerprint_machine_id()
     }
@@ -306,7 +310,7 @@ pub fn get_machine_id() -> Result<String, String> {
 ///
 /// On its own this still moves when the inputs move (wmic removed by a
 /// Windows update, a rename), which is why `get_machine_id` prefers the
-/// server-confirmed pin and the server is sent `previous_machine_ids`.
+/// server-confirmed pin and the previous release's cached ID.
 #[cfg(not(feature = "portable"))]
 fn fingerprint_machine_id() -> Result<String, String> {
     {
@@ -352,14 +356,24 @@ fn fingerprint_machine_id() -> Result<String, String> {
 //
 // The desktop fingerprint has drifted between releases (name|user in <=1.1.1,
 // name|user|MachineGuid from 1.1.2 wherever wmic is gone), and every drift
-// stranded the agency's licence on the old hash. Three things stop that:
+// stranded the agency's licence on the old hash. What stops that:
 //
 // * Pin — once the server confirms an ID for this install, `get_machine_id`
 //   keeps returning it even if the fingerprint inputs later change.
-// * Previous IDs — every licensing request carries the IDs this install may
-//   have been known by. The server moves the agency onto the current ID, but
-//   only when the request's contact email matches the agency's (see
-//   scout-server `app/identity.py`).
+// * Adoption — before any pin exists, the ID the previous release cached in
+//   `license_cache` is kept, provided this machine can still derive it from
+//   its own inputs. An update therefore never changes the ID the server
+//   knows. Purely local: the server is not asked to move anything.
+// * Previous IDs — for installs that already drifted, the licence ACTIVATION
+//   request carries the IDs this install may have been known by. The server
+//   only acts on them together with that agency's own valid paid licence key
+//   (scout-server `app/identity.py`).
+//
+//   SECURITY: a machine ID is an unauthenticated bearer value and the old
+//   name|user variant is guessable, so an old ID (plus a contact email, which
+//   is often public) is never proof of ownership. Never send previous IDs on
+//   status or registration, and never ask the server to move an agency on
+//   anything weaker than the licence key.
 // * Anchor — pins and history are keyed by hash(name|user|MachineGuid). The
 //   DB lives in %APPDATA% (Roaming), so on a roaming profile two machines can
 //   share it; the anchor keeps each machine to its own pin.
@@ -479,17 +493,29 @@ fn read_cached_machine_id(conn: &rusqlite::Connection) -> Option<String> {
     .flatten()
 }
 
-/// The contact email this install registered with — the server only moves an
-/// agency to a new ID when this matches the agency's email.
+/// The cached ID, if it is one this machine derives itself. Comparing against
+/// local derivations only means a roaming profile's cache from another
+/// machine is never adopted.
 #[cfg(not(feature = "portable"))]
-fn read_contact_email(conn: &rusqlite::Connection) -> Option<String> {
-    conn.query_row("SELECT contact_email FROM registration_info LIMIT 1", [], |row| {
-        row.get::<_, Option<String>>(0)
-    })
-    .ok()
-    .flatten()
-    .map(|e| e.trim().to_string())
-    .filter(|e| !e.is_empty())
+fn adoptable_cached_id(cached: Option<String>, derived: &[Option<String>]) -> Option<String> {
+    let cached = cached?.trim().to_string();
+    if !is_machine_id_shape(&cached) {
+        return None;
+    }
+    derived
+        .iter()
+        .flatten()
+        .any(|d| d.eq_ignore_ascii_case(&cached))
+        .then_some(cached)
+}
+
+/// The ID the previous release was running under, while this install has no
+/// pin yet.
+#[cfg(not(feature = "portable"))]
+fn adopted_cached_machine_id() -> Option<String> {
+    let conn = init_license_db().ok()?;
+    let cached = read_cached_machine_id(&conn)?;
+    adoptable_cached_id(Some(cached), &derived_identity_candidates())
 }
 
 /// Shape-filter, drop the current ID, de-duplicate case-insensitively, cap.
@@ -578,19 +604,18 @@ fn previous_machine_ids(current: &str) -> Vec<String> {
     assemble_previous_ids(current, candidates)
 }
 
-/// Fields every desktop licensing request carries so the server can recover
-/// an install whose ID drifted. Portable IDs come from the stick and do not
-/// drift, so portable sends nothing extra.
-fn identity_request_fields(current: &str) -> (Vec<String>, Option<String>) {
+/// Previous IDs for a licence ACTIVATION request only (see the security note
+/// above). Portable IDs come from the stick and do not drift, so portable
+/// sends none.
+fn activation_previous_ids(current: &str) -> Vec<String> {
     #[cfg(feature = "portable")]
     {
         let _ = current;
-        (Vec::new(), None)
+        Vec::new()
     }
     #[cfg(not(feature = "portable"))]
     {
-        let email = init_license_db().ok().and_then(|c| read_contact_email(&c));
-        (previous_machine_ids(current), email)
+        previous_machine_ids(current)
     }
 }
 
@@ -621,9 +646,9 @@ fn confirm_identity(machine_id: &str) {
 ///
 /// Not used to look a licence up directly: the server treats `machine_id` as
 /// an unauthenticated bearer identity, and `DESK-PD01` + `jsmith` is
-/// guessable. It IS sent as one of `previous_machine_ids`, which the server
-/// only acts on when the request's contact email matches the agency — the
-/// same proof a re-registration already relies on.
+/// guessable. It IS sent as one of `previous_machine_ids` on licence
+/// activation, which the server only acts on together with that agency's own
+/// valid paid licence key.
 #[cfg(all(not(feature = "portable"), target_os = "windows"))]
 pub fn get_legacy_machine_id() -> Option<String> {
     let base = base_identity_components();
@@ -888,7 +913,6 @@ fn ureq_error_message(context: &str, err: ureq::Error) -> String {
 pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, String> {
     let machine_id = get_machine_id()?;
     let app_version = env!("CARGO_PKG_VERSION").to_string();
-    let (previous_machine_ids, _) = identity_request_fields(&machine_id);
 
     let body = serde_json::json!({
         "agency_name": data.agency_name,
@@ -901,7 +925,6 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
         "machine_id": machine_id,
         "app_version": app_version,
         "platform": get_platform(),
-        "previous_machine_ids": previous_machine_ids,
     });
 
     let resp = ureq::post(&format!("{}/api/register", SERVER_URL))
@@ -1000,14 +1023,11 @@ const DEV_LICENSE_DAYS: i64 = 9999;
 
 fn check_license_with_server() -> Result<LicenseInfo, String> {
     let machine_id = get_machine_id()?;
-    let (previous_machine_ids, contact_email) = identity_request_fields(&machine_id);
 
     // Try online check first
     let body = serde_json::json!({
         "machine_id": machine_id,
         "platform": get_platform(),
-        "previous_machine_ids": previous_machine_ids,
-        "contact_email": contact_email,
     });
 
     match ureq::post(&format!("{}/api/license/status", SERVER_URL))
@@ -1050,14 +1070,14 @@ fn check_license_with_server() -> Result<LicenseInfo, String> {
 /// Activate a license key
 pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, String> {
     let machine_id = get_machine_id()?;
-    let (previous_machine_ids, contact_email) = identity_request_fields(&machine_id);
+    // Only honoured by the server together with this agency's paid key.
+    let previous_machine_ids = activation_previous_ids(&machine_id);
 
     let body = serde_json::json!({
         "license_key": license_key,
         "machine_id": machine_id,
         "platform": get_platform(),
         "previous_machine_ids": previous_machine_ids,
-        "contact_email": contact_email,
     });
 
     let resp = ureq::post(&format!("{}/api/license/activate", SERVER_URL))
@@ -1427,8 +1447,8 @@ mod tests {
     }
 
     /// The legacy ID is never looked up as `machine_id` (it is guessable). It
-    /// only travels as a `previous_machine_ids` candidate, which the server
-    /// acts on solely when the contact email matches the agency.
+    /// only travels as a `previous_machine_ids` candidate on activation, which
+    /// the server acts on solely together with the agency's paid licence key.
     #[cfg(target_os = "windows")]
     #[test]
     fn legacy_id_is_reported_only_when_it_differs_from_current() {
@@ -1667,18 +1687,41 @@ mod tests {
     }
 
     #[test]
-    fn cached_id_and_email_are_read_back() {
+    fn cached_id_is_read_back() {
         let conn = memory_db();
         assert_eq!(read_cached_machine_id(&conn), None);
-        assert_eq!(read_contact_email(&conn), None);
         conn.execute("INSERT INTO license_cache (machine_id) VALUES (?1)", [id('e')]).unwrap();
-        conn.execute(
-            "INSERT INTO registration_info (contact_email) VALUES ('  Kevin@Example.org ')",
-            [],
-        )
-        .unwrap();
         assert_eq!(read_cached_machine_id(&conn), Some(id('e')));
-        assert_eq!(read_contact_email(&conn).as_deref(), Some("Kevin@Example.org"));
+    }
+
+    /// An update must keep the ID the previous release used, but only an ID
+    /// this machine can derive itself — never one from another machine that
+    /// shares the roaming profile, and never garbage.
+    #[test]
+    fn cached_id_is_adopted_only_if_locally_derivable() {
+        let derived = vec![None, Some(id('a')), Some(id('b'))];
+        assert_eq!(adoptable_cached_id(Some(id('a')), &derived), Some(id('a')));
+        assert_eq!(
+            adoptable_cached_id(Some(format!(" {} ", id('B'))), &derived),
+            Some(id('B')),
+            "case/whitespace-insensitive match keeps the cached spelling"
+        );
+        assert_eq!(adoptable_cached_id(Some(id('c')), &derived), None, "foreign ID");
+        assert_eq!(adoptable_cached_id(Some("nope".into()), &derived), None);
+        assert_eq!(adoptable_cached_id(None, &derived), None);
+        assert_eq!(adoptable_cached_id(Some(id('a')), &[]), None);
+    }
+
+    /// Kevin's path: a <= 1.1.1 install cached name|user; after updating, the
+    /// fingerprint is name|user|guid but the ID must stay name|user.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn legacy_cached_id_survives_the_update() {
+        let legacy = hash_components(&base_identity_components());
+        assert_eq!(
+            adoptable_cached_id(Some(legacy.clone()), &derived_identity_candidates()),
+            Some(legacy)
+        );
     }
 
     #[test]
