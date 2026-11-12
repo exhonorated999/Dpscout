@@ -111,19 +111,17 @@ fn hash_components(components: &[String]) -> String {
     hex::encode(hasher.finalize())
 }
 
-/// Read `Win32_BaseBoard.SerialNumber` via WMI.
+/// Read `Win32_BaseBoard.SerialNumber` via WMI **on the calling thread**.
 ///
-/// This replaces `wmic baseboard get serialnumber`. `wmic` was demoted to a
-/// disabled-by-default Feature-on-Demand and is simply ABSENT on Windows 11
-/// 24H2 (build 26100) and later — the process spawn fails outright. The old
-/// code swallowed that with `if let Ok(..)`, so the motherboard serial
-/// silently vanished from the fingerprint and the machine ID changed the
-/// moment a user took the 24H2 update. That looks exactly like "Machine not
-/// registered" on a machine that registered fine a month earlier.
-///
-/// `wmic baseboard get serialnumber` was only ever printing this WMI property,
-/// so reading it directly returns a byte-identical string and therefore an
-/// identical hash on machines where `wmic` used to work. No re-registration.
+/// Do not call this from licensing code directly — use [`baseboard_serial_mta`].
+/// `COMLibrary::new()` asks for a multithreaded apartment, and every
+/// licensing command is a sync `#[tauri::command]`, which Tauri runs on the
+/// UI thread — already a single-threaded apartment (tao calls
+/// `OleInitialize`). `CoInitializeEx` fails there with RPC_E_CHANGED_MODE, so
+/// in the shipped app this has ALWAYS returned None (verified: the installed
+/// 1.1.5 caches the MachineGuid-variant ID on a machine with a readable
+/// serial). It only ever worked in `cargo test`, whose threads have no
+/// apartment yet. That gap is why the machine ID drifted between builds.
 #[cfg(all(not(feature = "portable"), target_os = "windows"))]
 fn baseboard_serial() -> Option<String> {
     use wmi::{COMLibrary, WMIConnection, Variant};
@@ -146,11 +144,54 @@ fn baseboard_serial() -> Option<String> {
     None
 }
 
+/// The motherboard serial read on a fresh worker thread, so it works no
+/// matter which COM apartment the caller is in. Raw (unfiltered) value,
+/// cached for the life of the process.
+///
+/// NOT part of the canonical fingerprint (see [`fingerprint_serial`]) — the
+/// shipped app never managed to fold this in, so doing it now would move
+/// every install onto a new ID. Used for previous-ID candidates and
+/// diagnostics only.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn baseboard_serial_mta() -> Option<String> {
+    use std::sync::OnceLock;
+    static SERIAL: OnceLock<Option<String>> = OnceLock::new();
+    SERIAL
+        .get_or_init(|| {
+            std::thread::Builder::new()
+                .name("scout-wmi-serial".into())
+                .spawn(baseboard_serial)
+                .ok()
+                .and_then(|h| h.join().ok())
+                .flatten()
+        })
+        .clone()
+}
+
+/// The serial the canonical machine ID folds in: `wmic`'s answer, usable
+/// values only. This is byte-for-byte what every shipped build actually used
+/// (the in-app WMI read never worked — see [`baseboard_serial`]), so it keeps
+/// existing IDs unchanged, and it no longer depends on which thread asks.
+/// Where `wmic` is gone (Windows 11 24H2+) MachineGuid takes over, exactly as
+/// it already did in 1.1.2–1.1.5.
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn fingerprint_serial() -> Option<String> {
+    baseboard_serial_via_wmic().filter(|s| is_usable_serial(s))
+}
+
 /// Legacy `wmic` path, kept only as a fallback for Windows builds old enough
 /// that WMI access could fail while `wmic` still shipped. Produces the same
-/// string as `baseboard_serial` when both work.
+/// string as `baseboard_serial` when both work. Raw value, cached for the life
+/// of the process (spawning wmic costs ~100 ms and the answer cannot change).
 #[cfg(all(not(feature = "portable"), target_os = "windows"))]
 fn baseboard_serial_via_wmic() -> Option<String> {
+    use std::sync::OnceLock;
+    static SERIAL: OnceLock<Option<String>> = OnceLock::new();
+    SERIAL.get_or_init(read_wmic_serial).clone()
+}
+
+#[cfg(all(not(feature = "portable"), target_os = "windows"))]
+fn read_wmic_serial() -> Option<String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
@@ -246,8 +287,28 @@ pub fn get_machine_id() -> Result<String, String> {
         return Ok(hex::encode(result));
     }
 
-    // Desktop build: hardware fingerprint (motherboard + user)
+    // Desktop build: the ID the server last confirmed for this Windows
+    // install + user, else the hardware fingerprint.
     #[cfg(not(feature = "portable"))]
+    {
+        if let Some(pinned) = pinned_machine_id() {
+            return Ok(pinned);
+        }
+        fingerprint_machine_id()
+    }
+}
+
+/// The desktop hardware fingerprint: COMPUTERNAME | USERNAME | serial-or-guid.
+///
+/// Deliberately COM-free, so it returns the same value on every thread (see
+/// [`baseboard_serial`] for why the WMI read made the old ID depend on which
+/// thread asked). It reproduces what the shipped app actually computed.
+///
+/// On its own this still moves when the inputs move (wmic removed by a
+/// Windows update, a rename), which is why `get_machine_id` prefers the
+/// server-confirmed pin and the server is sent `previous_machine_ids`.
+#[cfg(not(feature = "portable"))]
+fn fingerprint_machine_id() -> Result<String, String> {
     {
         let mut components = base_identity_components();
 
@@ -259,11 +320,7 @@ pub fn get_machine_id() -> Result<String, String> {
             // there is no usable serial — those machines were otherwise
             // running on COMPUTERNAME + USERNAME alone, which collides across
             // identically-imaged workstations.
-            let serial = baseboard_serial()
-                .or_else(baseboard_serial_via_wmic)
-                .filter(|s| is_usable_serial(s));
-
-            match serial {
+            match fingerprint_serial() {
                 Some(serial) => components.push(serial),
                 None => match machine_guid() {
                     Some(guid) => {
@@ -289,22 +346,284 @@ pub fn get_machine_id() -> Result<String, String> {
     }
 }
 
-/// The machine ID this install would have reported while the motherboard
-/// serial was being silently dropped (see `baseboard_serial`). Anyone who
-/// registered during that window is on the server under THIS id, not the one
-/// `get_machine_id()` now returns.
+// ---------------------------------------------------------------------------
+// Identity continuity (desktop): pinned ID, history, previous-ID candidates
+// ---------------------------------------------------------------------------
+//
+// The desktop fingerprint has drifted between releases (name|user in <=1.1.1,
+// name|user|MachineGuid from 1.1.2 wherever wmic is gone), and every drift
+// stranded the agency's licence on the old hash. Three things stop that:
+//
+// * Pin — once the server confirms an ID for this install, `get_machine_id`
+//   keeps returning it even if the fingerprint inputs later change.
+// * Previous IDs — every licensing request carries the IDs this install may
+//   have been known by. The server moves the agency onto the current ID, but
+//   only when the request's contact email matches the agency's (see
+//   scout-server `app/identity.py`).
+// * Anchor — pins and history are keyed by hash(name|user|MachineGuid). The
+//   DB lives in %APPDATA% (Roaming), so on a roaming profile two machines can
+//   share it; the anchor keeps each machine to its own pin.
+
+/// Most previous IDs worth sending; the server ignores anything beyond 8.
+#[cfg(not(feature = "portable"))]
+const MAX_PREVIOUS_IDS: usize = 8;
+
+/// How many server-confirmed IDs from this install's history to send.
+#[cfg(not(feature = "portable"))]
+const HISTORY_CANDIDATES: usize = 3;
+
+/// Identifies "this Windows install + this user" for keying the pin. Never
+/// sent anywhere; the domain prefix keeps it from ever equalling a machine ID.
+#[cfg(not(feature = "portable"))]
+fn identity_anchor() -> Option<String> {
+    let mut components = base_identity_components();
+    if components.is_empty() {
+        return None;
+    }
+    #[cfg(target_os = "windows")]
+    if let Some(guid) = machine_guid() {
+        components.push(guid);
+    }
+    components.insert(0, "scout-identity-anchor-v1".to_string());
+    Some(hash_components(&components))
+}
+
+/// A machine ID is a lowercase-or-uppercase SHA-256 hex string.
+#[cfg(not(feature = "portable"))]
+fn is_machine_id_shape(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+#[cfg(not(feature = "portable"))]
+fn init_identity_tables(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS machine_identity (
+            anchor TEXT PRIMARY KEY,
+            machine_id TEXT NOT NULL,
+            pinned_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS identity_history (
+            anchor TEXT NOT NULL,
+            machine_id TEXT NOT NULL,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            PRIMARY KEY (anchor, machine_id)
+        );",
+    )
+    .map_err(|e| format!("Failed to create identity tables: {}", e))
+}
+
+#[cfg(not(feature = "portable"))]
+fn read_pin(conn: &rusqlite::Connection, anchor: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT machine_id FROM machine_identity WHERE anchor = ?1",
+        [anchor],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .filter(|id| is_machine_id_shape(id))
+}
+
+#[cfg(not(feature = "portable"))]
+fn write_pin(conn: &rusqlite::Connection, anchor: &str, machine_id: &str, now: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO machine_identity (anchor, machine_id, pinned_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(anchor) DO UPDATE SET machine_id = excluded.machine_id, pinned_at = excluded.pinned_at
+         WHERE machine_identity.machine_id <> excluded.machine_id",
+        rusqlite::params![anchor, machine_id, now],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("Failed to pin machine ID: {}", e))
+}
+
+#[cfg(not(feature = "portable"))]
+fn record_history(conn: &rusqlite::Connection, anchor: &str, machine_id: &str, now: &str) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO identity_history (anchor, machine_id, first_seen, last_seen) VALUES (?1, ?2, ?3, ?3)
+         ON CONFLICT(anchor, machine_id) DO UPDATE SET last_seen = excluded.last_seen",
+        rusqlite::params![anchor, machine_id, now],
+    )
+    .map(|_| ())
+    .map_err(|e| format!("Failed to record machine ID history: {}", e))
+}
+
+/// Server-confirmed IDs for this anchor, most recently seen first.
+#[cfg(not(feature = "portable"))]
+fn read_history(conn: &rusqlite::Connection, anchor: &str, limit: usize) -> Vec<String> {
+    let Ok(mut stmt) = conn.prepare(
+        "SELECT machine_id FROM identity_history WHERE anchor = ?1
+         ORDER BY last_seen DESC, first_seen DESC LIMIT ?2",
+    ) else {
+        return Vec::new();
+    };
+    stmt.query_map(rusqlite::params![anchor, limit as i64], |row| row.get::<_, String>(0))
+        .map(|rows| rows.filter_map(Result::ok).collect())
+        .unwrap_or_default()
+}
+
+/// Whether any install has ever pinned an ID in this DB.
+#[cfg(not(feature = "portable"))]
+fn any_pin_exists(conn: &rusqlite::Connection) -> bool {
+    conn.query_row("SELECT COUNT(*) FROM machine_identity", [], |row| row.get::<_, i64>(0))
+        .map(|n| n > 0)
+        .unwrap_or(false)
+}
+
+/// The ID the last status check ran under (written by every release).
+#[cfg(not(feature = "portable"))]
+fn read_cached_machine_id(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row("SELECT machine_id FROM license_cache LIMIT 1", [], |row| {
+        row.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+}
+
+/// The contact email this install registered with — the server only moves an
+/// agency to a new ID when this matches the agency's email.
+#[cfg(not(feature = "portable"))]
+fn read_contact_email(conn: &rusqlite::Connection) -> Option<String> {
+    conn.query_row("SELECT contact_email FROM registration_info LIMIT 1", [], |row| {
+        row.get::<_, Option<String>>(0)
+    })
+    .ok()
+    .flatten()
+    .map(|e| e.trim().to_string())
+    .filter(|e| !e.is_empty())
+}
+
+/// Shape-filter, drop the current ID, de-duplicate case-insensitively, cap.
+/// Input order is priority order.
+#[cfg(not(feature = "portable"))]
+fn assemble_previous_ids<I>(current: &str, candidates: I) -> Vec<String>
+where
+    I: IntoIterator<Item = Option<String>>,
+{
+    let mut seen = std::collections::HashSet::new();
+    seen.insert(current.to_ascii_lowercase());
+    let mut out = Vec::new();
+    for candidate in candidates.into_iter().flatten() {
+        let candidate = candidate.trim().to_string();
+        if !is_machine_id_shape(&candidate) {
+            continue;
+        }
+        if seen.insert(candidate.to_ascii_lowercase()) {
+            out.push(candidate);
+            if out.len() >= MAX_PREVIOUS_IDS {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Every fingerprint variant a shipped release could have computed on this
+/// machine, from this machine's own inputs (so never another machine's ID).
+#[cfg(not(feature = "portable"))]
+fn derived_identity_candidates() -> Vec<Option<String>> {
+    let base = base_identity_components();
+    if base.is_empty() {
+        return Vec::new();
+    }
+    #[cfg(target_os = "windows")]
+    let with = |extra: Option<String>| {
+        extra.map(|e| {
+            let mut c = base.clone();
+            c.push(e);
+            hash_components(&c)
+        })
+    };
+
+    // <= 1.1.1 on a machine without a serial: name|user only.
+    let mut out = vec![Some(hash_components(&base))];
+    #[cfg(target_os = "windows")]
+    {
+        // 1.1.2 - 1.1.5 without wmic.
+        out.push(with(machine_guid()));
+        // Unfiltered serials: <= 1.1.1 accepted placeholder values, and code
+        // running off the UI thread could read the serial over WMI.
+        out.push(with(baseboard_serial_mta()));
+        out.push(with(baseboard_serial_via_wmic()));
+    }
+    out.push(fingerprint_machine_id().ok());
+    out
+}
+
+/// The server-confirmed ID for this install, if any.
+#[cfg(not(feature = "portable"))]
+fn pinned_machine_id() -> Option<String> {
+    let anchor = identity_anchor()?;
+    let conn = init_license_db().ok()?;
+    read_pin(&conn, &anchor)
+}
+
+/// Candidate IDs this install may be registered under on the server.
+#[cfg(not(feature = "portable"))]
+fn previous_machine_ids(current: &str) -> Vec<String> {
+    let anchor = identity_anchor();
+    let mut candidates: Vec<Option<String>> = Vec::new();
+    if let Ok(conn) = init_license_db() {
+        if let Some(anchor) = anchor.as_deref() {
+            candidates.extend(read_history(&conn, anchor, HISTORY_CANDIDATES).into_iter().map(Some));
+        }
+        // The cached ID is only trusted until some install has pinned in this
+        // DB — after that it may belong to another machine on the same
+        // roaming profile, and sending it would hand that machine's agency
+        // over to this one.
+        if !any_pin_exists(&conn) {
+            candidates.push(read_cached_machine_id(&conn));
+        }
+    }
+    candidates.extend(derived_identity_candidates());
+    assemble_previous_ids(current, candidates)
+}
+
+/// Fields every desktop licensing request carries so the server can recover
+/// an install whose ID drifted. Portable IDs come from the stick and do not
+/// drift, so portable sends nothing extra.
+fn identity_request_fields(current: &str) -> (Vec<String>, Option<String>) {
+    #[cfg(feature = "portable")]
+    {
+        let _ = current;
+        (Vec::new(), None)
+    }
+    #[cfg(not(feature = "portable"))]
+    {
+        let email = init_license_db().ok().and_then(|c| read_contact_email(&c));
+        (previous_machine_ids(current), email)
+    }
+}
+
+/// Record that the server accepted `machine_id` for this install. Best effort:
+/// a failure here only means the next request sends candidates again.
+fn confirm_identity(machine_id: &str) {
+    #[cfg(feature = "portable")]
+    let _ = machine_id;
+    #[cfg(not(feature = "portable"))]
+    {
+        if !is_machine_id_shape(machine_id) {
+            return;
+        }
+        let Some(anchor) = identity_anchor() else { return };
+        let result = init_license_db().and_then(|conn| {
+            let now = chrono::Utc::now().to_rfc3339();
+            write_pin(&conn, &anchor, machine_id, &now)?;
+            record_history(&conn, &anchor, machine_id, &now)
+        });
+        if let Err(e) = result {
+            eprintln!("[Licensing] Could not record confirmed machine ID: {}", e);
+        }
+    }
+}
+
+/// The name|user-only hash that builds up to 1.1.1 reported on machines with
+/// no readable serial. Shown in diagnostics for support.
 ///
-/// Deliberately NOT used as an automatic licensing fallback. The server treats
-/// `machine_id` as an unauthenticated bearer identity — it looks an agency up
-/// by the hash and nothing else. Accepting a name+user-only hash would mean
-/// anyone who sets COMPUTERNAME and USERNAME to a licensed agency's values
-/// collides with them and is served their license. A motherboard serial is at
-/// least not guessable; `DESK-PD01` + `jsmith` very much is.
-///
-/// So affected installs are rebound by support instead: read this value and
-/// the current one out of the diagnostics, then repoint the server record.
-/// Closing this properly needs a real credential (a per-install secret issued
-/// at activation and proven on later requests) rather than a fingerprint.
+/// Not used to look a licence up directly: the server treats `machine_id` as
+/// an unauthenticated bearer identity, and `DESK-PD01` + `jsmith` is
+/// guessable. It IS sent as one of `previous_machine_ids`, which the server
+/// only acts on when the request's contact email matches the agency — the
+/// same proof a re-registration already relies on.
 #[cfg(all(not(feature = "portable"), target_os = "windows"))]
 pub fn get_legacy_machine_id() -> Option<String> {
     let base = base_identity_components();
@@ -444,6 +763,9 @@ fn init_license_db() -> Result<rusqlite::Connection, String> {
         )", [],
     ).map_err(|e| format!("Failed to create registration_info: {}", e))?;
 
+    #[cfg(not(feature = "portable"))]
+    init_identity_tables(&conn)?;
+
     Ok(conn)
 }
 
@@ -566,6 +888,7 @@ fn ureq_error_message(context: &str, err: ureq::Error) -> String {
 pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, String> {
     let machine_id = get_machine_id()?;
     let app_version = env!("CARGO_PKG_VERSION").to_string();
+    let (previous_machine_ids, _) = identity_request_fields(&machine_id);
 
     let body = serde_json::json!({
         "agency_name": data.agency_name,
@@ -578,6 +901,7 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
         "machine_id": machine_id,
         "app_version": app_version,
         "platform": get_platform(),
+        "previous_machine_ids": previous_machine_ids,
     });
 
     let resp = ureq::post(&format!("{}/api/register", SERVER_URL))
@@ -592,6 +916,8 @@ pub fn register_agency(data: RegistrationData) -> Result<RegisterResponse, Strin
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     if reg.success {
+        confirm_identity(&machine_id);
+
         // Save registration locally
         save_registration(&data)?;
 
@@ -674,9 +1000,15 @@ const DEV_LICENSE_DAYS: i64 = 9999;
 
 fn check_license_with_server() -> Result<LicenseInfo, String> {
     let machine_id = get_machine_id()?;
+    let (previous_machine_ids, contact_email) = identity_request_fields(&machine_id);
 
     // Try online check first
-    let body = serde_json::json!({ "machine_id": machine_id, "platform": get_platform() });
+    let body = serde_json::json!({
+        "machine_id": machine_id,
+        "platform": get_platform(),
+        "previous_machine_ids": previous_machine_ids,
+        "contact_email": contact_email,
+    });
 
     match ureq::post(&format!("{}/api/license/status", SERVER_URL))
         .set("Content-Type", "application/json")
@@ -687,6 +1019,10 @@ fn check_license_with_server() -> Result<LicenseInfo, String> {
                 .map_err(|e| format!("Failed to read response: {}", e))?;
             let info: LicenseInfo = serde_json::from_str(&text)
                 .map_err(|e| format!("Failed to parse response: {}", e))?;
+
+            if info.registered {
+                confirm_identity(&machine_id);
+            }
 
             // Cache for offline use
             let _ = cache_license(&info);
@@ -714,11 +1050,14 @@ fn check_license_with_server() -> Result<LicenseInfo, String> {
 /// Activate a license key
 pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, String> {
     let machine_id = get_machine_id()?;
+    let (previous_machine_ids, contact_email) = identity_request_fields(&machine_id);
 
     let body = serde_json::json!({
         "license_key": license_key,
         "machine_id": machine_id,
         "platform": get_platform(),
+        "previous_machine_ids": previous_machine_ids,
+        "contact_email": contact_email,
     });
 
     let resp = ureq::post(&format!("{}/api/license/activate", SERVER_URL))
@@ -733,6 +1072,7 @@ pub fn activate_license_key(license_key: String) -> Result<ActivateResponse, Str
         .map_err(|e| format!("Failed to parse response: {}", e))?;
 
     if act.success {
+        confirm_identity(&machine_id);
         // Refresh the cached license info
         let _ = get_license_status();
     }
@@ -756,7 +1096,7 @@ pub fn get_license_diagnostics() -> LicenseDiagnostics {
     // BOTH are unavailable, which is the genuinely weak case.
     #[cfg(all(not(feature = "portable"), target_os = "windows"))]
     let fingerprint_warning = {
-        let has_serial = baseboard_serial()
+        let has_serial = baseboard_serial_mta()
             .or_else(baseboard_serial_via_wmic)
             .filter(|s| is_usable_serial(s))
             .is_some();
@@ -1086,11 +1426,9 @@ mod tests {
         assert_eq!(a.len(), 64, "SHA-256 hex is 64 chars");
     }
 
-    /// The legacy ID is a SUPPORT DIAGNOSTIC, never a licensing fallback. It
-    /// must not be sent to `/api/license/status` or `/api/license/activate`:
-    /// `SHA256(COMPUTERNAME|USERNAME)` is guessable, and the server authorizes
-    /// on the hash alone, so accepting it would let anyone who sets those two
-    /// env vars impersonate a licensed agency.
+    /// The legacy ID is never looked up as `machine_id` (it is guessable). It
+    /// only travels as a `previous_machine_ids` candidate, which the server
+    /// acts on solely when the contact email matches the agency.
     #[cfg(target_os = "windows")]
     #[test]
     fn legacy_id_is_reported_only_when_it_differs_from_current() {
@@ -1102,10 +1440,7 @@ mod tests {
                 assert_eq!(legacy, hash_components(&base_identity_components()));
                 // A distinct legacy ID implies SOMETHING is folded in now --
                 // either a usable serial or the MachineGuid fallback.
-                let has_serial = baseboard_serial()
-                    .or_else(baseboard_serial_via_wmic)
-                    .filter(|x| is_usable_serial(x))
-                    .is_some();
+                let has_serial = fingerprint_serial().is_some();
                 assert!(has_serial || machine_guid().is_some());
             }
             None => {
@@ -1116,13 +1451,12 @@ mod tests {
         }
     }
 
-    /// The whole point of moving off `wmic`: WMI must produce the serial
-    /// without it.
+    /// The WMI read itself must work when run off the UI apartment.
     #[cfg(target_os = "windows")]
     #[test]
     fn wmi_reads_baseboard_serial() {
         assert!(
-            baseboard_serial().is_some(),
+            baseboard_serial_mta().is_some(),
             "WMI could not read Win32_BaseBoard.SerialNumber on this host"
         );
     }
@@ -1139,7 +1473,7 @@ mod tests {
         // The warning fires only when NEITHER identifier is readable.
         #[cfg(target_os = "windows")]
         {
-            let has_serial = baseboard_serial()
+            let has_serial = baseboard_serial_mta()
                 .or_else(baseboard_serial_via_wmic)
                 .filter(|x| is_usable_serial(x))
                 .is_some();
@@ -1187,17 +1521,14 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn serial_machines_keep_their_existing_id() {
-        let serial = baseboard_serial()
-            .or_else(baseboard_serial_via_wmic)
-            .filter(|s| is_usable_serial(s));
-        let Some(serial) = serial else {
+        let Some(serial) = fingerprint_serial() else {
             // Host has no usable serial; nothing to assert about that path.
             return;
         };
         let mut expected = base_identity_components();
         expected.push(serial);
         assert_eq!(
-            get_machine_id().unwrap(),
+            fingerprint_machine_id().unwrap(),
             hash_components(&expected),
             "ID for a serial-readable machine must be name|user|serial and nothing else"
         );
@@ -1205,7 +1536,7 @@ mod tests {
         if let Some(guid) = machine_guid() {
             let mut with_guid = base_identity_components();
             with_guid.push(guid);
-            assert_ne!(get_machine_id().unwrap(), hash_components(&with_guid));
+            assert_ne!(fingerprint_machine_id().unwrap(), hash_components(&with_guid));
         }
     }
 
@@ -1231,5 +1562,171 @@ mod tests {
         for good in ["07E4112_P31B737304", "PF0ABCDE", "5CD1234XYZ"] {
             assert!(is_usable_serial(good), "{:?} is a real serial", good);
         }
+    }
+
+    // --- STA regression -----------------------------------------------------
+
+    #[cfg(target_os = "windows")]
+    #[link(name = "ole32")]
+    extern "system" {
+        fn CoInitializeEx(reserved: *mut std::ffi::c_void, coinit: u32) -> i32;
+        fn CoUninitialize();
+    }
+
+    /// Run `f` on a fresh thread that has entered a single-threaded apartment,
+    /// like Tauri's UI thread (where every sync licensing command runs).
+    #[cfg(target_os = "windows")]
+    fn on_sta_thread<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::spawn(move || {
+            const COINIT_APARTMENTTHREADED: u32 = 0x2;
+            let hr = unsafe { CoInitializeEx(std::ptr::null_mut(), COINIT_APARTMENTTHREADED) };
+            assert!(hr >= 0, "CoInitializeEx(STA) failed: {:#x}", hr);
+            let out = f();
+            unsafe { CoUninitialize() };
+            out
+        })
+        .join()
+        .expect("STA thread panicked")
+    }
+
+    /// The bug behind the Derry Township ticket: the ID depended on the COM
+    /// apartment of the calling thread. It must not, any more.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn fingerprint_is_the_same_on_sta_and_mta_threads() {
+        let here = fingerprint_machine_id().unwrap();
+        let sta = on_sta_thread(|| fingerprint_machine_id().unwrap());
+        assert_eq!(here, sta, "fingerprint must not depend on the COM apartment");
+    }
+
+    /// Documents WHY: the in-thread WMI read fails in an STA, the worker-thread
+    /// read does not.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn wmi_serial_fails_in_sta_but_not_via_worker_thread() {
+        let (direct, via_worker) = on_sta_thread(|| (baseboard_serial(), baseboard_serial_mta()));
+        assert!(direct.is_none(), "in-thread WMI unexpectedly worked inside an STA");
+        assert_eq!(via_worker, baseboard_serial_mta());
+    }
+
+    // --- pin / history / candidates -----------------------------------------
+
+    fn id(c: char) -> String {
+        std::iter::repeat(c).take(64).collect()
+    }
+
+    fn memory_db() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE license_cache (id INTEGER PRIMARY KEY, machine_id TEXT);
+             CREATE TABLE registration_info (id INTEGER PRIMARY KEY, contact_email TEXT);",
+        )
+        .unwrap();
+        init_identity_tables(&conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn pin_is_per_anchor_and_replaceable() {
+        let conn = memory_db();
+        assert_eq!(read_pin(&conn, "A"), None);
+        assert!(!any_pin_exists(&conn));
+
+        write_pin(&conn, "A", &id('a'), "2026-01-01").unwrap();
+        write_pin(&conn, "B", &id('b'), "2026-01-01").unwrap();
+        assert_eq!(read_pin(&conn, "A"), Some(id('a')));
+        assert_eq!(read_pin(&conn, "B"), Some(id('b')), "a roaming twin keeps its own pin");
+        assert!(any_pin_exists(&conn));
+
+        write_pin(&conn, "A", &id('c'), "2026-02-01").unwrap();
+        assert_eq!(read_pin(&conn, "A"), Some(id('c')));
+        assert_eq!(read_pin(&conn, "B"), Some(id('b')));
+    }
+
+    #[test]
+    fn malformed_pin_is_ignored() {
+        let conn = memory_db();
+        conn.execute(
+            "INSERT INTO machine_identity (anchor, machine_id, pinned_at) VALUES ('A', 'junk', 'x')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read_pin(&conn, "A"), None);
+    }
+
+    #[test]
+    fn history_is_most_recent_first_and_per_anchor() {
+        let conn = memory_db();
+        record_history(&conn, "A", &id('1'), "2026-01-01").unwrap();
+        record_history(&conn, "A", &id('2'), "2026-02-01").unwrap();
+        record_history(&conn, "B", &id('9'), "2026-03-01").unwrap();
+        record_history(&conn, "A", &id('1'), "2026-04-01").unwrap(); // seen again
+        assert_eq!(read_history(&conn, "A", 10), vec![id('1'), id('2')]);
+        assert_eq!(read_history(&conn, "A", 1), vec![id('1')]);
+        assert_eq!(read_history(&conn, "B", 10), vec![id('9')]);
+    }
+
+    #[test]
+    fn cached_id_and_email_are_read_back() {
+        let conn = memory_db();
+        assert_eq!(read_cached_machine_id(&conn), None);
+        assert_eq!(read_contact_email(&conn), None);
+        conn.execute("INSERT INTO license_cache (machine_id) VALUES (?1)", [id('e')]).unwrap();
+        conn.execute(
+            "INSERT INTO registration_info (contact_email) VALUES ('  Kevin@Example.org ')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(read_cached_machine_id(&conn), Some(id('e')));
+        assert_eq!(read_contact_email(&conn).as_deref(), Some("Kevin@Example.org"));
+    }
+
+    #[test]
+    fn previous_ids_are_filtered_deduped_and_capped() {
+        let current = id('a');
+        let out = assemble_previous_ids(
+            &current,
+            vec![
+                None,
+                Some(current.to_uppercase()), // current, other case
+                Some(id('b')),
+                Some("not-a-hash".to_string()),
+                Some(id('B')), // duplicate of b, other case
+                Some(format!(" {} ", id('c'))),
+                Some(id('g')), // not hex
+            ],
+        );
+        assert_eq!(out, vec![id('b'), id('c')]);
+
+        let many = (0..20).map(|i| Some(format!("{:064x}", i + 1)));
+        assert_eq!(assemble_previous_ids(&current, many).len(), MAX_PREVIOUS_IDS);
+    }
+
+    /// Kevin's case: registered on 1.0.6 under name|user, now running under
+    /// name|user|MachineGuid. The old ID must be among the candidates, and
+    /// the guid variant too (for wmic machines that lose wmic later).
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn derived_candidates_cover_every_shipped_variant() {
+        let base = base_identity_components();
+        let derived: Vec<String> = derived_identity_candidates().into_iter().flatten().collect();
+        assert!(derived.contains(&hash_components(&base)), "name|user (<= 1.1.1) missing");
+        if let Some(guid) = machine_guid() {
+            let mut c = base.clone();
+            c.push(guid);
+            assert!(derived.contains(&hash_components(&c)), "name|user|guid (1.1.2+) missing");
+        }
+        if let Some(serial) = baseboard_serial_mta() {
+            let mut c = base.clone();
+            c.push(serial);
+            assert!(derived.contains(&hash_components(&c)), "name|user|serial missing");
+        }
+        assert!(derived.contains(&fingerprint_machine_id().unwrap()));
+        // The anchor must never be mistaken for (or sent as) a machine ID.
+        let anchor = identity_anchor().unwrap();
+        assert!(!derived.contains(&anchor));
+        // And the current ID is never sent back as a "previous" one.
+        let current = fingerprint_machine_id().unwrap();
+        assert!(!assemble_previous_ids(&current, derived_identity_candidates()).contains(&current));
     }
 }
