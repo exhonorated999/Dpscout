@@ -63,6 +63,9 @@ pub struct Sniff {
     pub invalid: usize,
     /// First invalid line, for the error message.
     pub first_invalid: Option<String>,
+    /// The file starts with `{` or `[` — it is JSON (e.g. a Project VIC
+    /// export), not a line-per-hash list.  Nothing else is filled in.
+    pub json: bool,
 }
 
 impl Sniff {
@@ -77,6 +80,9 @@ impl Sniff {
     }
 }
 
+/// Never reads more than this while sniffing, however long the lines are.
+const SNIFF_MAX_BYTES: u64 = 16 << 20;
+
 /// Inspect up to `max_lines` data lines.  Errors only on UTF-16 files, which
 /// the line reader can't decode (every line would just be skipped).
 pub fn sniff<R: BufRead>(mut reader: R, max_lines: usize) -> Result<Sniff, String> {
@@ -86,10 +92,17 @@ pub fn sniff<R: BufRead>(mut reader: R, max_lines: usize) -> Result<Sniff, Strin
                     choose File → Save As, set Encoding to UTF-8, then import it again."
             .to_string());
     }
+    // A VIC JSON export is a single ~10 GB line; detect it from the first
+    // bytes instead of reading that "line".
+    let body = head.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(head);
+    if matches!(body.iter().find(|b| !b.is_ascii_whitespace()), Some(b'{') | Some(b'[')) {
+        return Ok(Sniff { json: true, ..Sniff::default() });
+    }
 
     let mut s = Sniff::default();
     // Invalid UTF-8 lines are skipped by the importer too; read lossily here.
     let mut buf = Vec::new();
+    let mut reader = reader.take(SNIFF_MAX_BYTES);
     while s.sampled < max_lines {
         buf.clear();
         let n = reader.read_until(b'\n', &mut buf)
@@ -203,6 +216,16 @@ mod tests {
     fn utf16_files_are_rejected_with_instructions() {
         let bytes: &[u8] = &[0xFF, 0xFE, b'a', 0, b'b', 0];
         assert!(sniff(bytes, 10).unwrap_err().contains("UTF-16"));
+    }
+
+    #[test]
+    fn json_is_recognised_without_reading_its_one_giant_line() {
+        for head in ["{\"@odata.context\":\"x\",\"value\":[", "\u{feff}  \r\n[{\"MD5\":", "\n{\"SHA1\":"] {
+            let s = sniff_str(head);
+            assert!(s.json, "{head:?}");
+            assert_eq!(s.sampled, 0);
+        }
+        assert!(!sniff_str(&format!("# {{ not json\n{SHA1}\n")).json);
     }
 
     /// Runs against a real export when `SCOUT_HASH_TXT` points at one, e.g.

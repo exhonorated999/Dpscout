@@ -256,6 +256,11 @@ fn detect_txt_hash_type(txt_path: String) -> Result<Option<String>, String> {
         std::io::BufReader::new(file),
         hash_db::txt_format::SNIFF_SAMPLE_LINES,
     )?;
+    // "JSON" tells the UI to skip the hash-type prompt — the VIC importer
+    // types every hash itself.
+    if s.json {
+        return Ok(Some("JSON".to_string()));
+    }
     Ok(s.detected().map(str::to_string))
 }
 
@@ -265,6 +270,19 @@ async fn import_txt_hash_list(
     txt_path: String,
     list_name: String,
     hash_type: String, // "MD5", "SHA1", or "SHA256"
+) -> Result<settings::HashList, String> {
+    import_txt_core(&app, txt_path, list_name, hash_type)
+}
+
+/// One-hash-per-line import.  A JSON file picked here is handed to
+/// [`import_vic_core`]; that function hands plain text back here.  The two
+/// detectors are disjoint (JSON starts with `{`/`[`, text with a hex digit,
+/// `#` or `/`), so the hand-off can't loop.
+fn import_txt_core(
+    app: &tauri::AppHandle,
+    txt_path: String,
+    list_name: String,
+    hash_type: String,
 ) -> Result<settings::HashList, String> {
     use tauri::Emitter;
     use std::fs::File;
@@ -283,6 +301,10 @@ async fn import_txt_hash_list(
         BufReader::new(File::open(&txt_path).map_err(|e| format!("Failed to open file: {}", e))?),
         hash_db::txt_format::SNIFF_SAMPLE_LINES,
     )?;
+    if sniffed.json {
+        eprintln!("[Hash Import] {} is JSON — using the Project VIC importer", txt_path);
+        return import_vic_core(app, txt_path, Some(list_name));
+    }
     let (resolved_type, corrected) = hash_db::txt_format::resolve_hash_type(&hash_type, &sniffed)?;
     if corrected {
         eprintln!(
@@ -466,7 +488,24 @@ async fn import_and_load_hash_list(
     app: tauri::AppHandle,
     json_path: String
 ) -> Result<settings::HashList, String> {
+    import_vic_core(&app, json_path, None)
+}
+
+/// Project VIC JSON import.  Every file size takes the same streaming path
+/// (mmap + per-object parsing, ~50 MB peak RAM); the old in-memory path for
+/// small files ignored SHA1-only entries and accepted empty results.
+///
+/// Hashes are typed by length, a file with nothing importable is an error
+/// that leaves no list behind, and a plain-text hash list picked here is
+/// handed to [`import_txt_core`] (which detects its hash type).
+fn import_vic_core(
+    app: &tauri::AppHandle,
+    json_path: String,
+    list_name: Option<String>,
+) -> Result<settings::HashList, String> {
     use tauri::Emitter;
+    use std::io::Read;
+    use hash_db::vic_json::{detect_layout, Layout};
     
     let _ = app.emit("hash-import-progress", HashImportProgress {
         stage: "parsing".to_string(),
@@ -475,156 +514,105 @@ async fn import_and_load_hash_list(
         progress: None,
     });
     
-    // Check file size — large files use streaming import (no full-memory load)
     let file_size = std::fs::metadata(&json_path)
         .map(|m| m.len())
-        .unwrap_or(0);
-    
-    let is_large = file_size > 10_000_000; // >10 MB → streaming path
-    eprintln!("[Hash Import] File: {} ({:.1} MB) — using {} path", 
-        json_path, file_size as f64 / 1_048_576.0, if is_large { "streaming" } else { "standard" });
-    
-    if is_large {
-        // ── STREAMING PATH: mmap + brace-counting, ~50MB peak RAM ──
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "importing".to_string(),
-            message: format!("Streaming import of {:.0} MB file...", file_size as f64 / 1_048_576.0),
-            total: None,
-            progress: None,
-        });
-        
-        let file_name = std::path::Path::new(&json_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?;
+    let file_name = std::path::Path::new(&json_path)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    let list_name = list_name.unwrap_or_else(|| {
+        std::path::Path::new(&json_path)
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Project VIC Import")
-            .to_string();
-        
-        let hash_db = hash_db::HashDatabase::new()?;
-        let app_clone = app.clone();
-        let imported_count = hash_db.import_vic_json(&json_path, &file_name, move |imported, scanned| {
-            let _ = app_clone.emit("hash-import-progress", HashImportProgress {
-                stage: "importing".to_string(),
-                message: format!("Streaming import... {} hashes from {} objects", imported, scanned),
-                total: None,
-                progress: Some(imported as usize),
-            });
-        })?;
-        
-        // Reload in-memory cache with new hashes
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "loading".to_string(),
-            message: format!("Loading {} hashes into memory for fast scanning...", imported_count),
-            total: Some(imported_count as usize),
-            progress: Some(imported_count as usize),
-        });
-        let _ = hash_db.load_hashes_into_memory();
-        
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "complete".to_string(),
-            message: format!("Imported {} hashes!", imported_count),
-            total: Some(imported_count as usize),
-            progress: Some(imported_count as usize),
-        });
-        
-        // Return metadata-only HashList (hashes: [] — they live in SQLite only)
-        let now = chrono::Utc::now().to_rfc3339();
-        let hash_list = settings::HashList {
-            id: chrono::Utc::now().timestamp().to_string(),
-            name: file_name,
-            description: format!("Project VIC — {} hashes from {}", imported_count, 
-                std::path::Path::new(&json_path).file_name().unwrap_or_default().to_string_lossy()),
-            hash_type: settings::HashType::MD5, // VIC primarily uses MD5
-            hashes: vec![], // DB-only — no inline hashes
-            hash_count: imported_count as usize,
-            enabled: true,
-            source: "Project VIC".to_string(),
-            created_at: now.clone(),
-            modified_at: now,
-        };
-        
-        eprintln!("✓ Streaming import complete: {} hashes (metadata-only HashList)", imported_count);
-        Ok(hash_list)
-    } else {
-        // ── STANDARD PATH: small files, load into memory ──
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "parsing".to_string(),
-            message: "Reading JSON file...".to_string(),
-            total: None,
-            progress: None,
-        });
-        
-        let hash_list = import_project_vic(json_path)?;
-        let total_hashes = hash_list.hashes.len();
-        
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "importing".to_string(),
-            message: format!("Importing {} hashes...", total_hashes),
-            total: Some(total_hashes),
-            progress: Some(0),
-        });
-        
-        let hash_db = hash_db::HashDatabase::new()?;
-        
-        let default_hash_type = match hash_list.hash_type {
-            settings::HashType::MD5 => "MD5",
-            settings::HashType::SHA1 => "SHA1",
-            settings::HashType::SHA256 => "SHA256",
-        };
-        
-        let list_id = hash_db.import_hash_list(
-            &hash_list.name,
-            &hash_list.source,
-            default_hash_type,
-        )?;
-        
-        let batch_size = 50_000;
-        hash_db.begin_bulk_import()?;
-        for (batch_idx, chunk) in hash_list.hashes.chunks(batch_size).enumerate() {
-            let batch_data: Vec<(String, String, Option<String>, Option<String>)> = chunk.iter().map(|entry| {
-                let hash_type_str = match entry.hash.len() {
-                    32 => "MD5".to_string(),
-                    40 => "SHA1".to_string(),
-                    64 => "SHA256".to_string(),
-                    _ => default_hash_type.to_string(),
-                };
-                (entry.hash.clone(), hash_type_str, entry.category.clone(), entry.description.clone())
-            }).collect();
-            
-            if let Err(e) = hash_db.add_hashes_batch_fast(list_id, &batch_data) {
-                let _ = hash_db.finish_bulk_import();
-                return Err(format!("Import failed: {}", e));
-            }
-            
-            let processed = ((batch_idx + 1) * batch_size).min(hash_list.hashes.len());
-            let _ = app.emit("hash-import-progress", HashImportProgress {
-                stage: "importing".to_string(),
-                message: format!("Imported {} of {} hashes...", processed, total_hashes),
-                total: Some(total_hashes),
-                progress: Some(processed),
-            });
-        }
-        
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "indexing".to_string(),
-            message: format!("Building search index for {} hashes...", total_hashes),
-            total: Some(total_hashes),
-            progress: Some(total_hashes),
-        });
-        hash_db.finish_bulk_import()?;
-        
-        // Reload in-memory cache
-        let _ = hash_db.load_hashes_into_memory();
-        
-        let _ = app.emit("hash-import-progress", HashImportProgress {
-            stage: "complete".to_string(),
-            message: "Import complete!".to_string(),
-            total: Some(total_hashes),
-            progress: Some(total_hashes),
-        });
-        
-        eprintln!("✓ Hash list imported successfully");
-        Ok(hash_list)
+            .to_string()
+    });
+    
+    // Only the first bytes decide plain text vs JSON.
+    let mut head = Vec::with_capacity(64 * 1024);
+    std::fs::File::open(&json_path)
+        .map_err(|e| format!("Failed to open file: {}", e))?
+        .take(64 * 1024)
+        .read_to_end(&mut head)
+        .map_err(|e| format!("Failed to read file: {}", e))?;
+    if detect_layout(&head)? == Layout::PlainText {
+        eprintln!("[Hash Import] {} is a plain-text hash list — using the TXT importer", json_path);
+        // The requested type is only a fallback; the TXT importer detects it.
+        return import_txt_core(app, json_path, list_name, "SHA1".to_string());
     }
+    
+    eprintln!("[Hash Import] VIC JSON: {} ({:.1} MB)", json_path, file_size as f64 / 1_048_576.0);
+    let _ = app.emit("hash-import-progress", HashImportProgress {
+        stage: "importing".to_string(),
+        message: format!("Streaming import of {:.0} MB file...", file_size as f64 / 1_048_576.0),
+        total: None,
+        progress: None,
+    });
+    
+    let hash_db = hash_db::HashDatabase::new()?;
+    let app_clone = app.clone();
+    let stats = hash_db.import_vic_json(&json_path, &list_name, move |imported, scanned| {
+        let (stage, message) = match scanned {
+            Some(scanned) => (
+                "importing",
+                format!("Streaming import... {} hashes from {} entries", imported, scanned),
+            ),
+            None => ("indexing", format!("Building search index for {} hashes...", imported)),
+        };
+        let _ = app_clone.emit("hash-import-progress", HashImportProgress {
+            stage: stage.to_string(),
+            message,
+            total: Some(imported as usize),
+            progress: Some(imported as usize),
+        });
+    })?;
+    let imported_count = stats.imported;
+    let skipped = stats.no_hash + stats.invalid + stats.parse_errors;
+    if skipped > 0 {
+        eprintln!(
+            "[Hash Import] Skipped {} entries ({} without a hash, {} invalid, {} unreadable); first invalid: {:?}",
+            skipped, stats.no_hash, stats.invalid, stats.parse_errors, stats.first_invalid
+        );
+    }
+    
+    let _ = app.emit("hash-import-progress", HashImportProgress {
+        stage: "loading".to_string(),
+        message: format!("Loading {} hashes into memory for fast scanning...", imported_count),
+        total: Some(imported_count as usize),
+        progress: Some(imported_count as usize),
+    });
+    let _ = hash_db.load_hashes_into_memory();
+    
+    let _ = app.emit("hash-import-progress", HashImportProgress {
+        stage: "complete".to_string(),
+        message: format!("Imported {} hashes!", imported_count),
+        total: Some(imported_count as usize),
+        progress: Some(imported_count as usize),
+    });
+    
+    // Metadata-only HashList (hashes live in SQLite only).
+    let now = chrono::Utc::now().to_rfc3339();
+    let hash_list = settings::HashList {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: list_name,
+        description: format!("Project VIC — {} hashes from {}", imported_count, file_name),
+        hash_type: match stats.dominant_type() {
+            "SHA1" => settings::HashType::SHA1,
+            "SHA256" => settings::HashType::SHA256,
+            _ => settings::HashType::MD5,
+        },
+        hashes: vec![],
+        hash_count: imported_count as usize,
+        enabled: true,
+        source: "Project VIC".to_string(),
+        created_at: now.clone(),
+        modified_at: now,
+    };
+    
+    eprintln!("✓ VIC import complete: {} hashes", imported_count);
+    Ok(hash_list)
 }
 
 #[tauri::command]

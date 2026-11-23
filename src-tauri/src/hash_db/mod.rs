@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use bloomfilter::Bloom;
 
 pub mod txt_format;
+pub mod vic_json;
 
 /// Every index that lives on the `hashes` table, as `(name, CREATE statement)`.
 ///
@@ -76,7 +77,16 @@ impl HashDatabase {
         let db_path = crate::app_paths::hash_db_path()?;
         let conn = Connection::open(&db_path)
             .map_err(|e| format!("Failed to open database: {}", e))?;
-        
+        Self::from_connection(conn)
+    }
+    
+    /// In-memory database for tests that exercise the real import paths.
+    #[cfg(test)]
+    fn in_memory() -> Result<Self, String> {
+        Self::from_connection(Connection::open_in_memory().map_err(|e| e.to_string())?)
+    }
+    
+    fn from_connection(conn: Connection) -> Result<Self, String> {
         let hash_db = HashDatabase {
             conn: Arc::new(Mutex::new(conn)),
             bloom: Arc::new(RwLock::new(None)),
@@ -241,15 +251,16 @@ impl HashDatabase {
     
     /// Import a Project VIC JSON file (supports large files up to several GB)
     ///
-    /// Handles three formats:
-    ///   1. OData wrapper: {"@odata.context":"...", "value": [{...}, ...]}
-    ///   2. Plain JSON array: [{...}, {...}, ...]
-    ///   3. NDJSON: one JSON object per line
+    /// Layouts (OData wrapper, plain array, NDJSON, `#Cases`) and per-entry
+    /// rules live in [`vic_json`].  Hashes are validated and typed by length.
     ///
     /// Uses memory-mapped I/O + streaming object extraction — peak RAM ~50 MB
     /// regardless of file size. Inserts in 50K-entry batched transactions.
-    pub fn import_vic_json<F>(&self, json_path: &str, list_name: &str, on_progress: F) -> Result<u64, String> 
-    where F: Fn(u64, u64) // (imported_count, objects_scanned)
+    ///
+    /// A file that yields no valid hash is an error and leaves no list behind
+    /// (it used to "succeed" with an empty list).
+    pub fn import_vic_json<F>(&self, json_path: &str, list_name: &str, on_progress: F) -> Result<vic_json::VicStats, String> 
+    where F: Fn(u64, Option<u64>) // (imported_count, Some(objects_scanned) | None = rebuilding indexes)
     {
         eprintln!("[VIC Import] Starting import of: {}", json_path);
         
@@ -258,26 +269,16 @@ impl HashDatabase {
         let file_size = file.metadata().map(|m| m.len()).unwrap_or(0);
         eprintln!("[VIC Import] File size: {:.1} MB", file_size as f64 / (1024.0 * 1024.0));
         
-        // Memory-map the file — OS pages in only what's needed (~50MB working set)
+        // Memory-map the file — OS pages in only what's needed (~50MB working set).
+        // No whole-file UTF-8 validation: objects are parsed one by one from bytes.
         let mmap = unsafe { memmap2::Mmap::map(&file) }
             .map_err(|e| format!("Failed to mmap file: {}", e))?;
-        let data = std::str::from_utf8(&mmap)
-            .map_err(|e| format!("File is not valid UTF-8: {}", e))?;
         
-        // Find the array of entries
-        let array_start = if let Some(value_pos) = data.find("\"value\"") {
-            // OData wrapper — find the [ after "value"
-            data[value_pos..].find('[').map(|p| value_pos + p)
-        } else if data.trim_start().starts_with('[') {
-            data.find('[')
-        } else {
-            None
-        };
-        
-        let search_from = match array_start {
-            Some(pos) => pos + 1, // skip the opening [
-            None => return Err("Could not find hash entries array in VIC JSON".to_string()),
-        };
+        // Reject unreadable / non-VIC files before touching the database.
+        if vic_json::detect_layout(&mmap)? == vic_json::Layout::PlainText {
+            return Err("This file is a plain-text hash list, not Project VIC JSON. \
+                        Use \"Import TXT Hash List\" instead.".to_string());
+        }
         
         // Setup database for bulk import.  Dropping the hash indexes for the
         // duration is what keeps this viable on a USB drive — see
@@ -290,75 +291,62 @@ impl HashDatabase {
         self.begin_bulk_import()?;
         let mut conn = self.conn.lock().unwrap();
         
-        let list_id = self.create_hash_list_internal(&mut conn, list_name, "Project VIC")?;
+        let list_id = match self.create_hash_list_internal(&mut conn, list_name, "Project VIC") {
+            Ok(id) => id,
+            Err(e) => {
+                drop(conn);
+                let _ = self.finish_bulk_import();
+                return Err(e);
+            }
+        };
         
-        // Stream objects using brace-counting extractor (handles strings correctly)
         let mut imported_count = 0u64;
         let mut batch: Vec<(String, String, Option<String>, Option<String>, Option<i64>)> = Vec::with_capacity(50_000);
         
-        conn.execute_batch("BEGIN TRANSACTION")
-            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
-        
-        let mut parse_errors = 0u64;
-        let mut objects_seen = 0u64;
-        for obj_str in Self::extract_json_objects(data, search_from) {
-            objects_seen += 1;
-            // Parse each entry individually — cheap because obj_str is a small slice
-            let entry = match serde_json::from_str::<VicEntry>(obj_str) {
-                Ok(e) => e,
-                Err(e) => {
-                    parse_errors += 1;
-                    if parse_errors <= 3 {
-                        eprintln!("[VIC Import] Parse error #{}: {} — entry: {}", 
-                            parse_errors, e, &obj_str[..obj_str.len().min(200)]);
+        let streamed = conn
+            .execute_batch("BEGIN TRANSACTION")
+            .map_err(|e| format!("Failed to begin transaction: {}", e))
+            .and_then(|_| {
+                vic_json::for_each_hash(&mmap, |h, entries_seen| {
+                    batch.push((h.hash_type.to_string(), h.hash, h.category, h.description, h.file_size));
+                    if batch.len() >= 50_000 {
+                        Self::flush_vic_batch(&conn, list_id, &batch, &mut imported_count)?;
+                        batch.clear();
+                        conn.execute_batch("COMMIT; BEGIN TRANSACTION")
+                            .map_err(|e| format!("Batch commit failed: {}", e))?;
+                        on_progress(imported_count, Some(entries_seen));
+                        eprintln!("[VIC Import] {} hashes imported...", imported_count);
                     }
-                    continue;
+                    Ok(())
+                })
+            })
+            .and_then(|stats| {
+                if !batch.is_empty() {
+                    Self::flush_vic_batch(&conn, list_id, &batch, &mut imported_count)?;
                 }
-            };
-            // Import ONE hash per entry (priority: MD5 > SHA1 > SHA256)
-            // MD5 is fastest to compute during scans and covers ~100% of VIC entries.
-            // Importing all types would double DB size/RAM with zero benefit.
-            let imported = if let Some(ref md5) = entry.md5 {
-                if !md5.is_empty() {
-                    batch.push(("MD5".to_string(), md5.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
-                    true
-                } else { false }
-            } else { false };
-            
-            if !imported {
-                let imported2 = if let Some(ref sha1) = entry.sha1 {
-                    if !sha1.is_empty() {
-                        batch.push(("SHA1".to_string(), sha1.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
-                        true
-                    } else { false }
-                } else { false };
-                
-                if !imported2 {
-                    if let Some(ref sha256) = entry.sha256 {
-                        if !sha256.is_empty() {
-                            batch.push(("SHA256".to_string(), sha256.clone(), entry.category.clone(), entry.description.clone(), entry.file_size));
-                        }
-                    }
+                conn.execute_batch("COMMIT")
+                    .map_err(|e| format!("Final commit failed: {}", e))?;
+                if imported_count == 0 {
+                    return Err(stats.nothing_imported_message());
                 }
-            }
-            
-            // Flush batch every 50K entries
-            if batch.len() >= 50_000 {
-                Self::flush_vic_batch(&conn, list_id, &batch, &mut imported_count)?;
-                batch.clear();
-                conn.execute_batch("COMMIT; BEGIN TRANSACTION").ok();
-                on_progress(imported_count, objects_seen);
-                eprintln!("[VIC Import] {} hashes imported...", imported_count);
-            }
-        }
+                Ok(stats)
+            });
         
-        // Flush remaining batch
-        if !batch.is_empty() {
-            Self::flush_vic_batch(&conn, list_id, &batch, &mut imported_count)?;
-        }
-        
-        conn.execute_batch("COMMIT")
-            .map_err(|e| format!("Final commit failed: {}", e))?;
+        let mut stats = match streamed {
+            Ok(stats) => stats,
+            Err(e) => {
+                // Leave nothing behind: no half-imported list, no empty list row,
+                // and the indexes always come back.
+                conn.execute_batch("ROLLBACK").ok();
+                conn.execute("DELETE FROM hashes WHERE list_id = ?1", params![list_id]).ok();
+                conn.execute("DELETE FROM hash_lists WHERE id = ?1", params![list_id]).ok();
+                drop(conn);
+                let _ = self.finish_bulk_import();
+                eprintln!("[VIC Import] Failed: {}", e);
+                return Err(e);
+            }
+        };
+        stats.imported = imported_count;
         
         conn.execute(
             "UPDATE hash_lists SET hash_count = ?1 WHERE id = ?2",
@@ -368,21 +356,13 @@ impl HashDatabase {
         // Release the connection before rebuilding indexes — finish_bulk_import
         // takes the same mutex.
         drop(conn);
+        // The index rebuild takes minutes on a full export; say so rather
+        // than leave the last batch count on screen looking hung.
+        on_progress(imported_count, None);
         self.finish_bulk_import()?;
         
-        if parse_errors > 0 {
-            eprintln!("[VIC Import] Warning: {} parse errors out of {} objects", parse_errors, objects_seen);
-        }
-        eprintln!("[VIC Import] Complete: {} hashes imported from {} ({} objects scanned)", 
-            imported_count, json_path, objects_seen);
-        Ok(imported_count)
-    }
-    
-    /// Extract JSON objects from a string starting at `from` position.
-    /// Uses brace-counting with proper string handling (skips braces inside strings).
-    /// Returns an iterator of `&str` slices, each containing one `{...}` object.
-    fn extract_json_objects(data: &str, from: usize) -> VicObjectIter<'_> {
-        VicObjectIter { data, pos: from }
+        eprintln!("[VIC Import] Complete: {:?} from {}", stats, json_path);
+        Ok(stats)
     }
     
     /// Flush a batch of VIC entries to SQLite
@@ -398,9 +378,11 @@ impl HashDatabase {
         ).map_err(|e| format!("Prepare failed: {}", e))?;
         
         for (ht, hash, cat, desc, sz) in batch {
-            let hash_lower = hash.to_lowercase();
-            stmt.execute(params![hash_lower, ht, list_id, cat.as_deref(), desc.as_deref(), sz]).ok();
-            *imported_count += 1;
+            // Hashes arrive lowercase from vic_json.  Count only rows that
+            // actually went in, so a failing insert can't report success.
+            if stmt.execute(params![hash, ht, list_id, cat.as_deref(), desc.as_deref(), sz]).is_ok() {
+                *imported_count += 1;
+            }
         }
         Ok(())
     }
@@ -1164,82 +1146,6 @@ impl HashDatabase {
     }
 }
 
-/// Iterator that extracts `{...}` JSON objects from a string slice.
-/// Handles strings correctly (braces inside "..." are ignored).
-/// Designed for streaming through large VIC JSON arrays without loading all objects at once.
-struct VicObjectIter<'a> {
-    data: &'a str,
-    pos: usize,
-}
-
-impl<'a> Iterator for VicObjectIter<'a> {
-    type Item = &'a str;
-    
-    fn next(&mut self) -> Option<&'a str> {
-        // Find next opening brace
-        let remaining = &self.data[self.pos..];
-        let start_offset = remaining.find('{')?;
-        let abs_start = self.pos + start_offset;
-        
-        // Count braces to find matching }, respecting strings
-        let mut depth = 0i32;
-        let mut in_string = false;
-        let mut prev_backslash = false;
-        
-        for (i, ch) in self.data[abs_start..].char_indices() {
-            if prev_backslash {
-                prev_backslash = false;
-                continue;
-            }
-            match ch {
-                '\\' if in_string => { prev_backslash = true; }
-                '"' => { in_string = !in_string; }
-                '{' if !in_string => { depth += 1; }
-                '}' if !in_string => {
-                    depth -= 1;
-                    if depth == 0 {
-                        let end = abs_start + i + 1;
-                        self.pos = end;
-                        return Some(&self.data[abs_start..end]);
-                    }
-                }
-                _ => {}
-            }
-        }
-        None // Reached end of data without closing brace
-    }
-}
-
-/// Deserialize a JSON value that might be a string, number, or bool into Option<String>.
-/// VIC uses integer categories (0, 1, 2, 3) but we store as strings.
-fn string_or_number<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
-    use serde::Deserialize;
-    let val = Option::<serde_json::Value>::deserialize(d)?;
-    Ok(val.and_then(|v| match v {
-        serde_json::Value::String(s) => Some(s),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        serde_json::Value::Null => None,
-        _ => None,
-    }))
-}
-
-#[derive(Debug, Deserialize)]
-struct VicEntry {
-    #[serde(alias = "SHA256", alias = "sha256")]
-    sha256: Option<String>,
-    #[serde(alias = "SHA1", alias = "sha1", alias = "Sha1")]
-    sha1: Option<String>,
-    #[serde(alias = "MD5", alias = "md5")]
-    md5: Option<String>,
-    #[serde(alias = "Category", alias = "category", default, deserialize_with = "string_or_number")]
-    category: Option<String>,
-    #[serde(alias = "Description", alias = "description", alias = "Series", alias = "series")]
-    description: Option<String>,
-    #[serde(alias = "FileSize", alias = "fileSize", alias = "file_size", alias = "Size", alias = "size", alias = "MediaSize", alias = "mediaSize")]
-    file_size: Option<i64>,
-}
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct DatabaseStats {
     pub total_lists: u64,
@@ -1380,5 +1286,76 @@ mod tests {
             "case-insensitive hash lookup fell back to a table scan: {}",
             with
         );
+    }
+
+    /// End to end through `import_vic_json`: rows land typed and lowercased,
+    /// the list's count is right, the index rebuild is announced and the
+    /// indexes come back — and a file with nothing importable (or plain text,
+    /// or UTF-16) is an error that leaves no list and no rows behind.
+    #[test]
+    fn vic_json_import_writes_rows_and_failures_leave_nothing_behind() {
+        let dir = std::env::temp_dir().join(format!("scout_vic_import_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let write = |name: &str, body: &[u8]| {
+            let p = dir.join(name);
+            std::fs::write(&p, body).unwrap();
+            p.to_string_lossy().to_string()
+        };
+        let db = HashDatabase::in_memory().unwrap();
+        let count = |sql: &str| -> i64 { db.conn.lock().unwrap().query_row(sql, [], |r| r.get(0)).unwrap() };
+        const INDEXES: &str = "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'index' AND tbl_name = 'hashes' AND name NOT LIKE 'sqlite_%'";
+        let indexes = count(INDEXES);
+        assert!(indexes > 0);
+
+        let good = write(
+            "good.json",
+            "\u{feff}{\"@odata.context\":\"x\",\"value\":[\
+             {\"MD5\":\"0123456789ABCDEF0123456789ABCDEF\",\"Category\":1,\"MediaSize\":10},\
+             {\"SHA1\":\"0123456789ABCDEF0123456789ABCDEF01234567\",\"Category\":2},\
+             {\"Category\":3}]}"
+                .as_bytes(),
+        );
+        let progress = std::cell::RefCell::new(Vec::new());
+        let stats = db
+            .import_vic_json(&good, "Good", |n, scanned| progress.borrow_mut().push((n, scanned)))
+            .unwrap();
+        assert_eq!((stats.imported, stats.no_hash), (2, 1));
+        assert_eq!(progress.borrow().last(), Some(&(2, None)), "index rebuild must be announced");
+        assert_eq!(count("SELECT COUNT(*) FROM hashes"), 2);
+        assert_eq!(count("SELECT hash_count FROM hash_lists WHERE name = 'Good'"), 2);
+        assert_eq!(
+            count("SELECT COUNT(*) FROM hashes WHERE hash_type = 'SHA1' \
+                   AND hash = '0123456789abcdef0123456789abcdef01234567'"),
+            1
+        );
+        assert_eq!(
+            count("SELECT COUNT(*) FROM hashes WHERE hash_type = 'MD5' AND file_size = 10 AND category = '1'"),
+            1
+        );
+        assert_eq!(count(INDEXES), indexes);
+
+        let mut utf16 = vec![0xFF, 0xFE];
+        for b in b"{\"value\":[]}" {
+            utf16.extend_from_slice(&[*b, 0]);
+        }
+        let failures: [(&str, Vec<u8>, &str); 5] = [
+            ("no_hashes.json", br#"{"value":[{"Category":1},{"MD5":"xyz"}]}"#.to_vec(), "No valid hashes found"),
+            ("no_entries.json", b"[]".to_vec(), "No valid hashes found"),
+            ("plain.json", b"0123456789abcdef0123456789abcdef\r\n".to_vec(), "plain-text"),
+            ("utf16.json", utf16, "UTF-16"),
+            ("not_vic.json", b"<html></html>".to_vec(), "not a Project VIC JSON file"),
+        ];
+        for (name, body, expected) in failures {
+            let path = write(name, &body);
+            let err = db.import_vic_json(&path, name, |_, _| {}).unwrap_err();
+            assert!(err.contains(expected), "{name}: {err}");
+            assert_eq!(count("SELECT COUNT(*) FROM hash_lists"), 1, "{name} left a list behind");
+            assert_eq!(count("SELECT COUNT(*) FROM hashes"), 2, "{name} left rows behind");
+            assert_eq!(count(INDEXES), indexes, "{name} lost indexes");
+            std::fs::remove_file(&path).ok();
+        }
+        std::fs::remove_file(&good).ok();
+        std::fs::remove_dir(&dir).ok();
     }
 }

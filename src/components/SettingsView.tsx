@@ -1742,8 +1742,10 @@ const HashListsPanel: React.FC<{
       const selected = await open({
         title: 'Select Hash List JSON File',
         filters: [{
-          name: 'JSON Files',
-          extensions: ['json']
+          // .txt is accepted too: the backend hands one-hash-per-line files
+          // to the text importer.
+          name: 'Project VIC JSON / hash lists',
+          extensions: ['json', 'txt']
         }],
         multiple: false,
         directory: false
@@ -1784,7 +1786,7 @@ const HashListsPanel: React.FC<{
           // Refresh stats
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nTotal lists: ${updatedLists.length}`);
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${(hashList.hashCount || hashList.hashes.length).toLocaleString()}\nType: ${hashList.hashType}\nTotal lists: ${updatedLists.length}`);
         } finally {
           unlisten();
         }
@@ -1824,7 +1826,12 @@ const HashListsPanel: React.FC<{
           alert(`Failed to import hash list: ${e}`);
           return;
         }
-        const hashType = prompt('Enter hash type (MD5, SHA1, or SHA256):', detectedType || 'SHA1')?.trim().toUpperCase();
+        // Project VIC JSON picked here: the backend imports it as JSON and
+        // types every hash itself, so there is nothing to ask.
+        const isJson = detectedType === 'JSON';
+        const hashType = isJson
+          ? 'SHA1'
+          : prompt('Enter hash type (MD5, SHA1, or SHA256):', detectedType || 'SHA1')?.trim().toUpperCase();
         if (!hashType || !['MD5', 'SHA1', 'SHA256'].includes(hashType)) {
           alert('Invalid hash type. Please enter MD5, SHA1, or SHA256.');
           return;
@@ -1862,7 +1869,7 @@ const HashListsPanel: React.FC<{
           await loadDatabaseStats();
           
           const usedType = hashList.hashType || hashType;
-          const note = usedType !== hashType
+          const note = usedType !== hashType && !isJson
             ? `\n\n(The file contains ${usedType} hashes, so it was imported as ${usedType} instead of ${hashType}.)`
             : '';
           alert(`✓ Imported "${hashList.name}"\n\nHashes: ${(hashList.hashCount || hashList.hashes.length).toLocaleString()}\nType: ${usedType}${note}`);
