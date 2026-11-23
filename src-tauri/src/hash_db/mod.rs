@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::collections::HashSet;
 use bloomfilter::Bloom;
 
+pub mod txt_format;
+
 /// Every index that lives on the `hashes` table, as `(name, CREATE statement)`.
 ///
 /// Kept in one place because these are created on open *and* dropped/rebuilt

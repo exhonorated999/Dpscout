@@ -250,6 +250,16 @@ struct HashImportProgress {
 }
 
 #[tauri::command]
+fn detect_txt_hash_type(txt_path: String) -> Result<Option<String>, String> {
+    let file = std::fs::File::open(&txt_path).map_err(|e| format!("Failed to open file: {}", e))?;
+    let s = hash_db::txt_format::sniff(
+        std::io::BufReader::new(file),
+        hash_db::txt_format::SNIFF_SAMPLE_LINES,
+    )?;
+    Ok(s.detected().map(str::to_string))
+}
+
+#[tauri::command]
 async fn import_txt_hash_list(
     app: tauri::AppHandle,
     txt_path: String,
@@ -264,12 +274,24 @@ async fn import_txt_hash_list(
     eprintln!("[Hash Import] List name: {}", list_name);
     eprintln!("[Hash Import] Hash type: {}", hash_type);
     
-    let expected_len = match hash_type.as_str() {
-        "MD5" => 32,
-        "SHA1" => 40,
-        "SHA256" => 64,
-        _ => return Err(format!("Invalid hash type: {}", hash_type)),
-    };
+    // The user's choice comes from a prompt and is easy to get wrong (it used
+    // to default to SHA256, which silently rejected every line of a Project
+    // VIC SHA1 export).  A hex hash's length identifies its type, so let the
+    // file decide.  Done before the list row is created so a bad file leaves
+    // nothing behind.
+    let sniffed = hash_db::txt_format::sniff(
+        BufReader::new(File::open(&txt_path).map_err(|e| format!("Failed to open file: {}", e))?),
+        hash_db::txt_format::SNIFF_SAMPLE_LINES,
+    )?;
+    let (resolved_type, corrected) = hash_db::txt_format::resolve_hash_type(&hash_type, &sniffed)?;
+    if corrected {
+        eprintln!(
+            "[Hash Import] File contains {} hashes but {} was selected — importing as {}",
+            resolved_type, hash_type, resolved_type
+        );
+    }
+    let hash_type = resolved_type.to_string();
+    let expected_len = hash_db::txt_format::expected_len(&hash_type).unwrap_or(0);
     
     let file = File::open(&txt_path)
         .map_err(|e| format!("Failed to open file: {}", e))?;
@@ -317,20 +339,15 @@ async fn import_txt_hash_list(
             Ok(l) => l,
             Err(_) => continue,
         };
-        let line = line.trim();
-        
-        if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
-            continue;
-        }
-        
-        let hash = line.split_whitespace().next().unwrap_or(line).to_lowercase();
+        let Some(token) = hash_db::txt_format::hash_token(&line) else { continue };
+        let hash = token.to_lowercase();
         
         if hash.len() == expected_len && hash.as_bytes().iter().all(|b| b.is_ascii_hexdigit()) {
             batch.push((hash, hash_type.clone(), None, None));
         } else {
             skipped += 1;
             if skipped <= 3 {
-                eprintln!("[Hash Import] Skipping invalid hash: {}", &line[..line.len().min(80)]);
+                eprintln!("[Hash Import] Skipping invalid hash: {}", token.chars().take(80).collect::<String>());
             }
             continue;
         }
@@ -388,7 +405,12 @@ async fn import_txt_hash_list(
     hash_db.finish_bulk_import()?;
     
     if imported_count == 0 {
-        return Err("No valid hashes found in file".to_string());
+        // Don't leave an empty list row behind.
+        let _ = hash_db.delete_list(list_id);
+        return Err(format!(
+            "No valid hashes found in file. Expected one {} hash ({} hex characters) per line.",
+            hash_type, expected_len
+        ));
     }
     
     // Update hash count on the list record
@@ -2706,6 +2728,7 @@ pub fn run() {
             import_vic_hash_list,
             import_and_load_hash_list,
             import_txt_hash_list,
+            detect_txt_hash_type,
             scan_media,
             scan_media_progressive,
             clear_thumbnails,

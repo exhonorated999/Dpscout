@@ -1815,8 +1815,16 @@ const HashListsPanel: React.FC<{
         const listName = prompt('Enter a name for this hash list:', 'Custom Hash List');
         if (!listName) return;
         
-        // Prompt for hash type
-        const hashType = prompt('Enter hash type (MD5, SHA1, or SHA256):', 'SHA256')?.toUpperCase();
+        // Prompt for hash type, pre-filled with what the file actually contains
+        // (the backend also corrects a wrong choice, so this is just a hint).
+        let detectedType: string | null = null;
+        try {
+          detectedType = await invoke<string | null>('detect_txt_hash_type', { txtPath: selected });
+        } catch (e) {
+          alert(`Failed to import hash list: ${e}`);
+          return;
+        }
+        const hashType = prompt('Enter hash type (MD5, SHA1, or SHA256):', detectedType || 'SHA1')?.trim().toUpperCase();
         if (!hashType || !['MD5', 'SHA1', 'SHA256'].includes(hashType)) {
           alert('Invalid hash type. Please enter MD5, SHA1, or SHA256.');
           return;
@@ -1853,7 +1861,11 @@ const HashListsPanel: React.FC<{
           
           await loadDatabaseStats();
           
-          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${hashList.hashCount || hashList.hashes.length}\nType: ${hashType}`);
+          const usedType = hashList.hashType || hashType;
+          const note = usedType !== hashType
+            ? `\n\n(The file contains ${usedType} hashes, so it was imported as ${usedType} instead of ${hashType}.)`
+            : '';
+          alert(`✓ Imported "${hashList.name}"\n\nHashes: ${(hashList.hashCount || hashList.hashes.length).toLocaleString()}\nType: ${usedType}${note}`);
         } finally {
           unlisten();
         }
